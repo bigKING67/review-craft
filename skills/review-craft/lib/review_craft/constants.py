@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-SCHEMA_VERSION = "review-craft.run.v1"
-VERSION = "0.1.0"
+SCHEMA_VERSION = "review-craft.run.v2"
+VERSION = "0.2.0"
 
 ARTIFACT_PATHS = {
+    "reviewScope": "review-scope.json",
     "qualityModel": "quality-model.json",
     "coverage": "coverage.json",
+    "moduleMap": "module-map.json",
+    "dependencyMap": "dependency-map.json",
     "candidateLedger": "candidate-ledger.jsonl",
     "findings": "findings.json",
     "decisions": "decisions.json",
@@ -13,6 +16,21 @@ ARTIFACT_PATHS = {
     "remediationPlan": "remediation-plan.json",
     "commands": "evidence/commands.jsonl",
     "report": "report.md",
+}
+
+REVIEW_MODES = {"review", "diff", "focus"}
+PROFILES = {
+    "auto",
+    "generic",
+    "application",
+    "desktop-app",
+    "frontend",
+    "backend-service",
+    "library",
+    "cli",
+    "monorepo",
+    "agent-project",
+    "data-pipeline",
 }
 
 COVERAGE_DISPOSITIONS = {

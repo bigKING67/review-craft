@@ -12,25 +12,31 @@ from .constants import (
     FINAL_COVERAGE_DISPOSITIONS,
     PERFORMANCE_CLASSES,
     PRIORITIES,
+    PROFILES,
     REMEDIATION_PHASES,
+    REVIEW_MODES,
     SCHEMA_VERSION,
     SCORE_DIMENSIONS,
     SEVERITIES,
     VALIDATION_STATUSES,
 )
-from .jsonio import read_json, read_jsonl, sha256_json
+from .jsonio import read_json, read_jsonl, sha256_bytes, sha256_json
 from .repository import (
     fingerprint_inventory,
-    inventory,
-    tracked_fingerprint,
+    inspect_git,
+    inventory_for_mode,
+    worktree_fingerprint,
 )
 from .schema_validation import validate_instance
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
 DOCUMENT_SCHEMAS = {
     "manifest": "review-manifest.schema.json",
+    "reviewScope": "review-scope.schema.json",
     "qualityModel": "quality-model.schema.json",
     "coverage": "coverage.schema.json",
+    "moduleMap": "module-map.schema.json",
+    "dependencyMap": "dependency-map.schema.json",
     "findings": "findings.schema.json",
     "decisions": "decisions.schema.json",
     "scorecard": "scorecard.schema.json",
@@ -81,8 +87,11 @@ def load_run(run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.expanduser().resolve(strict=True)
     result = {
         "manifest": read_json(run_dir / "review-manifest.json"),
+        "reviewScope": read_json(_artifact(run_dir, "reviewScope")),
         "qualityModel": read_json(_artifact(run_dir, "qualityModel")),
         "coverage": read_json(_artifact(run_dir, "coverage")),
+        "moduleMap": read_json(_artifact(run_dir, "moduleMap")),
+        "dependencyMap": read_json(_artifact(run_dir, "dependencyMap")),
         "candidates": read_jsonl(_artifact(run_dir, "candidateLedger")),
         "findings": read_json(_artifact(run_dir, "findings")),
         "decisions": read_json(_artifact(run_dir, "decisions")),
@@ -122,6 +131,129 @@ def _validate_quality_model(model: dict[str, Any], errors: list[str], final: boo
             errors.append(f"quality-model.{field}: expected an array of strings")
         elif final and field in {"criticalPaths", "invariants", "authoritySources"} and not value:
             errors.append(f"quality-model.{field}: must not be empty for finalization")
+
+
+def _validate_review_scope(
+    review_scope: dict[str, Any],
+    configuration: dict[str, Any],
+    coverage_paths: set[str],
+    errors: list[str],
+) -> None:
+    mode = review_scope.get("mode")
+    if mode not in REVIEW_MODES or mode != configuration.get("mode"):
+        errors.append("review-scope.mode: must match the canonical configuration")
+    focus_dimensions = configuration.get("focusDimensions")
+    diff_base = configuration.get("diffBase")
+    if mode == "review" and focus_dimensions:
+        errors.append("review-scope.mode: review mode cannot declare focus dimensions")
+    if mode == "focus" and not focus_dimensions:
+        errors.append("review-scope.mode: focus mode requires focus dimensions")
+    if mode == "diff" and not _non_empty(diff_base):
+        errors.append("review-scope.mode: diff mode requires an immutable diff base")
+    if mode != "diff" and diff_base is not None:
+        errors.append("review-scope.mode: diffBase is only valid in diff mode")
+    dimensions = review_scope.get("dimensions")
+    canonical_dimensions = [row[0] for row in SCORE_DIMENSIONS]
+    if not isinstance(dimensions, list) or not dimensions or len(dimensions) != len(
+        set(dimensions)
+    ):
+        errors.append("review-scope.dimensions: expected unique canonical dimensions")
+    elif any(item not in canonical_dimensions for item in dimensions):
+        errors.append("review-scope.dimensions: contains an unsupported dimension")
+    expected_dimensions = configuration.get("focusDimensions") or canonical_dimensions
+    if dimensions != expected_dimensions:
+        errors.append("review-scope.dimensions: must match configuration focusDimensions")
+    profile = review_scope.get("profile")
+    if not isinstance(profile, dict):
+        errors.append("review-scope.profile: expected an object")
+    else:
+        if profile.get("requested") != configuration.get("profile"):
+            errors.append("review-scope.profile.requested: must match configuration profile")
+        if profile.get("resolved") not in PROFILES - {"auto"}:
+            errors.append("review-scope.profile.resolved: unsupported profile")
+    diff = review_scope.get("diff")
+    if mode != "diff":
+        if diff is not None:
+            errors.append("review-scope.diff: must be null outside diff mode")
+        return
+    if not isinstance(diff, dict):
+        errors.append("review-scope.diff: required in diff mode")
+        return
+    if diff.get("baseRevision") != configuration.get("diffBase"):
+        errors.append("review-scope.diff.baseRevision: must match configuration diffBase")
+    changes = diff.get("changes")
+    if not isinstance(changes, list):
+        errors.append("review-scope.diff.changes: expected an array")
+        return
+    seen: set[str] = set()
+    for index, change in enumerate(changes):
+        prefix = f"review-scope.diff.changes[{index}]"
+        if not isinstance(change, dict):
+            errors.append(f"{prefix}: expected an object")
+            continue
+        path = change.get("path")
+        if not _safe_relative(path) or path in seen:
+            errors.append(f"{prefix}.path: expected a unique safe relative path")
+            continue
+        seen.add(path)
+        if change.get("inScope") is True and path not in coverage_paths:
+            errors.append(f"{prefix}.inScope: path is missing from coverage")
+        if change.get("inScope") is False and path in coverage_paths:
+            errors.append(f"{prefix}.inScope: excluded path appears in coverage")
+
+
+def _validate_repository_maps(
+    module_map: dict[str, Any],
+    dependency_map: dict[str, Any],
+    coverage_paths: set[str],
+    errors: list[str],
+) -> None:
+    modules = module_map.get("modules")
+    module_ids: set[str] = set()
+    declared_files = 0
+    if not isinstance(modules, list):
+        errors.append("module-map.modules: expected an array")
+    else:
+        for index, module in enumerate(modules):
+            prefix = f"module-map.modules[{index}]"
+            if not isinstance(module, dict):
+                errors.append(f"{prefix}: expected an object")
+                continue
+            identifier = module.get("id")
+            if not _non_empty(identifier) or identifier in module_ids:
+                errors.append(f"{prefix}.id: expected a unique module ID")
+            else:
+                module_ids.add(identifier)
+            file_count = module.get("fileCount")
+            if isinstance(file_count, int) and not isinstance(file_count, bool):
+                declared_files += file_count
+            for entry in module.get("entryPoints", []):
+                if entry not in coverage_paths:
+                    errors.append(f"{prefix}.entryPoints: {entry!r} is not in coverage")
+        if declared_files != len(coverage_paths):
+            errors.append(
+                "module-map.modules: file counts total "
+                f"{declared_files}, expected {len(coverage_paths)}"
+            )
+    for index, edge in enumerate(dependency_map.get("edges", [])):
+        if not isinstance(edge, dict):
+            continue
+        for field in ("from", "to"):
+            if edge.get(field) not in coverage_paths:
+                errors.append(
+                    f"dependency-map.edges[{index}].{field}: path is not in coverage"
+                )
+    for index, skipped in enumerate(dependency_map.get("filesSkipped", [])):
+        if isinstance(skipped, dict) and skipped.get("path") not in coverage_paths:
+            errors.append(f"dependency-map.filesSkipped[{index}].path: path is not in coverage")
+    for index, edge in enumerate(dependency_map.get("moduleEdges", [])):
+        if not isinstance(edge, dict):
+            continue
+        for field in ("from", "to"):
+            if edge.get(field) not in module_ids:
+                errors.append(
+                    f"dependency-map.moduleEdges[{index}].{field}: unknown module"
+                )
 
 
 def _validate_coverage(coverage: dict[str, Any], errors: list[str], final: bool) -> set[str]:
@@ -539,22 +671,38 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     else:
         try:
             target_root = Path(run_state["targetRoot"]).resolve(strict=True)
-            records, _ = inventory(
+            records, _, current_diff = inventory_for_mode(
                 target_root,
+                mode=manifest_configuration["mode"],
                 scopes=manifest_configuration["scope"],
                 excludes=manifest_configuration["exclude"],
                 generated=manifest_configuration["generated"],
                 vendored=manifest_configuration["vendored"],
+                diff_base=manifest_configuration["diffBase"],
             )
             current_source = fingerprint_inventory(records)
-            current_tracked = tracked_fingerprint(target_root)
+            current_worktree = worktree_fingerprint(target_root)
+            current_status = inspect_git(target_root).status
         except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
             errors.append(f"run-state.targetRoot: source verification failed: {error}")
         else:
             if current_source != target.get("sourceFingerprint"):
                 errors.append("run-state.targetRoot: source fingerprint changed after preflight")
-            if current_tracked != run_state.get("trackedFingerprint"):
-                errors.append("run-state.targetRoot: tracked source changed after preflight")
+            if manifest_configuration.get("mode") == "diff":
+                stored_diff = data["reviewScope"].get("diff")
+                if (
+                    not isinstance(current_diff, dict)
+                    or not isinstance(stored_diff, dict)
+                    or current_diff.get("changes") != stored_diff.get("changes")
+                ):
+                    errors.append("run-state.targetRoot: diff scope changed after preflight")
+            if current_worktree != run_state.get("worktreeFingerprint"):
+                errors.append("run-state.targetRoot: worktree changed after preflight")
+            current_status_fingerprint = sha256_bytes(
+                current_status.encode("utf-8", errors="surrogateescape")
+            )
+            if current_status_fingerprint != run_state.get("statusFingerprint"):
+                errors.append("run-state.targetRoot: Git status changed after preflight")
     for receipt in data["commands"]:
         if not isinstance(receipt, dict):
             continue
@@ -567,8 +715,11 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
                 errors.append(f"command receipt {command_id}: missing {expected}")
     for name in (
         "manifest",
+        "reviewScope",
         "qualityModel",
         "coverage",
+        "moduleMap",
+        "dependencyMap",
         "findings",
         "decisions",
         "scorecard",
@@ -583,6 +734,10 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             errors.append("review-manifest.status: expected draft or final")
     _validate_quality_model(data["qualityModel"], errors, final)
     coverage_paths = _validate_coverage(data["coverage"], errors, final)
+    _validate_review_scope(data["reviewScope"], manifest_configuration, coverage_paths, errors)
+    _validate_repository_maps(
+        data["moduleMap"], data["dependencyMap"], coverage_paths, errors
+    )
     candidates = _validate_candidates(data["candidates"], coverage_paths, errors, final)
     findings = _validate_findings(
         data["findings"], candidates, coverage_paths, errors

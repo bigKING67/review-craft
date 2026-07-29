@@ -77,6 +77,89 @@ def inspect_git(target: Path) -> GitState:
     return GitState(True, root, revision, branch, remote, status, revision is None)
 
 
+def resolve_git_revision(root: Path, value: str) -> str:
+    if not value or value.startswith("-") or any(character in value for character in "\0\r\n"):
+        raise ValueError("diff base must be a non-option Git revision")
+    state = inspect_git(root)
+    if not state.is_repository:
+        raise ValueError("diff mode requires a Git repository")
+    result = run_git(state.root, "rev-parse", "--verify", f"{value}^{{commit}}")
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"invalid diff base {value!r}: {message or 'not a commit'}")
+    return result.stdout.decode("ascii").strip()
+
+
+def git_diff_changes(root: Path, base_revision: str) -> list[dict[str, Any]]:
+    state = inspect_git(root)
+    if not state.is_repository:
+        raise ValueError("diff mode requires a Git repository")
+    result = run_git(
+        state.root,
+        "diff",
+        "--name-status",
+        "-z",
+        "--find-renames",
+        base_revision,
+        "--",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.decode("utf-8", errors="replace").strip())
+    tokens = [
+        item.decode("utf-8", errors="surrogateescape")
+        for item in result.stdout.split(b"\0")
+        if item
+    ]
+    changes: dict[str, dict[str, Any]] = {}
+    index = 0
+    while index < len(tokens):
+        status_token = tokens[index]
+        index += 1
+        status = status_token[0]
+        if status in {"R", "C"}:
+            if index + 1 >= len(tokens):
+                raise RuntimeError("git diff returned a truncated rename/copy record")
+            previous = tokens[index]
+            path = tokens[index + 1]
+            index += 2
+            row = {
+                "path": Path(path).as_posix(),
+                "status": status,
+                "statusDetail": status_token,
+                "previousPath": Path(previous).as_posix(),
+                "untracked": False,
+            }
+        else:
+            if index >= len(tokens):
+                raise RuntimeError("git diff returned a truncated path record")
+            path = tokens[index]
+            index += 1
+            row = {
+                "path": Path(path).as_posix(),
+                "status": status,
+                "statusDetail": status_token,
+                "untracked": False,
+            }
+        changes[row["path"]] = row
+    untracked = run_git(state.root, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked.returncode != 0:
+        raise RuntimeError(untracked.stderr.decode("utf-8", errors="replace").strip())
+    for item in untracked.stdout.split(b"\0"):
+        if not item:
+            continue
+        path = Path(item.decode("utf-8", errors="surrogateescape")).as_posix()
+        changes.setdefault(
+            path,
+            {
+                "path": path,
+                "status": "A",
+                "statusDetail": "untracked",
+                "untracked": True,
+            },
+        )
+    return [changes[path] for path in sorted(changes)]
+
+
 def _matches(path: str, patterns: Iterable[str]) -> bool:
     candidates = {path, f"{path}/"}
     for pattern in patterns:
@@ -126,6 +209,11 @@ def _filesystem_paths(root: Path) -> list[str]:
     return sorted(set(paths))
 
 
+def repository_paths(root: Path) -> list[str]:
+    root = root.resolve(strict=True)
+    return _git_paths(root) if inspect_git(root).is_repository else _filesystem_paths(root)
+
+
 def _file_record(root: Path, relative: str) -> dict[str, Any]:
     path = root / relative
     stat = path.lstat()
@@ -173,6 +261,25 @@ def _file_record(root: Path, relative: str) -> dict[str, Any]:
     }
 
 
+def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[str, Any]:
+    result = run_git(root, "show", f"{revision}:{relative}")
+    if result.returncode != 0:
+        raise OSError(result.stderr.decode("utf-8", errors="replace").strip())
+    payload = result.stdout
+    try:
+        payload[:8192].decode("utf-8")
+        invalid_utf8 = False
+    except UnicodeDecodeError:
+        invalid_utf8 = True
+    return {
+        "path": relative,
+        "kind": "deleted",
+        "sizeBytes": len(payload),
+        "sha256": sha256_bytes(payload),
+        "binary": b"\0" in payload[:8192] or invalid_utf8,
+    }
+
+
 def inventory(
     root: Path,
     *,
@@ -180,14 +287,20 @@ def inventory(
     excludes: Iterable[str] = (),
     generated: Iterable[str] = (),
     vendored: Iterable[str] = (),
+    paths: Iterable[str] | None = None,
+    deleted_revision: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     root = root.resolve(strict=True)
     git_state = inspect_git(root)
-    paths = _git_paths(root) if git_state.is_repository else _filesystem_paths(root)
+    candidate_paths = (
+        sorted(set(paths))
+        if paths is not None
+        else (_git_paths(root) if git_state.is_repository else _filesystem_paths(root))
+    )
     exclude_patterns = tuple(DEFAULT_EXCLUDES) + tuple(excludes)
     included: list[dict[str, Any]] = []
     excluded: list[dict[str, str]] = []
-    for relative in paths:
+    for relative in candidate_paths:
         relative = Path(relative).as_posix()
         if not _is_in_scope(relative, scopes):
             excluded.append({"path": relative, "reason": "outside configured scope"})
@@ -196,7 +309,12 @@ def inventory(
             excluded.append({"path": relative, "reason": "matched exclude pattern"})
             continue
         try:
-            record = _file_record(root, relative)
+            if (root / relative).exists() or (root / relative).is_symlink():
+                record = _file_record(root, relative)
+            elif deleted_revision is not None:
+                record = _file_record_at_revision(root, deleted_revision, relative)
+            else:
+                record = _file_record(root, relative)
         except OSError as error:
             record = {
                 "path": relative,
@@ -218,38 +336,93 @@ def inventory(
     )
 
 
+def inventory_for_mode(
+    root: Path,
+    *,
+    mode: str,
+    scopes: Iterable[str] = (".",),
+    excludes: Iterable[str] = (),
+    generated: Iterable[str] = (),
+    vendored: Iterable[str] = (),
+    diff_base: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], dict[str, Any] | None]:
+    if mode != "diff":
+        records, excluded = inventory(
+            root,
+            scopes=scopes,
+            excludes=excludes,
+            generated=generated,
+            vendored=vendored,
+        )
+        return records, excluded, None
+    if not diff_base:
+        raise ValueError("diff mode requires a diff base")
+    base_revision = resolve_git_revision(root, diff_base)
+    changes = git_diff_changes(root, base_revision)
+    records, excluded = inventory(
+        root,
+        scopes=scopes,
+        excludes=excludes,
+        generated=generated,
+        vendored=vendored,
+        paths=[row["path"] for row in changes],
+        deleted_revision=base_revision,
+    )
+    changes_by_path = {row["path"]: row for row in changes}
+    for record in records:
+        change = changes_by_path[record["path"]]
+        record["diffStatus"] = change["status"]
+        if change.get("previousPath"):
+            record["previousPath"] = change["previousPath"]
+        if change["untracked"]:
+            record["untracked"] = True
+    included_paths = {row["path"] for row in records}
+    excluded_reasons = {row["path"]: row["reason"] for row in excluded}
+    scoped_changes = []
+    for change in changes:
+        row = dict(change)
+        row["inScope"] = row["path"] in included_paths
+        row["reason"] = "in configured scope" if row["inScope"] else excluded_reasons.get(
+            row["path"], "not present in the selected inventory"
+        )
+        scoped_changes.append(row)
+    return records, excluded, {"baseRevision": base_revision, "changes": scoped_changes}
+
+
 def fingerprint_inventory(records: list[dict[str, Any]]) -> str:
-    stable = [
-        {
+    stable = []
+    for row in sorted(records, key=lambda item: item["path"]):
+        value = {
             "path": row["path"],
             "kind": row["kind"],
             "sha256": row["sha256"],
             "classification": row["classification"],
         }
-        for row in sorted(records, key=lambda item: item["path"])
-    ]
+        for field in ("diffStatus", "previousPath", "untracked"):
+            if field in row:
+                value[field] = row[field]
+        stable.append(value)
     return sha256_bytes(canonical_compact(stable).encode("utf-8"))
 
 
-def tracked_fingerprint(root: Path) -> str | None:
-    state = inspect_git(root)
-    if not state.is_repository:
-        return None
-    result = run_git(root, "ls-files", "-z")
-    records: list[dict[str, str]] = []
-    for item in result.stdout.split(b"\0"):
-        if not item:
-            continue
-        relative = item.decode("utf-8", errors="surrogateescape")
-        path = root / relative
-        if path.is_symlink():
-            payload = os.readlink(path).encode("utf-8", errors="surrogateescape")
-        elif path.is_file():
-            payload = path.read_bytes()
-        else:
-            payload = b"<missing>"
-        records.append({"path": relative, "sha256": sha256_bytes(payload)})
-    return sha256_bytes(canonical_compact(sorted(records, key=lambda row: row["path"])).encode())
+def worktree_fingerprint(root: Path) -> str:
+    root = root.resolve(strict=True)
+    if not inspect_git(root).is_repository:
+        records, _ = inventory(root)
+        return fingerprint_inventory(records)
+    records: list[dict[str, Any]] = []
+    for relative in _git_paths(root):
+        try:
+            record = _file_record(root, relative)
+        except OSError as error:
+            record = {
+                "path": relative,
+                "kind": "unreadable",
+                "sha256": sha256_bytes(str(error).encode("utf-8")),
+            }
+        record["classification"] = "source"
+        records.append(record)
+    return fingerprint_inventory(records)
 
 
 def repository_identity(state: GitState, records: list[dict[str, Any]]) -> str:

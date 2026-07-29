@@ -165,7 +165,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["findings"],
         {
             "documentType": "review-craft.findings",
-            "schemaVersion": "review-craft.run.v1",
+            "schemaVersion": "review-craft.run.v2",
             "findings": [finding],
         },
     )
@@ -197,7 +197,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["decisions"],
         {
             "documentType": "review-craft.decisions",
-            "schemaVersion": "review-craft.run.v1",
+            "schemaVersion": "review-craft.run.v2",
             "decisions": [decision, keep],
         },
     )
@@ -228,7 +228,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["scorecard"],
         {
             "documentType": "review-craft.scorecard",
-            "schemaVersion": "review-craft.run.v1",
+            "schemaVersion": "review-craft.run.v2",
             "status": "final",
             "evidenceLevel": "E2",
             "confidence": "HIGH",
@@ -266,7 +266,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["remediationPlan"],
         {
             "documentType": "review-craft.remediation-plan",
-            "schemaVersion": "review-craft.run.v1",
+            "schemaVersion": "review-craft.run.v2",
             "changeClass": "LOCAL_OPTIMIZATION",
             "targetScore": 92,
             "targetEvidenceLevel": "E3",

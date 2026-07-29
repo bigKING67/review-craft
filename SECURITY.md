@@ -2,8 +2,8 @@
 
 ## Supported version
 
-Security fixes are applied to the latest released version. This repository is at
-an initial pre-release stage until `v0.1.0` is tagged and published.
+Security fixes are applied to the latest released version. Before 1.0, only the
+current published minor line receives security patches.
 
 ## Report a vulnerability
 

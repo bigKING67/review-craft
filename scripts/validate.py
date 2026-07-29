@@ -13,6 +13,7 @@ RUNTIME = ROOT / "skills" / "review-craft" / "lib"
 sys.path.insert(0, str(RUNTIME))
 
 from review_craft import __version__  # noqa: E402
+from review_craft.constants import VERSION as CONSTANT_VERSION  # noqa: E402
 
 REQUIRED_FILES = (
     ".codex-plugin/plugin.json",
@@ -33,6 +34,13 @@ REQUIRED_FILES = (
     "skills/review-craft/SKILL.md",
     "skills/review-craft/VERSION",
     "skills/review-craft/agents/openai.yaml",
+    "skills/review-craft/lib/review_craft/configuration.py",
+    "skills/review-craft/lib/review_craft/evidence.py",
+    "skills/review-craft/lib/review_craft/repository_analysis.py",
+    "skills/review-craft/references/modes-and-profiles.md",
+    "skills/review-craft/schemas/dependency-map.schema.json",
+    "skills/review-craft/schemas/module-map.schema.json",
+    "skills/review-craft/schemas/review-scope.schema.json",
     "skills/review-craft/scripts/review_craft.py",
 )
 
@@ -120,6 +128,8 @@ def validate_required_files(errors: list[str]) -> None:
 
 
 def validate_versions(errors: list[str]) -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject_version = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', pyproject, re.M)
     values = {
         "VERSION": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
         "skill VERSION": (ROOT / "skills/review-craft/VERSION").read_text(
@@ -131,7 +141,9 @@ def validate_versions(errors: list[str]) -> None:
         "plugin.json": json.loads(
             (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
         )["version"],
+        "pyproject.toml": pyproject_version.group(1) if pyproject_version else None,
         "runtime": __version__,
+        "runtime constants": CONSTANT_VERSION,
     }
     if len(set(values.values())) != 1:
         errors.append(f"version mismatch: {values}")

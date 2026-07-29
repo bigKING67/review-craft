@@ -21,8 +21,11 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(finalized.returncode, 0, finalized.stderr)
             pairs = (
                 ("review-manifest.json", "review-manifest.schema.json"),
+                ("review-scope.json", "review-scope.schema.json"),
                 ("quality-model.json", "quality-model.schema.json"),
                 ("coverage.json", "coverage.schema.json"),
+                ("module-map.json", "module-map.schema.json"),
+                ("dependency-map.json", "dependency-map.schema.json"),
                 ("findings.json", "findings.schema.json"),
                 ("decisions.json", "decisions.schema.json"),
                 ("scorecard.json", "scorecard.schema.json"),

@@ -4,8 +4,10 @@
     "VERSION",
     "skills/review-craft/VERSION",
     "package.json",
+    "pyproject.toml",
     ".codex-plugin/plugin.json",
-    "skills/review-craft/lib/review_craft/__init__.py"
+    "skills/review-craft/lib/review_craft/__init__.py",
+    "skills/review-craft/lib/review_craft/constants.py"
   ],
   "requiredGates": [
     "unit-tests",

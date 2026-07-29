@@ -4,23 +4,27 @@ import argparse
 import json
 import os
 import platform
-import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .constants import ARTIFACT_PATHS, REMEDIATION_PHASES, SCHEMA_VERSION, SCORE_DIMENSIONS
+from .configuration import effective_preflight_config, load_config
+from .constants import (
+    ARTIFACT_PATHS,
+    REMEDIATION_PHASES,
+    REVIEW_MODES,
+    SCHEMA_VERSION,
+    SCORE_DIMENSIONS,
+)
 from .contracts import ContractError, validate_run
+from .evidence import run_evidence_command
 from .jsonio import (
     canonical_compact,
     read_json,
-    read_jsonl,
     sha256_bytes,
     sha256_json,
     write_json,
@@ -30,84 +34,16 @@ from .report import finalize_run
 from .repository import (
     fingerprint_inventory,
     inspect_git,
-    inventory,
+    inventory_for_mode,
     repository_identity,
-    tracked_fingerprint,
+    repository_paths,
+    worktree_fingerprint,
 )
+from .repository_analysis import build_dependency_map, build_module_map, detect_profile
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _default_config() -> dict[str, Any]:
-    return {
-        "profile": "generic",
-        "scope": ["."],
-        "exclude": [],
-        "generated": [],
-        "vendored": [],
-        "commands": {},
-        "policy": {
-            "allowNetwork": False,
-            "allowInstall": False,
-            "allowRepositoryMutation": False,
-            "outputOutsideRepository": True,
-        },
-        "reportLanguage": "zh-CN",
-    }
-
-
-def _load_config(path: Path | None) -> dict[str, Any]:
-    config = _default_config()
-    if path is None:
-        return config
-    supplied = read_json(path.expanduser().resolve(strict=True))
-    if not isinstance(supplied, dict):
-        raise ValueError("config: expected a JSON object")
-    supplied = {key: value for key, value in supplied.items() if key != "$schema"}
-    unknown = set(supplied) - set(config)
-    if unknown:
-        raise ValueError(f"config: unsupported fields {', '.join(sorted(unknown))}")
-    for key, value in supplied.items():
-        if key == "policy":
-            if not isinstance(value, dict):
-                raise ValueError("config.policy: expected an object")
-            unknown_policy = set(value) - set(config["policy"])
-            if unknown_policy:
-                raise ValueError(
-                    f"config.policy: unsupported fields {', '.join(sorted(unknown_policy))}"
-                )
-            if not all(isinstance(item, bool) for item in value.values()):
-                raise ValueError("config.policy: expected boolean values")
-            config["policy"].update(value)
-        else:
-            config[key] = value
-    for field in ("scope", "exclude", "generated", "vendored"):
-        if not isinstance(config[field], list) or not all(
-            isinstance(item, str) and item for item in config[field]
-        ):
-            raise ValueError(f"config.{field}: expected an array of strings")
-    if not config["scope"]:
-        raise ValueError("config.scope: must not be empty")
-    commands = config["commands"]
-    if not isinstance(commands, dict):
-        raise ValueError("config.commands: expected an object")
-    for name, command in commands.items():
-        if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or not isinstance(command, dict):
-            raise ValueError(f"config.commands.{name}: invalid command")
-        argv = command.get("argv")
-        if not isinstance(argv, list) or not argv or not all(
-            isinstance(item, str) and item and "\0" not in item for item in argv
-        ):
-            raise ValueError(f"config.commands.{name}.argv: expected a non-empty string array")
-        cwd = command.get("cwd", ".")
-        if not isinstance(cwd, str) or not cwd:
-            raise ValueError(f"config.commands.{name}.cwd: expected a string")
-        timeout = command.get("timeoutSeconds", 600)
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
-            raise ValueError(f"config.commands.{name}.timeoutSeconds: expected a positive integer")
-    return config
 
 
 def _repository_name(state_root: Path, remote: str | None) -> str:
@@ -149,6 +85,9 @@ def _draft_artifacts(
     config: dict[str, Any],
     records: list[dict[str, Any]],
     excluded: list[dict[str, str]],
+    review_scope: dict[str, Any],
+    module_map: dict[str, Any],
+    dependency_map: dict[str, Any],
 ) -> None:
     state = inspect_git(target)
     source_fingerprint = fingerprint_inventory(records)
@@ -275,8 +214,11 @@ def _draft_artifacts(
         ],
     }
     write_json(run_dir / "review-manifest.json", manifest)
+    write_json(run_dir / ARTIFACT_PATHS["reviewScope"], review_scope)
     write_json(run_dir / ARTIFACT_PATHS["qualityModel"], quality_model)
     write_json(run_dir / ARTIFACT_PATHS["coverage"], coverage)
+    write_json(run_dir / ARTIFACT_PATHS["moduleMap"], module_map)
+    write_json(run_dir / ARTIFACT_PATHS["dependencyMap"], dependency_map)
     write_jsonl(run_dir / ARTIFACT_PATHS["candidateLedger"], [])
     write_json(run_dir / ARTIFACT_PATHS["findings"], findings)
     write_json(run_dir / ARTIFACT_PATHS["decisions"], decisions)
@@ -285,7 +227,15 @@ def _draft_artifacts(
     write_jsonl(run_dir / ARTIFACT_PATHS["commands"], [])
     write_json(
         run_dir / "run-state.json",
-        {"targetRoot": str(state.root), "trackedFingerprint": tracked_fingerprint(state.root)},
+        {
+            "targetRoot": str(state.root),
+            "worktreeFingerprint": worktree_fingerprint(state.root),
+            "statusFingerprint": sha256_bytes(
+                state.status.encode("utf-8", errors="surrogateescape")
+            ),
+            "mode": config["mode"],
+            "diffBase": config["diffBase"],
+        },
         mode=0o600,
     )
 
@@ -312,16 +262,47 @@ def command_preflight(args: argparse.Namespace) -> int:
     target = Path(args.target).expanduser().resolve(strict=True)
     if not target.is_dir():
         raise ValueError("--target: expected a directory")
-    config = _load_config(Path(args.config) if args.config else None)
+    config = load_config(Path(args.config) if args.config else None)
+    config, requested_base = effective_preflight_config(
+        config,
+        mode=args.mode,
+        base=args.base,
+        focus=args.focus,
+    )
     state = inspect_git(target)
     root = state.root
-    records, excluded = inventory(
+    records, excluded, diff_context = inventory_for_mode(
         root,
+        mode=config["mode"],
         scopes=config["scope"],
         excludes=config["exclude"],
         generated=config["generated"],
         vendored=config["vendored"],
+        diff_base=config["diffBase"],
     )
+    if diff_context is not None:
+        config["diffBase"] = diff_context["baseRevision"]
+    dimensions = config["focusDimensions"] or [row[0] for row in SCORE_DIMENSIONS]
+    profile_records = [{"path": path} for path in repository_paths(root)]
+    profile = detect_profile(root, profile_records, config["profile"])
+    review_scope = {
+        "documentType": "review-craft.review-scope",
+        "schemaVersion": SCHEMA_VERSION,
+        "mode": config["mode"],
+        "dimensions": dimensions,
+        "profile": profile,
+        "diff": (
+            {
+                "requestedBase": requested_base,
+                "baseRevision": diff_context["baseRevision"],
+                "changes": diff_context["changes"],
+            }
+            if diff_context is not None
+            else None
+        ),
+    }
+    module_map = build_module_map(records)
+    dependency_map = build_dependency_map(root, records)
     state_hash = sha256_bytes(
         canonical_compact(
             {
@@ -358,106 +339,54 @@ def command_preflight(args: argparse.Namespace) -> int:
         config=config,
         records=records,
         excluded=excluded,
+        review_scope=review_scope,
+        module_map=module_map,
+        dependency_map=dependency_map,
     )
     print(
         json.dumps(
-            {"runId": run_dir.name, "runDir": str(run_dir), "files": len(records)},
+            {
+                "runId": run_dir.name,
+                "runDir": str(run_dir),
+                "files": len(records),
+                "mode": config["mode"],
+                "profile": profile["resolved"],
+            },
             ensure_ascii=False,
         )
     )
     return 0
 
 
-def _resolve_inside(root: Path, relative: str, field: str) -> Path:
-    if Path(relative).is_absolute():
-        raise ValueError(f"{field}: expected a repository-relative path")
-    resolved = (root / relative).resolve(strict=True)
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise ValueError(f"{field}: escapes the repository root") from error
-    if not resolved.is_dir():
-        raise ValueError(f"{field}: expected a directory")
-    return resolved
-
-
 def command_run_evidence(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
-    manifest = read_json(run_dir / "review-manifest.json")
-    state = read_json(run_dir / "run-state.json")
-    target = Path(state["targetRoot"]).resolve(strict=True)
-    command = manifest["configuration"]["commands"].get(args.command)
-    if not isinstance(command, dict):
-        raise ValueError(f"unknown configured command: {args.command}")
-    cwd = _resolve_inside(target, command.get("cwd", "."), "command.cwd")
-    argv = command["argv"]
-    timeout = command.get("timeoutSeconds", 600)
-    before_status = inspect_git(target).status
-    before_tracked = tracked_fingerprint(target)
-    started_at = utc_now()
-    start = time.monotonic()
-    timed_out = False
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            capture_output=True,
-            timeout=timeout,
-            shell=False,
-        )
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as error:
-        timed_out = True
-        exit_code = 124
-        stdout = error.stdout or b""
-        stderr = error.stderr or b""
-    duration_ms = round((time.monotonic() - start) * 1000)
-    after_state = inspect_git(target)
-    after_tracked = tracked_fingerprint(target)
-    mutation = before_tracked != after_tracked
-    command_id = sha256_bytes(
-        canonical_compact(
-            {
-                "name": args.command,
-                "argv": argv,
-                "startedAt": started_at,
-                "cwd": command.get("cwd", "."),
-            }
-        ).encode("utf-8")
-    )[:16]
-    evidence_dir = run_dir / "evidence" / "commands"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = evidence_dir / f"{command_id}.stdout"
-    stderr_path = evidence_dir / f"{command_id}.stderr"
-    stdout_path.write_bytes(stdout)
-    stderr_path.write_bytes(stderr)
-    receipt = {
-        "id": command_id,
-        "name": args.command,
-        "argv": argv,
-        "cwd": command.get("cwd", "."),
-        "startedAt": started_at,
-        "durationMs": duration_ms,
-        "exitCode": exit_code,
-        "timedOut": timed_out,
-        "stdoutArtifact": stdout_path.relative_to(run_dir).as_posix(),
-        "stderrArtifact": stderr_path.relative_to(run_dir).as_posix(),
-        "beforeStatusSha256": sha256_bytes(before_status.encode("utf-8", errors="surrogateescape")),
-        "afterStatusSha256": sha256_bytes(
-            after_state.status.encode("utf-8", errors="surrogateescape")
-        ),
-        "repositoryMutationDetected": mutation,
-    }
-    commands_path = run_dir / ARTIFACT_PATHS["commands"]
-    rows = read_jsonl(commands_path)
-    rows.append(receipt)
-    write_jsonl(commands_path, rows)
+    if args.all:
+        run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
+        manifest = read_json(run_dir / "review-manifest.json")
+        names = sorted(manifest["configuration"]["commands"])
+        if not names:
+            raise ValueError("no configured evidence commands")
+        receipts = []
+        final_code = 0
+        for name in names:
+            code, receipt = run_evidence_command(
+                args.run_dir,
+                name,
+                started_at=utc_now(),
+            )
+            receipts.append(receipt)
+            if code != 0 and final_code == 0:
+                final_code = code
+            if receipt["repositoryMutationDetected"] and code == 3:
+                break
+        print(json.dumps({"commands": receipts}, ensure_ascii=False, sort_keys=True))
+        return final_code
+    code, receipt = run_evidence_command(
+        args.run_dir,
+        args.command,
+        started_at=utc_now(),
+    )
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
-    if mutation and not manifest["configuration"]["policy"].get("allowRepositoryMutation", False):
-        return 3
-    return exit_code
+    return code
 
 
 def command_validate(args: argparse.Namespace) -> int:
@@ -495,11 +424,20 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--target", required=True)
     preflight.add_argument("--config")
     preflight.add_argument("--output-root")
+    preflight.add_argument("--mode", choices=sorted(REVIEW_MODES))
+    preflight.add_argument("--base", help="Git base revision for diff mode")
+    preflight.add_argument(
+        "--focus",
+        action="append",
+        help="Comma-separated canonical dimensions; can be repeated",
+    )
     preflight.set_defaults(handler=command_preflight)
 
     evidence = subparsers.add_parser("run-evidence", help="Run an allowlisted evidence command")
     evidence.add_argument("--run-dir", required=True)
-    evidence.add_argument("--command", required=True)
+    evidence_selection = evidence.add_mutually_exclusive_group(required=True)
+    evidence_selection.add_argument("--command")
+    evidence_selection.add_argument("--all", action="store_true")
     evidence.set_defaults(handler=command_run_evidence)
 
     validate = subparsers.add_parser("validate", help="Validate canonical artifacts")

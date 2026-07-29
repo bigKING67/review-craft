@@ -11,6 +11,11 @@ from tests.support import RUNTIME_LIB
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.repository import fingerprint_inventory, inventory, safe_remote
+from review_craft.repository_analysis import (
+    build_dependency_map,
+    build_module_map,
+    detect_profile,
+)
 
 
 class RepositoryTests(unittest.TestCase):
@@ -52,6 +57,40 @@ class RepositoryTests(unittest.TestCase):
             {"path": "a", "kind": "file", "sha256": "a" * 64, "classification": "source"},
         ]
         self.assertEqual(fingerprint_inventory(rows), fingerprint_inventory(list(reversed(rows))))
+
+    def test_repository_maps_capture_local_python_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/a.py").write_text("from . import b\n", encoding="utf-8")
+            (root / "src/b.py").write_text("VALUE = 1\n", encoding="utf-8")
+            records, _ = inventory(root)
+            module_map = build_module_map(records)
+            dependency_map = build_dependency_map(root, records)
+            self.assertEqual(module_map["modules"][0]["fileCount"], 2)
+            self.assertEqual(
+                dependency_map["edges"],
+                [
+                    {
+                        "from": "src/a.py",
+                        "to": "src/b.py",
+                        "kind": "python-import",
+                        "line": 1,
+                    }
+                ],
+            )
+
+    def test_auto_profile_uses_repository_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "package.json").write_text(
+                '{"dependencies":{"react":"1"}}\n', encoding="utf-8"
+            )
+            (root / "index.html").write_text("<main></main>\n", encoding="utf-8")
+            records, _ = inventory(root)
+            profile = detect_profile(root, records, "auto")
+            self.assertEqual(profile["resolved"], "frontend")
+            self.assertEqual(profile["confidence"], "MEDIUM")
 
 
 if __name__ == "__main__":

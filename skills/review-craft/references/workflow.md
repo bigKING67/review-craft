@@ -15,6 +15,11 @@ Bind every run to the real repository state. Record revision, branch, dirty stat
 source fingerprint, configuration fingerprint, and the exact scope. When the
 repository changes after preflight, start a new run rather than mixing evidence.
 
+`review-scope.json` is authoritative for the mode, dimensions, resolved project
+profile, and immutable diff base. `module-map.json` is deterministic path evidence.
+`dependency-map.json` is best-effort static evidence and must retain its stated
+limitations; it is not proof that dynamic or framework-injected edges do not exist.
+
 ## Inventory
 
 Use the preflight inventory as the only file worklist. Do not replace it with a

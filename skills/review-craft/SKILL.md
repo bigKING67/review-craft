@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for evidence-driven, repository-wide engineering reviews of real source code. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, build and release systems, dependencies, basic security posture, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, and a phased remediation plan. Do not use as the primary workflow for a PR or small diff, visual UI/UX critique, or deep vulnerability discovery and exploit validation."
+description: "Use for evidence-driven engineering reviews of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, build and release systems, dependencies, basic security posture, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, and a phased remediation plan. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
 ---
 
 # Review Craft
@@ -20,8 +20,8 @@ remediation, and justified preservation of already-appropriate code.
   attack paths, PoCs, and security remediation validation.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
-- Version 0.1 supports the standard `review` workflow only. Do not claim support
-  for deep, diff, fix, compare, or historical modes.
+- Version 0.2 supports read-only `review`, `diff`, and `focus` workflows. Do not
+  claim support for deep, plan, fix, verify, compare, or historical modes.
 
 ## Authority and trust
 
@@ -63,6 +63,17 @@ before reviewing an unfamiliar repository or resolving a policy conflict.
 - Respect a user-limited claim or dimension. Do not broaden a focused question
   into unrelated findings unless a directly observed P0/P1 issue must be surfaced.
 
+## Supported modes
+
+- `review`: inventory and review the configured repository scope.
+- `diff`: review files changed from an exact Git base, including tracked deletions
+  and untracked files. Preserve the resolved base commit in canonical artifacts.
+- `focus`: keep repository coverage explicit while limiting claims and findings to
+  selected canonical dimensions.
+
+Read [modes-and-profiles.md](references/modes-and-profiles.md) before using `diff`,
+`focus`, or an explicit project profile.
+
 ## Standard workflow
 
 ### 1. Resolve the runtime
@@ -85,6 +96,17 @@ build scripts, tests, and applicable engineering authority. Then run:
 
 ```text
 python3 <skill-root>/scripts/review_craft.py preflight --target <repository>
+```
+
+For a Git diff or focused review:
+
+```text
+python3 <skill-root>/scripts/review_craft.py preflight \
+  --target <repository> --mode diff --base origin/main
+
+python3 <skill-root>/scripts/review_craft.py preflight \
+  --target <repository> --mode focus \
+  --focus architecture,maintainability,performance
 ```
 
 Pass `--config <repository>/.review-craft.json` only when that explicit control
@@ -140,12 +162,15 @@ tests. Run only commands explicitly allowed in `.review-craft.json` through:
 ```text
 python3 <skill-root>/scripts/review_craft.py \
   run-evidence --run-dir <run-dir> --command <configured-name>
+
+python3 <skill-root>/scripts/review_craft.py \
+  run-evidence --run-dir <run-dir> --all
 ```
 
 The runner uses argv without a shell and records duration, exit code, output,
 and before/after repository state. It is evidence capture, not a security sandbox.
-If a command mutates tracked source, stop automatic execution, report the mutation,
-and do not revert user work.
+If a command changes tracked or untracked review source, stop automatic execution,
+report the mutation, and do not revert user work.
 
 If no command is authorized or feasible, keep the evidence level lower and state
 the missing verification. Never replace execution evidence with a source comment
@@ -273,3 +298,4 @@ Do not claim superiority over Codex Review or Codex Security from a self-score.
 - Candidate, finding, validation, and decisions: [finding-lifecycle.md](references/finding-lifecycle.md)
 - Scoring, evidence levels, and report contract: [scoring-and-report.md](references/scoring-and-report.md)
 - Design Craft and Codex Security boundaries: [integrations.md](references/integrations.md)
+- Review modes and project profiles: [modes-and-profiles.md](references/modes-and-profiles.md)

@@ -5,7 +5,8 @@
 - `skills/review-craft/` is the only installable runtime product.
 - Keep repository governance under `scripts/`, `contracts/`, `tests/`, and `evals/`.
 - Do not duplicate inventory, validation, scoring, or report generation outside the canonical runtime.
-- Version 0.1 supports standard repository review only. Do not document planned modes as implemented.
+- Version 0.2 supports read-only `review`, `diff`, and `focus` modes. Do not document
+  `deep`, `plan`, `fix`, `verify`, `compare`, or historical modes as implemented.
 
 ## Safety and evidence
 

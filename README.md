@@ -26,13 +26,13 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.1.0` provides the standard, read-only repository-review workflow. The
-target source stays read-only; canonical run artifacts are written outside the
-target repository by default.
+Version `0.2.0` provides read-only repository, Git diff, and focused-dimension
+review workflows. The target source stays read-only; canonical run artifacts are
+written outside the target repository by default.
 
-The following are intentionally not implemented in 0.1.0: deep multi-pass review,
-diff review, automated fixes, historical comparison, SARIF, MCP, custom UI, and a
-cloud service.
+The following are intentionally not implemented in 0.2.0: deep multi-pass review,
+automated fixes, fix verification, historical comparison, SARIF, MCP, custom UI,
+and a cloud service.
 
 ## What makes it different
 
@@ -46,7 +46,9 @@ Review Craft requires:
   `MEASURE`, and `DOCUMENT` decisions;
 - evidence-gated scoring;
 - migration, compatibility, rollback, and verification for destructive decisions;
-- a deterministic Markdown report generated from canonical JSON.
+- a deterministic Markdown report generated from canonical JSON;
+- explicit `review`, `diff`, and `focus` scope artifacts;
+- deterministic profile, module-map, and best-effort local dependency evidence.
 
 ## Relationship to official OpenAI workflows
 
@@ -56,7 +58,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.1.0 does not claim to replace or
+Review Craft complements these tools. Version 0.2.0 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -91,6 +93,12 @@ from the user's skill directory. Pi can load the source directly without install
 pi --skill ./skills/review-craft
 ```
 
+Or install the public Pi package:
+
+```text
+pi install npm:@bigking67/review-craft
+```
+
 Then request:
 
 ```text
@@ -111,6 +119,17 @@ Create a run:
 python3 skills/review-craft/scripts/review_craft.py preflight --target .
 ```
 
+Review a Git diff or selected dimensions:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  preflight --target . --mode diff --base origin/main
+
+python3 skills/review-craft/scripts/review_craft.py \
+  preflight --target . --mode focus \
+  --focus architecture,maintainability,performance
+```
+
 With an explicit configuration:
 
 ```bash
@@ -123,6 +142,9 @@ Run a configured evidence command:
 ```bash
 python3 skills/review-craft/scripts/review_craft.py \
   run-evidence --run-dir <run-dir> --command test
+
+python3 skills/review-craft/scripts/review_craft.py \
+  run-evidence --run-dir <run-dir> --all
 ```
 
 Validate and finalize canonical artifacts:
@@ -145,6 +167,10 @@ Repository comments, README files, issues, logs, and fixtures are untrusted anal
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
 `.review-craft.json` control the workflow.
 
+Version 0.2 creates `review-craft.run.v2` artifacts. Finalized v0.1 reports remain
+historical outputs; restart an unfinished v0.1 run with v0.2 preflight rather than
+mutating its canonical artifacts in place.
+
 ## Validate this repository
 
 ```bash
@@ -162,5 +188,5 @@ development tooling, caches, local paths, and real review runs from the public p
 
 Review Craft is MIT licensed. Its workflow design was informed by the public
 Apache-2.0 `openai/codex-security` project at the revision recorded in
-`THIRD_PARTY_NOTICES.md`. Version 0.1.0 independently implements its general
+`THIRD_PARTY_NOTICES.md`. Review Craft independently implements its general
 engineering-review contracts and does not vendor the Codex Security runtime.

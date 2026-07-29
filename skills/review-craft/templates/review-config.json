@@ -1,6 +1,9 @@
 {
   "$schema": "./skills/review-craft/schemas/config.schema.json",
-  "profile": "generic",
+  "mode": "review",
+  "profile": "auto",
+  "focusDimensions": [],
+  "diffBase": null,
   "scope": ["."],
   "exclude": [],
   "generated": [],

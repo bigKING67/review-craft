@@ -1,13 +1,16 @@
 {
   "$schema": "./skills/review-craft/schemas/config.schema.json",
-  "profile": "generic",
+  "mode": "review",
+  "profile": "auto",
+  "focusDimensions": [],
+  "diffBase": null,
   "scope": ["."],
   "exclude": [],
   "generated": [],
   "vendored": [],
   "commands": {
     "test": {
-      "argv": ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+      "argv": ["uv", "run", "--locked", "python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
       "cwd": ".",
       "timeoutSeconds": 600
     }

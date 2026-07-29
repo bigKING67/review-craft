@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "inventoryFingerprint", "files", "excluded", "summary"],
   "properties": {
     "documentType": {"const": "review-craft.coverage"},
-    "schemaVersion": {"const": "review-craft.run.v1"},
+    "schemaVersion": {"const": "review-craft.run.v2"},
     "inventoryFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "files": {"type": "array", "items": {"$ref": "#/$defs/file"}},
     "excluded": {"type": "array", "items": {"$ref": "#/$defs/excluded"}},
@@ -28,7 +28,7 @@
       "required": ["path", "kind", "sizeBytes", "sha256", "binary", "classification", "disposition", "reason", "evidenceRefs"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
-        "kind": {"enum": ["file", "symlink", "other", "unreadable"]},
+        "kind": {"enum": ["file", "symlink", "other", "unreadable", "deleted"]},
         "sizeBytes": {"type": "integer", "minimum": 0},
         "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "binary": {"type": "boolean"},
@@ -38,7 +38,10 @@
         "evidenceRefs": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "coveredBy": {"type": "string", "minLength": 1},
         "linkTarget": {"type": "string"},
-        "readError": {"type": "string"}
+        "readError": {"type": "string"},
+        "diffStatus": {"enum": ["A", "C", "D", "M", "R", "T", "U", "X"]},
+        "previousPath": {"type": "string", "minLength": 1},
+        "untracked": {"type": "boolean"}
       },
       "additionalProperties": false
     },

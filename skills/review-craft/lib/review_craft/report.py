@@ -56,7 +56,10 @@ def _locations(row: dict[str, Any]) -> str:
 
 def render_report(data: dict[str, Any]) -> str:
     manifest = data["manifest"]
+    review_scope = data["reviewScope"]
     coverage = data["coverage"]
+    module_map = data["moduleMap"]
+    dependency_map = data["dependencyMap"]
     candidates = data["candidates"]
     findings = sorted(data["findings"]["findings"], key=_finding_sort)
     decisions = data["decisions"]["decisions"]
@@ -68,7 +71,7 @@ def render_report(data: dict[str, Any]) -> str:
     keep_subjects = [row["subject"] for row in decisions if row["decision"] == "KEEP"]
     decision_by_id = {row["id"]: row["decision"] for row in decisions}
 
-    lines = [
+    identity_lines = [
         "# Review Craft 工程审查报告",
         "",
         "## 审查身份",
@@ -76,11 +79,33 @@ def render_report(data: dict[str, Any]) -> str:
         f"- Run ID: `{manifest['runId']}`",
         f"- Repository: `{manifest['target']['repositoryName']}`",
         f"- Revision: `{manifest['target'].get('revision') or 'unversioned'}`",
-        f"- Source fingerprint: `{manifest['target']['sourceFingerprint']}`",
-        f"- Evidence level: `{scorecard['evidenceLevel']}`",
-        f"- Coverage: `{scorecard['coveragePercent']}%`",
-        f"- Confidence: `{scorecard['confidence']}`",
-        "",
+        f"- Mode: `{review_scope['mode']}`",
+        (
+            f"- Profile: `{review_scope['profile']['resolved']}` "
+            f"({review_scope['profile']['confidence']})"
+        ),
+        f"- Dimensions: `{', '.join(review_scope['dimensions'])}`",
+    ]
+    if review_scope["diff"] is not None:
+        identity_lines.extend(
+            [
+                f"- Diff base: `{review_scope['diff']['baseRevision']}`",
+                f"- Changed paths: `{len(review_scope['diff']['changes'])}`",
+            ]
+        )
+    identity_lines.extend(
+        [
+            f"- Source fingerprint: `{manifest['target']['sourceFingerprint']}`",
+            f"- Evidence level: `{scorecard['evidenceLevel']}`",
+            f"- Coverage: `{scorecard['coveragePercent']}%`",
+            f"- Confidence: `{scorecard['confidence']}`",
+            f"- Modules: `{len(module_map['modules'])}`",
+            f"- Static dependency edges: `{len(dependency_map['edges'])}`",
+            "",
+        ]
+    )
+    lines = [
+        *identity_lines,
         "# 第一部分：执行摘要",
         "",
         f"当前综合评分为 **{total}/100**。{_score_level(total)}。",
@@ -210,6 +235,10 @@ def render_report(data: dict[str, Any]) -> str:
             f"- 未决候选：{scorecard['unresolvedCandidates']}",
             f"- Candidate 总数：{len(candidates)}",
             f"- Finding 总数：{len(findings)}",
+            f"- 审查模式：{review_scope['mode']}",
+            f"- 项目 Profile：{review_scope['profile']['resolved']}",
+            f"- 模块数：{len(module_map['modules'])}",
+            f"- 静态依赖边数：{len(dependency_map['edges'])}",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"

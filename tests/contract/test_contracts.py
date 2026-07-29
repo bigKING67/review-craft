@@ -46,6 +46,8 @@ class ContractTests(unittest.TestCase):
             "最终结论",
         ):
             self.assertIn(heading, text)
+        self.assertIn("- Mode: `review`", text)
+        self.assertIn("- Profile: `application`", text)
 
     def test_pending_candidate_blocks_finalization(self) -> None:
         candidates = read_jsonl(self.run_dir / ARTIFACT_PATHS["candidateLedger"])
@@ -104,6 +106,22 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as captured:
             validate_run(self.run_dir)
         self.assertIn("coverage.summary.reviewed", str(captured.exception))
+
+    def test_review_scope_dimensions_must_match_configuration(self) -> None:
+        review_scope = read_json(self.run_dir / ARTIFACT_PATHS["reviewScope"])
+        review_scope["dimensions"] = ["architecture"]
+        write_json(self.run_dir / ARTIFACT_PATHS["reviewScope"], review_scope)
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn("must match configuration focusDimensions", str(captured.exception))
+
+    def test_module_map_file_counts_must_close_against_coverage(self) -> None:
+        module_map = read_json(self.run_dir / ARTIFACT_PATHS["moduleMap"])
+        module_map["modules"][0]["fileCount"] += 1
+        write_json(self.run_dir / ARTIFACT_PATHS["moduleMap"], module_map)
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn("file counts total", str(captured.exception))
 
     def test_source_change_after_preflight_blocks_finalization(self) -> None:
         (self.target / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")

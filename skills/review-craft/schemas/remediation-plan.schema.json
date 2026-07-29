@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "changeClass", "targetScore", "targetEvidenceLevel", "targetArchitecture", "phases"],
   "properties": {
     "documentType": {"const": "review-craft.remediation-plan"},
-    "schemaVersion": {"const": "review-craft.run.v1"},
+    "schemaVersion": {"const": "review-craft.run.v2"},
     "changeClass": {"enum": ["LOCAL_OPTIMIZATION", "MODULE_REFACTOR", "ARCHITECTURE_ADJUSTMENT"]},
     "targetScore": {"type": "integer", "minimum": 0, "maximum": 100},
     "targetEvidenceLevel": {"enum": ["E1", "E2", "E3", "E4"]},

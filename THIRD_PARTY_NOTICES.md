@@ -9,7 +9,7 @@ Review Craft's workflow design was informed by the public Codex Security project
 
 Review Craft independently implements repository inventory, candidate validation,
 coverage accounting, and deterministic report projection for general engineering
-review. Version 0.1.0 does not copy Codex Security's Workbench, MCP application,
+review. Review Craft does not copy Codex Security's Workbench, MCP application,
 TypeScript SDK, deep-scan orchestration, attack-path implementation, or report code.
 
 If future versions incorporate specific upstream source or text, the corresponding
