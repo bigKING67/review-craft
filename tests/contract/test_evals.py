@@ -36,6 +36,36 @@ class EvalContractTests(unittest.TestCase):
         self.assertIn("Exit the fast path", fast_path)
         self.assertIn("`DELETE` or `REWRITE`", fast_path)
         self.assertIn("full compatibility, migration, rollback, and verification gates", fast_path)
+        self.assertNotIn("candidate validation or destructive disposition gates", fast_path)
+        self.assertIn("unresolved validation classification", fast_path)
+
+    def test_skill_keeps_the_fast_dispatcher_within_one_read_window(self) -> None:
+        skill_path = ROOT / "skills/review-craft/SKILL.md"
+        skill = skill_path.read_text(encoding="utf-8")
+        standard = skill.split("## Standard workflow", 1)[1].split("## Delivery", 1)[0]
+
+        self.assertLessEqual(len(skill.splitlines()), 240)
+        self.assertIn("[workflow.md](references/workflow.md)", standard)
+        self.assertIn("canonical sequence", standard)
+        self.assertNotIn("review_craft.py doctor --json", standard)
+
+    def test_canonical_workflow_reference_retains_runtime_and_completion_contract(self) -> None:
+        workflow = (
+            ROOT / "skills/review-craft/references/workflow.md"
+        ).read_text(encoding="utf-8")
+
+        for command in (
+            "review_craft.py doctor --json",
+            "review_craft.py preflight --target <repository>",
+            "run-evidence --run-dir <run-dir>",
+            "review_craft.py validate --run-dir <run-dir>",
+            "review_craft.py finalize --run-dir <run-dir>",
+        ):
+            self.assertIn(command, workflow)
+        self.assertIn("every file has a final coverage disposition", workflow)
+        self.assertIn("every candidate has a final validation disposition", workflow)
+        self.assertIn("`DELETE` and `REWRITE`", workflow)
+        self.assertIn("deterministically generated, not hand-authored", workflow)
 
     def test_skill_loads_authority_reference_only_on_an_active_boundary(self) -> None:
         skill = (ROOT / "skills/review-craft/SKILL.md").read_text(encoding="utf-8")
