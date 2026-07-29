@@ -1,18 +1,37 @@
 # Golden Results
 
-This directory intentionally contains no claimed host result yet. The executable runner
-stores real and synthetic runs outside the repository by default:
+The executable runner stores real and synthetic runs outside the repository by default:
 
 ```text
 uv run --locked python scripts/run_evals.py run ...
 uv run --locked python scripts/run_evals.py validate --run-dir <run-dir>
 ```
 
-Only copy a run here when `result.json` validates with `goldenEligible: true`. That gate
-requires a complete suite, a clean source tree, and `REAL_HOST` adapter provenance.
-Synthetic contract outputs, partial suites, failed hosts, and unavailable hosts are never
-golden evidence. A content hash detects later artifact or metadata drift; it is not a
-cryptographic identity or authenticity signature.
+Do not copy raw runs into this directory. Export a sanitized snapshot only when both matched
+runs validate with `goldenEligible: true` and both content-bound semantic adjudications are
+complete:
+
+```text
+uv run --locked python scripts/run_evals.py export-golden \
+  --review-craft-run <review-run> \
+  --baseline-run <ordinary-prompt-run> \
+  --review-craft-adjudication <review-adjudication-result.json> \
+  --baseline-adjudication <baseline-adjudication-result.json> \
+  --output <snapshot.json>
+```
+
+The gate requires complete suites, matched host and isolation metadata, clean and stable
+source, `REAL_HOST` adapter provenance, and zero unresolved semantic cases. Synthetic
+contract outputs, partial suites, failed hosts, unavailable hosts, and partial adjudications
+are never Golden evidence. Export is deterministic for identical validated inputs.
+
+Track only `snapshot.json` and a concise local README. The snapshot intentionally excludes
+raw stdout/stderr, prompts, fixture copies, adapter argv, provider base URLs, credentials,
+and absolute paths. Its hashes bind the external evidence but do not make the snapshot a
+self-contained reproduction bundle or an authenticity signature. Repository validation
+checks every tracked snapshot against `eval-golden-snapshot.schema.json` and recomputes its
+canonical content hash.
+
 `REAL_HOST` is a trusted adapter declaration, not remote attestation; only execute and
 publish results from adapters whose implementation and invocation you have reviewed.
 The Codex adapter additionally requires explicit provider provenance and records the
@@ -23,3 +42,7 @@ finding correctness. Do not publish the run's structural recall, precision, or
 false-positive fields as semantic quality claims without a separately validated
 `review-craft.eval-adjudication-result.v1` artifact. Keep unresolved adjudications explicit;
 do not replace `null` semantic metrics with inferred values.
+
+`AGENT_ASSISTED` means the semantic classification was performed with model assistance. It
+must not be described as independent human adjudication. Each result directory documents
+its environment, narrow supported claim, measured cost, and remaining limits.

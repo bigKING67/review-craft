@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-comparison.schema.json",
+  "title": "Matched Review Craft evaluation comparison",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "matched",
+    "comparativeEligible",
+    "reviewCraft",
+    "baseline",
+    "metricDeltaPercentagePoints",
+    "matchedFields",
+    "semantic",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "review-craft.eval-comparison.v1"
+    },
+    "matched": {
+      "const": true
+    },
+    "comparativeEligible": {
+      "type": "boolean"
+    },
+    "reviewCraft": {
+      "$ref": "#/$defs/runSummary"
+    },
+    "baseline": {
+      "$ref": "#/$defs/runSummary"
+    },
+    "metricDeltaPercentagePoints": {
+      "$ref": "#/$defs/structuralDeltas"
+    },
+    "matchedFields": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "semantic": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/semanticComparison"
+        }
+      ]
+    },
+    "contentSha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "percentageDelta": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": -100,
+      "maximum": 100
+    },
+    "percentage": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "nullablePercentage": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 100
+    },
+    "structuralMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalCases",
+        "completedCases",
+        "failedCases",
+        "unavailableCases",
+        "totalDurationMs",
+        "executionCoveragePercent",
+        "candidateRecallPercent",
+        "findingPrecisionPercent",
+        "falsePositiveRatePercent",
+        "locationAccuracyPercent",
+        "evidencePresencePercent",
+        "decisionAccuracyPercent",
+        "rewriteRestraintPercent",
+        "semanticEvidenceValidation"
+      ],
+      "properties": {
+        "totalCases": {"type": "integer", "minimum": 1},
+        "completedCases": {"type": "integer", "minimum": 0},
+        "failedCases": {"type": "integer", "minimum": 0},
+        "unavailableCases": {"type": "integer", "minimum": 0},
+        "totalDurationMs": {"type": "integer", "minimum": 0},
+        "executionCoveragePercent": {"$ref": "#/$defs/percentage"},
+        "candidateRecallPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "findingPrecisionPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "falsePositiveRatePercent": {"$ref": "#/$defs/nullablePercentage"},
+        "locationAccuracyPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "evidencePresencePercent": {"$ref": "#/$defs/nullablePercentage"},
+        "decisionAccuracyPercent": {"$ref": "#/$defs/percentage"},
+        "rewriteRestraintPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "semanticEvidenceValidation": {"const": "NOT_AUTOMATED"}
+      }
+    },
+    "semanticMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalCases",
+        "resolvedCases",
+        "unresolvedCases",
+        "positiveCases",
+        "negativeCases",
+        "seededIssueMatches",
+        "missedSeededIssues",
+        "validFindings",
+        "falsePositiveFindings",
+        "contaminatedNegativeCases",
+        "semanticSeededRecallPercent",
+        "semanticFindingPrecisionPercent",
+        "semanticFalsePositiveRatePercent",
+        "semanticDecisionAccuracyPercent",
+        "semanticEvidenceValidation"
+      ],
+      "properties": {
+        "totalCases": {"type": "integer", "minimum": 1},
+        "resolvedCases": {"type": "integer", "minimum": 0},
+        "unresolvedCases": {"type": "integer", "minimum": 0},
+        "positiveCases": {"type": "integer", "minimum": 0},
+        "negativeCases": {"type": "integer", "minimum": 0},
+        "seededIssueMatches": {"type": "integer", "minimum": 0},
+        "missedSeededIssues": {"type": "integer", "minimum": 0},
+        "validFindings": {"type": "integer", "minimum": 0},
+        "falsePositiveFindings": {"type": "integer", "minimum": 0},
+        "contaminatedNegativeCases": {"type": "integer", "minimum": 0},
+        "semanticSeededRecallPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "semanticFindingPrecisionPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "semanticFalsePositiveRatePercent": {"$ref": "#/$defs/nullablePercentage"},
+        "semanticDecisionAccuracyPercent": {"$ref": "#/$defs/nullablePercentage"},
+        "semanticEvidenceValidation": {
+          "enum": [
+            "ADJUDICATED",
+            "PARTIAL"
+          ]
+        }
+      }
+    },
+    "runSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "contentSha256",
+        "metrics"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "metrics": {
+          "$ref": "#/$defs/structuralMetrics"
+        }
+      }
+    },
+    "structuralDeltas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateRecallPercent",
+        "decisionAccuracyPercent",
+        "evidencePresencePercent",
+        "executionCoveragePercent",
+        "falsePositiveRatePercent",
+        "findingPrecisionPercent",
+        "locationAccuracyPercent",
+        "rewriteRestraintPercent"
+      ],
+      "properties": {
+        "candidateRecallPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "decisionAccuracyPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "evidencePresencePercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "executionCoveragePercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "falsePositiveRatePercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "findingPrecisionPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "locationAccuracyPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "rewriteRestraintPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        }
+      }
+    },
+    "adjudicator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "protocol"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "HUMAN",
+            "AGENT_ASSISTED"
+          ]
+        },
+        "protocol": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "semanticRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "runContentSha256",
+        "resultContentSha256",
+        "metrics"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runContentSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "resultContentSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "metrics": {
+          "$ref": "#/$defs/semanticMetrics"
+        }
+      }
+    },
+    "semanticDeltas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semanticDecisionAccuracyPercent",
+        "semanticFalsePositiveRatePercent",
+        "semanticFindingPrecisionPercent",
+        "semanticSeededRecallPercent"
+      ],
+      "properties": {
+        "semanticDecisionAccuracyPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "semanticFalsePositiveRatePercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "semanticFindingPrecisionPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        },
+        "semanticSeededRecallPercent": {
+          "$ref": "#/$defs/percentageDelta"
+        }
+      }
+    },
+    "semanticComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparativeEligible",
+        "adjudicator",
+        "reviewCraft",
+        "baseline",
+        "metricDeltaPercentagePoints"
+      ],
+      "properties": {
+        "comparativeEligible": {
+          "type": "boolean"
+        },
+        "adjudicator": {
+          "$ref": "#/$defs/adjudicator"
+        },
+        "reviewCraft": {
+          "$ref": "#/$defs/semanticRun"
+        },
+        "baseline": {
+          "$ref": "#/$defs/semanticRun"
+        },
+        "metricDeltaPercentagePoints": {
+          "$ref": "#/$defs/semanticDeltas"
+        }
+      }
+    }
+  }
+}

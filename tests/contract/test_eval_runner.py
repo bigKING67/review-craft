@@ -9,6 +9,10 @@ from pathlib import Path
 
 from tests.support import ROOT
 
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import run_evals as eval_runner  # noqa: E402
+
 RUNNER = ROOT / "scripts/run_evals.py"
 FAKE_ADAPTER = ROOT / "tests/fixtures/fake_eval_adapter.py"
 
@@ -111,7 +115,254 @@ class EvalRunnerTests(unittest.TestCase):
             payload = json.loads(compared.stdout)
             self.assertTrue(payload["matched"])
             self.assertFalse(payload["comparativeEligible"])
+            self.assertEqual(payload["schema"], "review-craft.eval-comparison.v1")
+            self.assertIsNone(payload["semantic"])
+            self.assertRegex(payload["contentSha256"], r"^[a-f0-9]{64}$")
             self.assertEqual(payload["metricDeltaPercentagePoints"]["candidateRecallPercent"], 0.0)
+
+    def test_matched_comparison_binds_semantic_adjudications(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            review = self._synthetic_run(root)
+            baseline = self._synthetic_run(root, treatment="ORDINARY_PROMPT")
+            results = {}
+            for label, run_dir in (("review", review), ("baseline", baseline)):
+                adjudication = self._adjudication_payload(run_dir)
+                if label == "baseline":
+                    adjudication["cases"][0]["decisionDisposition"] = "INAPPROPRIATE"
+                input_path = root / f"{label}-adjudication-input.json"
+                result_path = root / f"{label}-adjudication-result.json"
+                input_path.write_text(json.dumps(adjudication), encoding="utf-8")
+                adjudicated = run_eval(
+                    "adjudicate",
+                    "--run-dir",
+                    str(run_dir),
+                    "--adjudication",
+                    str(input_path),
+                    "--output",
+                    str(result_path),
+                )
+                self.assertEqual(adjudicated.returncode, 0, adjudicated.stderr)
+                results[label] = result_path
+
+            output_path = root / "comparison.json"
+            compared = run_eval(
+                "compare",
+                "--review-craft-run",
+                str(review),
+                "--baseline-run",
+                str(baseline),
+                "--review-craft-adjudication",
+                str(results["review"]),
+                "--baseline-adjudication",
+                str(results["baseline"]),
+                "--output",
+                str(output_path),
+            )
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            payload = json.loads(compared.stdout)
+            self.assertEqual(
+                payload["semantic"]["metricDeltaPercentagePoints"][
+                    "semanticDecisionAccuracyPercent"
+                ],
+                50.0,
+            )
+            self.assertEqual(
+                payload["semantic"]["reviewCraft"]["metrics"][
+                    "semanticEvidenceValidation"
+                ],
+                "ADJUDICATED",
+            )
+            self.assertFalse(payload["semantic"]["comparativeEligible"])
+            self.assertEqual(payload, json.loads(output_path.read_text(encoding="utf-8")))
+
+            tampered_result = json.loads(
+                results["review"].read_text(encoding="utf-8")
+            )
+            tampered_result["cases"][0]["rationale"] = "Tampered after adjudication."
+            tampered_path = root / "tampered-adjudication-result.json"
+            tampered_path.write_text(json.dumps(tampered_result), encoding="utf-8")
+            tampered_compare = run_eval(
+                "compare",
+                "--review-craft-run",
+                str(review),
+                "--baseline-run",
+                str(baseline),
+                "--review-craft-adjudication",
+                str(tampered_path),
+                "--baseline-adjudication",
+                str(results["baseline"]),
+            )
+            self.assertEqual(tampered_compare.returncode, 2)
+            self.assertIn("does not match the bound run", tampered_compare.stderr)
+
+            missing_pair = run_eval(
+                "compare",
+                "--review-craft-run",
+                str(review),
+                "--baseline-run",
+                str(baseline),
+                "--review-craft-adjudication",
+                str(results["review"]),
+            )
+            self.assertEqual(missing_pair.returncode, 2)
+            self.assertIn("requires both adjudication results", missing_pair.stderr)
+
+            export = run_eval(
+                "export-golden",
+                "--review-craft-run",
+                str(review),
+                "--baseline-run",
+                str(baseline),
+                "--review-craft-adjudication",
+                str(results["review"]),
+                "--baseline-adjudication",
+                str(results["baseline"]),
+                "--output",
+                str(root / "golden.json"),
+            )
+            self.assertEqual(export.returncode, 2)
+            self.assertIn("comparative-eligible", export.stderr)
+
+            review_payload = json.loads((review / "result.json").read_text(encoding="utf-8"))
+            baseline_payload = json.loads((baseline / "result.json").read_text(encoding="utf-8"))
+            payload["comparativeEligible"] = True
+            payload["contentSha256"] = eval_runner.sha256_json(
+                {key: value for key, value in payload.items() if key != "contentSha256"}
+            )
+            with self.assertRaisesRegex(
+                eval_runner.EvalError,
+                "complete matched semantic adjudications",
+            ):
+                eval_runner.build_golden_snapshot(
+                    payload,
+                    review_payload,
+                    baseline_payload,
+                )
+
+            payload["semantic"]["comparativeEligible"] = True
+            with self.assertRaisesRegex(
+                eval_runner.EvalError,
+                "contentSha256",
+            ):
+                eval_runner.build_golden_snapshot(
+                    payload,
+                    review_payload,
+                    baseline_payload,
+                )
+
+    def test_golden_builder_is_deterministic_and_sanitized(self) -> None:
+        fixture = json.loads(
+            (
+                ROOT
+                / "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        def run_payload(result_key: str) -> dict:
+            result = fixture["results"][result_key]
+            source = fixture["source"]
+            description = {
+                "name": fixture["host"]["name"],
+                "version": fixture["host"]["version"],
+                "model": fixture["host"]["model"],
+                "reasoning": fixture["host"]["reasoning"],
+                "adapterVersion": fixture["host"]["adapterVersion"],
+                "evidenceKind": fixture["host"]["evidenceKind"],
+                "provider": {
+                    **fixture["host"]["provider"],
+                    "baseUrl": "https://provider.invalid/v1",
+                },
+                "isolation": fixture["host"]["isolation"],
+            }
+            return {
+                "runId": result["runId"],
+                "contentSha256": result["contentSha256"],
+                "treatment": result["treatment"],
+                "goldenEligible": result["goldenEligible"],
+                "metrics": result["metrics"],
+                "source": {
+                    **source,
+                    "dirtyFingerprint": "1" * 64,
+                    "completedRevision": source["revision"],
+                    "completedDirty": False,
+                    "completedDirtyFingerprint": "1" * 64,
+                    "completedTreeSha256": source["treeSha256"],
+                },
+                "suite": fixture["suite"],
+                "skill": fixture["skill"],
+                "adapter": {
+                    "description": description,
+                    "command": ["/private/tmp/private-adapter", "--internal-flag"],
+                },
+                "caseTimeoutSeconds": 900,
+            }
+
+        review = run_payload("reviewCraft")
+        baseline = run_payload("baseline")
+        semantic = fixture["semantic"]
+        comparison = {
+            "schema": "review-craft.eval-comparison.v1",
+            "matched": True,
+            "comparativeEligible": True,
+            "reviewCraft": {
+                "runId": review["runId"],
+                "contentSha256": review["contentSha256"],
+                "metrics": review["metrics"],
+            },
+            "baseline": {
+                "runId": baseline["runId"],
+                "contentSha256": baseline["contentSha256"],
+                "metrics": baseline["metrics"],
+            },
+            "metricDeltaPercentagePoints": eval_runner._metric_deltas(
+                review["metrics"], baseline["metrics"]
+            ),
+            "matchedFields": eval_runner._comparison_fields(review),
+            "semantic": {
+                "comparativeEligible": True,
+                "adjudicator": semantic["adjudicator"],
+                "reviewCraft": {
+                    "runId": review["runId"],
+                    "runContentSha256": review["contentSha256"],
+                    "resultContentSha256": semantic["reviewCraft"]["contentSha256"],
+                    "metrics": semantic["reviewCraft"]["metrics"],
+                },
+                "baseline": {
+                    "runId": baseline["runId"],
+                    "runContentSha256": baseline["contentSha256"],
+                    "resultContentSha256": semantic["baseline"]["contentSha256"],
+                    "metrics": semantic["baseline"]["metrics"],
+                },
+                "metricDeltaPercentagePoints": semantic[
+                    "metricDeltaPercentagePoints"
+                ],
+            },
+            "contentSha256": "0" * 64,
+        }
+        comparison["contentSha256"] = eval_runner.sha256_json(
+            {
+                key: value
+                for key, value in comparison.items()
+                if key != "contentSha256"
+            }
+        )
+
+        first = eval_runner.build_golden_snapshot(comparison, review, baseline)
+        second = eval_runner.build_golden_snapshot(comparison, review, baseline)
+        self.assertEqual(first, second)
+        self.assertEqual(eval_runner.validate_golden_snapshot(first), [])
+        rendered = json.dumps(first, ensure_ascii=False, sort_keys=True)
+        self.assertNotIn("baseUrl", rendered)
+        self.assertNotIn("private-adapter", rendered)
+        self.assertNotIn("adapterCommand", rendered)
+
+        with tempfile.TemporaryDirectory() as directory:
+            first_path = Path(directory) / "first.json"
+            second_path = Path(directory) / "second.json"
+            eval_runner.write_json(first_path, first)
+            eval_runner.write_json(second_path, second)
+            self.assertEqual(first_path.read_bytes(), second_path.read_bytes())
 
     def test_semantic_adjudication_is_content_bound_and_revalidates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

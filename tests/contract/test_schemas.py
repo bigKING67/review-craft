@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +52,64 @@ class SchemaTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual(errors, [], f"{artifact}: {errors}")
+
+    def test_tracked_golden_snapshots_are_content_bound_and_sanitized(self) -> None:
+        schema_path = ROOT / "evals/schemas/eval-golden-snapshot.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        snapshots = sorted((ROOT / "evals/golden-results").glob("*/snapshot.json"))
+        self.assertTrue(snapshots)
+        forbidden_keys = {
+            "adaptercommand",
+            "apikey",
+            "baseurl",
+            "credential",
+            "credentials",
+            "password",
+            "prompt",
+            "promptartifact",
+            "prompttemplate",
+            "secret",
+            "stderr",
+            "stdout",
+        }
+        absolute_paths = (
+            re.compile(r"/Users/[A-Za-z0-9._-]+/"),
+            re.compile(r"/home/[A-Za-z0-9._-]+/"),
+            re.compile(r"[A-Za-z]:\\\\Users\\\\[^\\\\]+\\\\"),
+        )
+
+        def keys(value: object) -> set[str]:
+            if isinstance(value, dict):
+                return {
+                    str(key).lower()
+                    for key in value
+                } | set().union(*(keys(child) for child in value.values()))
+            if isinstance(value, list):
+                return set().union(*(keys(child) for child in value))
+            return set()
+
+        for snapshot_path in snapshots:
+            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            errors = list(Draft202012Validator(schema).iter_errors(payload))
+            self.assertEqual(errors, [], f"{snapshot_path}: {errors}")
+            canonical = json.dumps(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "contentSha256"
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            self.assertEqual(payload["contentSha256"], hashlib.sha256(canonical).hexdigest())
+            self.assertEqual(keys(payload) & forbidden_keys, set())
+            rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            self.assertFalse(any(pattern.search(rendered) for pattern in absolute_paths))
+
+            leaked = json.loads(json.dumps(payload))
+            leaked["host"]["provider"]["baseUrl"] = "https://provider.invalid"
+            self.assertTrue(list(Draft202012Validator(schema).iter_errors(leaked)))
 
 
 if __name__ == "__main__":

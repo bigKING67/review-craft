@@ -1,0 +1,159 @@
+{
+  "comparison": {
+    "comparativeEligible": true,
+    "contentSha256": "6fc8c06ee482077ce0a839b38627a6b2356b4c0f1982eeec63194c276f8800ad"
+  },
+  "contentSha256": "4103118a3f8287a8d5be5e15ad60e5b4de711284641e24ac6d76c8abb5573364",
+  "host": {
+    "adapterVersion": "0.2.0",
+    "evidenceKind": "REAL_HOST",
+    "isolation": {
+      "allowCodexHomeExtensions": false,
+      "codexHomeExtensionFileCount": 0,
+      "codexHomeExtensionTreeSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "codexHomeSystemFileCount": 55,
+      "codexHomeSystemTreeSha256": "fb7188c5c5707eb69c42ab83a4a2ce0ae3abe4c9fb638b91229a11d85876bcf9",
+      "ignoreRules": true,
+      "ignoreUserConfig": true
+    },
+    "model": "gpt-5.6-sol",
+    "name": "codex-cli",
+    "provider": {
+      "name": "codex",
+      "requiresOpenAIAuth": true,
+      "supportsWebsockets": true,
+      "wireApi": "responses"
+    },
+    "reasoning": "xhigh",
+    "version": "codex-cli 0.146.0"
+  },
+  "results": {
+    "baseline": {
+      "contentSha256": "f130c2baf543646a1637e983a8f4cbd47959bb09c1727c60c7fe040eb2489877",
+      "goldenEligible": true,
+      "metrics": {
+        "candidateRecallPercent": 100.0,
+        "completedCases": 12,
+        "decisionAccuracyPercent": 75.0,
+        "evidencePresencePercent": 100.0,
+        "executionCoveragePercent": 100.0,
+        "failedCases": 0,
+        "falsePositiveRatePercent": 0.0,
+        "findingPrecisionPercent": 100.0,
+        "locationAccuracyPercent": 100.0,
+        "rewriteRestraintPercent": 100.0,
+        "semanticEvidenceValidation": "NOT_AUTOMATED",
+        "totalCases": 12,
+        "totalDurationMs": 447243,
+        "unavailableCases": 0
+      },
+      "runId": "rce-20260729T140022Z-fcf771f4f7cd",
+      "treatment": "ORDINARY_PROMPT"
+    },
+    "reviewCraft": {
+      "contentSha256": "ce598757ce65fc1680f9285d40a1fda92ecba72bbc581f2f0df97e607f9a51c4",
+      "goldenEligible": true,
+      "metrics": {
+        "candidateRecallPercent": 100.0,
+        "completedCases": 12,
+        "decisionAccuracyPercent": 100.0,
+        "evidencePresencePercent": 100.0,
+        "executionCoveragePercent": 100.0,
+        "failedCases": 0,
+        "falsePositiveRatePercent": 0.0,
+        "findingPrecisionPercent": 100.0,
+        "locationAccuracyPercent": 100.0,
+        "rewriteRestraintPercent": 100.0,
+        "semanticEvidenceValidation": "NOT_AUTOMATED",
+        "totalCases": 12,
+        "totalDurationMs": 927819,
+        "unavailableCases": 0
+      },
+      "runId": "rce-20260729T134436Z-4508e62cd99b",
+      "treatment": "REVIEW_CRAFT"
+    }
+  },
+  "schema": "review-craft.eval-golden-snapshot.v1",
+  "semantic": {
+    "adjudicator": {
+      "kind": "AGENT_ASSISTED",
+      "protocol": "matched-semantic-adjudication-v1"
+    },
+    "baseline": {
+      "contentSha256": "36292a810c75f86c09c94549f502226e4ad5ae7bf888670aac9a3c73f9757e82",
+      "metrics": {
+        "contaminatedNegativeCases": 0,
+        "falsePositiveFindings": 0,
+        "missedSeededIssues": 0,
+        "negativeCases": 6,
+        "positiveCases": 6,
+        "resolvedCases": 12,
+        "seededIssueMatches": 6,
+        "semanticDecisionAccuracyPercent": 75.0,
+        "semanticEvidenceValidation": "ADJUDICATED",
+        "semanticFalsePositiveRatePercent": 0.0,
+        "semanticFindingPrecisionPercent": 100.0,
+        "semanticSeededRecallPercent": 100.0,
+        "totalCases": 12,
+        "unresolvedCases": 0,
+        "validFindings": 6
+      }
+    },
+    "comparativeEligible": true,
+    "metricDeltaPercentagePoints": {
+      "semanticDecisionAccuracyPercent": 25.0,
+      "semanticFalsePositiveRatePercent": 0.0,
+      "semanticFindingPrecisionPercent": 0.0,
+      "semanticSeededRecallPercent": 0.0
+    },
+    "reviewCraft": {
+      "contentSha256": "22356c67f712638615aa5f7352c64d6c9fa1b014f02a38fed69b93242e141881",
+      "metrics": {
+        "contaminatedNegativeCases": 0,
+        "falsePositiveFindings": 0,
+        "missedSeededIssues": 0,
+        "negativeCases": 6,
+        "positiveCases": 6,
+        "resolvedCases": 12,
+        "seededIssueMatches": 6,
+        "semanticDecisionAccuracyPercent": 100.0,
+        "semanticEvidenceValidation": "ADJUDICATED",
+        "semanticFalsePositiveRatePercent": 0.0,
+        "semanticFindingPrecisionPercent": 100.0,
+        "semanticSeededRecallPercent": 100.0,
+        "totalCases": 12,
+        "unresolvedCases": 0,
+        "validFindings": 6
+      }
+    }
+  },
+  "skill": {
+    "treeSha256": "3a6bab58407d4bd6abc26f708656aebd420ec9180f74f3078d8360d08ee30fcb",
+    "version": "0.3.0"
+  },
+  "source": {
+    "dirty": false,
+    "revision": "705dbac96bf8ff3dbd585d330b8cd5bc251c9489",
+    "runnerSha256": "7cb28908639cc28a7e2be62f78c7bbc06c9c4ecfb33ae216365a717923b1c49c",
+    "stableThroughoutRun": true,
+    "treeSha256": "4f96bf85306b85d32a32c8a5b01de9c7973cc7c4765634f1496d499b4996cb58"
+  },
+  "suite": {
+    "fullSuite": true,
+    "selectedCaseIds": [
+      "swallowed-error",
+      "circular-dependency",
+      "unbounded-cache",
+      "n-plus-one",
+      "duplicate-drift",
+      "critical-path-untested",
+      "long-cohesive-file",
+      "semantic-duplication",
+      "compatibility-legacy",
+      "reasonable-monolith",
+      "measured-loop",
+      "self-use-no-enterprise-auth"
+    ],
+    "sha256": "750b66b68453b24f3ba171b8c313e970bd2c69547481cfe6086619f78182f440"
+  }
+}

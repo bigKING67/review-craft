@@ -31,7 +31,8 @@ review workflows. Command receipts have unique sequences and content-bound outpu
 validation rebuilds deterministic repository maps from the bound source, and the
 repository includes an executable, content-bound host evaluation protocol. The target
 source stays read-only; canonical run and eval artifacts are written outside the target
-repository by default.
+repository by default. A sanitized matched real-host Golden snapshot is tracked under
+`evals/golden-results/705dbac-gpt-5.6-sol/`.
 
 The following are intentionally not implemented in 0.3.0: deep multi-pass review,
 automated fixes, fix verification, historical comparison, SARIF, MCP, custom UI,
@@ -221,8 +222,8 @@ matched provenance fields. Credentials remain external and must never be placed 
 adapter argv or run artifacts.
 
 Run the same full suite with `--treatment ORDINARY_PROMPT` and identical host metadata for
-a matched baseline. Version 0.3 does not claim a golden or comparative quality result until
-those real-host artifacts exist and validate.
+a matched baseline. Use `compare` to bind both run hashes and reject mismatched source,
+suite, host, provider, isolation, timeout, or adapter inputs.
 Adapter descriptions are trusted provenance declarations rather than cryptographic
 attestations. The runner binds their metadata and artifacts, records start/completion
 source parity, and rejects Golden eligibility when the source changes during a run, but
@@ -255,6 +256,34 @@ different valid finding, a false positive, a miss, a correct no-finding outcome,
 unresolved case. Evaluation prompts limit each normalized output to one primary candidate
 finding. Unresolved evidence produces partial rather than fabricated semantic precision,
 false-positive, or decision-accuracy metrics.
+
+Create a semantic-aware matched comparison, then export only its sanitized Golden
+projection:
+
+```text
+uv run --locked python scripts/run_evals.py compare \
+  --review-craft-run <review-run> \
+  --baseline-run <ordinary-prompt-run> \
+  --review-craft-adjudication <review-adjudication-result.json> \
+  --baseline-adjudication <baseline-adjudication-result.json> \
+  --output <comparison.json>
+
+uv run --locked python scripts/run_evals.py export-golden \
+  --review-craft-run <review-run> \
+  --baseline-run <ordinary-prompt-run> \
+  --review-craft-adjudication <review-adjudication-result.json> \
+  --baseline-adjudication <baseline-adjudication-result.json> \
+  --output <snapshot.json>
+```
+
+On the tracked 2026-07-29 controlled 12-case fixture suite, Review Craft and the ordinary
+prompt baseline both reached 100% semantic seeded-issue recall, 100% semantic finding
+precision, and 0% clean-negative false-positive rate. Review Craft improved semantic
+decision accuracy from 75% to 100%, while taking 927,819 ms versus 447,243 ms in that single
+matched run. The adjudication was `AGENT_ASSISTED`, not independent human review. This is a
+narrow fixture result, not universal superiority, a stable cost ratio, a native diff-review
+comparison, or a comparison with Codex Security. See
+`evals/golden-results/705dbac-gpt-5.6-sol/README.md` for the exact evidence boundary.
 
 Runtime scale measurements are also explicit and external by default. The normal command
 runs the 1k-file tier; `--full` additionally runs 10k and 100k tiers and can take materially

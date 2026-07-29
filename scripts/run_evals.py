@@ -33,6 +33,8 @@ from eval_contracts import (
     tree_sha256,
     utc_now,
     validate_adjudication_result,
+    validate_comparison_payload,
+    validate_golden_snapshot,
     validate_run,
     write_bytes,
     write_json,
@@ -464,40 +466,12 @@ def _comparison_fields(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def command_compare(args: argparse.Namespace) -> int:
-    review_dir = Path(args.review_craft_run).expanduser().resolve(strict=True)
-    baseline_dir = Path(args.baseline_run).expanduser().resolve(strict=True)
-    validation_errors = {
-        "reviewCraft": validate_run(review_dir),
-        "baseline": validate_run(baseline_dir),
-    }
-    if any(validation_errors.values()):
-        for label, errors in validation_errors.items():
-            for error in errors:
-                print(f"{label}: {error}", file=sys.stderr)
-        return 2
-    review = read_json(review_dir / "result.json")
-    baseline = read_json(baseline_dir / "result.json")
-    if review["treatment"] != "REVIEW_CRAFT":
-        print("review-craft run must use REVIEW_CRAFT treatment", file=sys.stderr)
-        return 2
-    if baseline["treatment"] != "ORDINARY_PROMPT":
-        print("baseline run must use ORDINARY_PROMPT treatment", file=sys.stderr)
-        return 2
-    review_fields = _comparison_fields(review)
-    baseline_fields = _comparison_fields(baseline)
-    mismatches = [
-        field for field in review_fields if review_fields[field] != baseline_fields[field]
-    ]
-    if mismatches:
-        print(
-            "eval runs are not matched: " + ", ".join(mismatches),
-            file=sys.stderr,
-        )
-        return 2
+def _metric_deltas(
+    review_metrics: dict[str, Any], baseline_metrics: dict[str, Any]
+) -> dict[str, float | None]:
     deltas = {}
-    for metric, value in review["metrics"].items():
-        baseline_value = baseline["metrics"].get(metric)
+    for metric, value in review_metrics.items():
+        baseline_value = baseline_metrics.get(metric)
         if not metric.endswith("Percent"):
             continue
         deltas[metric] = (
@@ -506,30 +480,272 @@ def command_compare(args: argparse.Namespace) -> int:
             and isinstance(baseline_value, (int, float))
             else None
         )
-    print(
-        json.dumps(
-            {
-                "matched": True,
-                "comparativeEligible": bool(
-                    review["goldenEligible"] and baseline["goldenEligible"]
-                ),
-                "reviewCraft": {
-                    "runId": review["runId"],
-                    "contentSha256": review["contentSha256"],
-                    "metrics": review["metrics"],
-                },
-                "baseline": {
-                    "runId": baseline["runId"],
-                    "contentSha256": baseline["contentSha256"],
-                    "metrics": baseline["metrics"],
-                },
-                "metricDeltaPercentagePoints": deltas,
-                "matchedFields": review_fields,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
+    return deltas
+
+
+def _validated_adjudication(run_dir: Path, result_path: Path, *, label: str) -> dict[str, Any]:
+    payload = read_json(result_path)
+    errors = validate_adjudication_result(run_dir, payload)
+    if errors:
+        raise EvalError(f"{label} adjudication is invalid: " + "; ".join(errors))
+    return payload
+
+
+def build_comparison_payload(
+    review_dir: Path,
+    baseline_dir: Path,
+    *,
+    review_adjudication_path: Path | None = None,
+    baseline_adjudication_path: Path | None = None,
+) -> dict[str, Any]:
+    validation_errors = {
+        "reviewCraft": validate_run(review_dir),
+        "baseline": validate_run(baseline_dir),
+    }
+    if any(validation_errors.values()):
+        detail = [
+            f"{label}: {error}"
+            for label, errors in validation_errors.items()
+            for error in errors
+        ]
+        raise EvalError("invalid comparison input: " + "; ".join(detail))
+    review = read_json(review_dir / "result.json")
+    baseline = read_json(baseline_dir / "result.json")
+    if review["treatment"] != "REVIEW_CRAFT":
+        raise EvalError("review-craft run must use REVIEW_CRAFT treatment")
+    if baseline["treatment"] != "ORDINARY_PROMPT":
+        raise EvalError("baseline run must use ORDINARY_PROMPT treatment")
+    review_fields = _comparison_fields(review)
+    baseline_fields = _comparison_fields(baseline)
+    mismatches = [
+        field for field in review_fields if review_fields[field] != baseline_fields[field]
+    ]
+    if mismatches:
+        raise EvalError("eval runs are not matched: " + ", ".join(mismatches))
+    if (review_adjudication_path is None) != (baseline_adjudication_path is None):
+        raise EvalError("semantic comparison requires both adjudication results or neither")
+
+    comparative_eligible = bool(review["goldenEligible"] and baseline["goldenEligible"])
+    semantic = None
+    if review_adjudication_path is not None and baseline_adjudication_path is not None:
+        review_adjudication = _validated_adjudication(
+            review_dir, review_adjudication_path, label="Review Craft"
         )
+        baseline_adjudication = _validated_adjudication(
+            baseline_dir, baseline_adjudication_path, label="baseline"
+        )
+        if review_adjudication["adjudicator"] != baseline_adjudication["adjudicator"]:
+            raise EvalError("semantic adjudications must use the same kind and protocol")
+        semantic = {
+            "comparativeEligible": bool(
+                comparative_eligible
+                and review_adjudication["metrics"]["semanticEvidenceValidation"]
+                == "ADJUDICATED"
+                and baseline_adjudication["metrics"]["semanticEvidenceValidation"]
+                == "ADJUDICATED"
+            ),
+            "adjudicator": review_adjudication["adjudicator"],
+            "reviewCraft": {
+                "runId": review_adjudication["run"]["id"],
+                "runContentSha256": review_adjudication["run"]["contentSha256"],
+                "resultContentSha256": review_adjudication["contentSha256"],
+                "metrics": review_adjudication["metrics"],
+            },
+            "baseline": {
+                "runId": baseline_adjudication["run"]["id"],
+                "runContentSha256": baseline_adjudication["run"]["contentSha256"],
+                "resultContentSha256": baseline_adjudication["contentSha256"],
+                "metrics": baseline_adjudication["metrics"],
+            },
+            "metricDeltaPercentagePoints": _metric_deltas(
+                review_adjudication["metrics"], baseline_adjudication["metrics"]
+            ),
+        }
+
+    payload = {
+        "schema": "review-craft.eval-comparison.v1",
+        "matched": True,
+        "comparativeEligible": comparative_eligible,
+        "reviewCraft": {
+            "runId": review["runId"],
+            "contentSha256": review["contentSha256"],
+            "metrics": review["metrics"],
+        },
+        "baseline": {
+            "runId": baseline["runId"],
+            "contentSha256": baseline["contentSha256"],
+            "metrics": baseline["metrics"],
+        },
+        "metricDeltaPercentagePoints": _metric_deltas(
+            review["metrics"], baseline["metrics"]
+        ),
+        "matchedFields": review_fields,
+        "semantic": semantic,
+        "contentSha256": "0" * 64,
+    }
+    payload["contentSha256"] = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
     )
+    errors = validate_comparison_payload(payload)
+    if errors:
+        raise EvalError("generated comparison is invalid: " + "; ".join(errors))
+    return payload
+
+
+def build_golden_snapshot(
+    comparison: dict[str, Any], review: dict[str, Any], baseline: dict[str, Any]
+) -> dict[str, Any]:
+    comparison_errors = validate_comparison_payload(comparison)
+    if comparison_errors:
+        raise EvalError("Golden export comparison is invalid: " + "; ".join(comparison_errors))
+    expected_fields = _comparison_fields(review)
+    if comparison["matchedFields"] != expected_fields or _comparison_fields(
+        baseline
+    ) != expected_fields:
+        raise EvalError("Golden export inputs do not match the bound comparison")
+    for label, summary, run in (
+        ("Review Craft", comparison["reviewCraft"], review),
+        ("baseline", comparison["baseline"], baseline),
+    ):
+        expected_summary = {
+            "runId": run["runId"],
+            "contentSha256": run["contentSha256"],
+            "metrics": run["metrics"],
+        }
+        if summary != expected_summary:
+            raise EvalError(f"Golden export {label} run does not match the comparison")
+    semantic = comparison["semantic"]
+    if not comparison["comparativeEligible"]:
+        raise EvalError("Golden export requires two comparative-eligible full runs")
+    if not isinstance(semantic, dict) or not semantic["comparativeEligible"]:
+        raise EvalError("Golden export requires complete matched semantic adjudications")
+    if (
+        semantic["reviewCraft"]["runId"] != review["runId"]
+        or semantic["reviewCraft"]["runContentSha256"] != review["contentSha256"]
+        or semantic["baseline"]["runId"] != baseline["runId"]
+        or semantic["baseline"]["runContentSha256"] != baseline["contentSha256"]
+    ):
+        raise EvalError("Golden export semantic results do not match their bound runs")
+    description = review["adapter"]["description"]
+    provider = description["provider"]
+    snapshot = {
+        "schema": "review-craft.eval-golden-snapshot.v1",
+        "source": {
+            "revision": review["source"]["revision"],
+            "treeSha256": review["source"]["treeSha256"],
+            "runnerSha256": review["source"]["runnerSha256"],
+            "dirty": review["source"]["dirty"],
+            "stableThroughoutRun": review["source"]["stableThroughoutRun"],
+        },
+        "suite": {
+            "sha256": review["suite"]["sha256"],
+            "selectedCaseIds": review["suite"]["selectedCaseIds"],
+            "fullSuite": review["suite"]["fullSuite"],
+        },
+        "skill": review["skill"],
+        "host": {
+            "name": description["name"],
+            "version": description["version"],
+            "model": description["model"],
+            "reasoning": description["reasoning"],
+            "adapterVersion": description["adapterVersion"],
+            "evidenceKind": description["evidenceKind"],
+            "provider": {
+                "name": provider["name"],
+                "wireApi": provider["wireApi"],
+                "requiresOpenAIAuth": provider["requiresOpenAIAuth"],
+                "supportsWebsockets": provider["supportsWebsockets"],
+            },
+            "isolation": description["isolation"],
+        },
+        "comparison": {
+            "contentSha256": comparison["contentSha256"],
+            "comparativeEligible": comparison["comparativeEligible"],
+        },
+        "results": {
+            "reviewCraft": {
+                "runId": review["runId"],
+                "contentSha256": review["contentSha256"],
+                "treatment": review["treatment"],
+                "goldenEligible": review["goldenEligible"],
+                "metrics": review["metrics"],
+            },
+            "baseline": {
+                "runId": baseline["runId"],
+                "contentSha256": baseline["contentSha256"],
+                "treatment": baseline["treatment"],
+                "goldenEligible": baseline["goldenEligible"],
+                "metrics": baseline["metrics"],
+            },
+        },
+        "semantic": {
+            "adjudicator": semantic["adjudicator"],
+            "comparativeEligible": semantic["comparativeEligible"],
+            "reviewCraft": {
+                "contentSha256": semantic["reviewCraft"]["resultContentSha256"],
+                "metrics": semantic["reviewCraft"]["metrics"],
+            },
+            "baseline": {
+                "contentSha256": semantic["baseline"]["resultContentSha256"],
+                "metrics": semantic["baseline"]["metrics"],
+            },
+            "metricDeltaPercentagePoints": semantic["metricDeltaPercentagePoints"],
+        },
+        "contentSha256": "0" * 64,
+    }
+    snapshot["contentSha256"] = sha256_json(
+        {key: value for key, value in snapshot.items() if key != "contentSha256"}
+    )
+    errors = validate_golden_snapshot(snapshot)
+    if errors:
+        raise EvalError("generated Golden snapshot is invalid: " + "; ".join(errors))
+    return snapshot
+
+
+def _write_and_print(payload: dict[str, Any], output: str | None) -> None:
+    if output:
+        write_json(Path(output).expanduser().resolve(), payload)
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def command_compare(args: argparse.Namespace) -> int:
+    review_dir = Path(args.review_craft_run).expanduser().resolve(strict=True)
+    baseline_dir = Path(args.baseline_run).expanduser().resolve(strict=True)
+    comparison = build_comparison_payload(
+        review_dir,
+        baseline_dir,
+        review_adjudication_path=(
+            Path(args.review_craft_adjudication).expanduser().resolve(strict=True)
+            if args.review_craft_adjudication
+            else None
+        ),
+        baseline_adjudication_path=(
+            Path(args.baseline_adjudication).expanduser().resolve(strict=True)
+            if args.baseline_adjudication
+            else None
+        ),
+    )
+    _write_and_print(comparison, args.output)
+    return 0
+
+
+def command_export_golden(args: argparse.Namespace) -> int:
+    review_dir = Path(args.review_craft_run).expanduser().resolve(strict=True)
+    baseline_dir = Path(args.baseline_run).expanduser().resolve(strict=True)
+    comparison = build_comparison_payload(
+        review_dir,
+        baseline_dir,
+        review_adjudication_path=Path(args.review_craft_adjudication)
+        .expanduser()
+        .resolve(strict=True),
+        baseline_adjudication_path=Path(args.baseline_adjudication)
+        .expanduser()
+        .resolve(strict=True),
+    )
+    review = read_json(review_dir / "result.json")
+    baseline = read_json(baseline_dir / "result.json")
+    snapshot = build_golden_snapshot(comparison, review, baseline)
+    _write_and_print(snapshot, args.output)
     return 0
 
 
@@ -599,7 +815,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare.add_argument("--review-craft-run", required=True)
     compare.add_argument("--baseline-run", required=True)
+    compare.add_argument("--review-craft-adjudication")
+    compare.add_argument("--baseline-adjudication")
+    compare.add_argument("--output")
     compare.set_defaults(handler=command_compare)
+
+    export_golden = subparsers.add_parser(
+        "export-golden",
+        help="Export a sanitized Golden snapshot from matched validated evidence",
+    )
+    export_golden.add_argument("--review-craft-run", required=True)
+    export_golden.add_argument("--baseline-run", required=True)
+    export_golden.add_argument("--review-craft-adjudication", required=True)
+    export_golden.add_argument("--baseline-adjudication", required=True)
+    export_golden.add_argument("--output", required=True)
+    export_golden.set_defaults(handler=command_export_golden)
     return parser
 
 

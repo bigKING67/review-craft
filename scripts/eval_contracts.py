@@ -18,6 +18,8 @@ HOST_OUTPUT_SCHEMA = SCHEMA_ROOT / "eval-host-output.schema.json"
 ADAPTER_SCHEMA = SCHEMA_ROOT / "eval-adapter.schema.json"
 ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-adjudication.schema.json"
 ADJUDICATION_RESULT_SCHEMA = SCHEMA_ROOT / "eval-adjudication-result.schema.json"
+COMPARISON_SCHEMA = SCHEMA_ROOT / "eval-comparison.schema.json"
+GOLDEN_SNAPSHOT_SCHEMA = SCHEMA_ROOT / "eval-golden-snapshot.schema.json"
 IGNORED_TREE_PARTS = {
     ".git",
     ".pytest_cache",
@@ -422,6 +424,36 @@ def validate_run(run_dir: Path) -> list[str]:
     if payload["contentSha256"] != expected_content:
         errors.append("contentSha256 does not match result metadata")
     return errors
+
+
+def validate_content_bound_payload(
+    payload: dict[str, Any], schema_path: Path, *, label: str
+) -> list[str]:
+    errors = [f"{label}:{error}" for error in schema_errors(payload, schema_path)]
+    if errors:
+        return errors
+    expected = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
+    )
+    if payload["contentSha256"] != expected:
+        errors.append(f"{label}:contentSha256 does not match the canonical payload")
+    return errors
+
+
+def validate_comparison_payload(payload: dict[str, Any]) -> list[str]:
+    return validate_content_bound_payload(
+        payload,
+        COMPARISON_SCHEMA,
+        label="comparison",
+    )
+
+
+def validate_golden_snapshot(payload: dict[str, Any]) -> list[str]:
+    return validate_content_bound_payload(
+        payload,
+        GOLDEN_SNAPSHOT_SCHEMA,
+        label="golden snapshot",
+    )
 
 
 def _adjudication_context(

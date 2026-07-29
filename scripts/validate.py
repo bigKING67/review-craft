@@ -50,8 +50,12 @@ REQUIRED_FILES = (
     "evals/schemas/eval-adjudication-result.schema.json",
     "evals/schemas/eval-adjudication.schema.json",
     "evals/schemas/eval-cases.schema.json",
+    "evals/schemas/eval-comparison.schema.json",
+    "evals/schemas/eval-golden-snapshot.schema.json",
     "evals/schemas/eval-host-output.schema.json",
     "evals/schemas/eval-run.schema.json",
+    "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
+    "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
     "scripts/codex_eval_adapter.py",
     "scripts/benchmark_runtime.py",
     "scripts/eval_contracts.py",
@@ -151,6 +155,16 @@ def validate_schemas(errors: list[str]) -> None:
             for error in case_errors:
                 location = ".".join(str(part) for part in error.path) or "<root>"
                 errors.append(f"evals/specs/cases.json:{location}: {error.message}")
+    from eval_contracts import validate_golden_snapshot
+
+    golden_root = ROOT / "evals/golden-results"
+    for snapshot_path in sorted(golden_root.glob("*/snapshot.json")):
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        for error in validate_golden_snapshot(snapshot):
+            errors.append(f"{snapshot_path.relative_to(ROOT)}:{error}")
 
 
 def validate_required_files(errors: list[str]) -> None:
