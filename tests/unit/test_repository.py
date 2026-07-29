@@ -44,7 +44,7 @@ class RepositoryTests(unittest.TestCase):
                 self.skipTest(f"symlink creation unavailable: {error}")
             records, _ = inventory(root)
             self.assertEqual(records[0]["kind"], "symlink")
-            self.assertEqual(records[0]["linkTarget"], str(target))
+            self.assertEqual(records[0]["linkTarget"], os.readlink(root / "link"))
 
     def test_fingerprint_ignores_input_order(self) -> None:
         rows = [
