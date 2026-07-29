@@ -12,4 +12,5 @@ output schema. Set `findingDetected` only when the evidence reaches Review Craft
 finding bar. If more than one issue exists, report only the single most consequential
 finding, and make every evidence claim support that finding. Use `decisions` for the most
 proportionate KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT
-disposition. Use repository-relative locations.
+disposition. When `findingDetected` is false, evidence must still justify the selected
+no-finding disposition. Use repository-relative locations.

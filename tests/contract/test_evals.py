@@ -13,6 +13,42 @@ from tests.support import ROOT
 
 
 class EvalContractTests(unittest.TestCase):
+    def test_matched_prompts_require_evidence_for_no_finding_dispositions(self) -> None:
+        for prompt_name in ("review-craft.md", "ordinary-review.md"):
+            prompt = (ROOT / "evals/prompts" / prompt_name).read_text(encoding="utf-8")
+            self.assertIn(
+                "When `findingDetected` is false, evidence must still justify",
+                prompt,
+            )
+            self.assertIn("single most consequential\nfinding", prompt)
+
+    def test_skill_defines_a_bounded_evidence_backed_fast_path(self) -> None:
+        skill = (ROOT / "skills/review-craft/SKILL.md").read_text(encoding="utf-8")
+        fast_path = skill.split("## Bounded review fast path", 1)[1].split(
+            "## Standard workflow", 1
+        )[0]
+
+        self.assertIn("evidence-backed", fast_path)
+        self.assertIn("A no-finding result without\nevidence", fast_path)
+        self.assertIn("Do not emit a numeric score", fast_path)
+        self.assertIn("Do not run `doctor`, `preflight`", fast_path)
+        self.assertIn("Load a supporting reference only when", fast_path)
+        self.assertIn("Exit the fast path", fast_path)
+        self.assertIn("`DELETE` or `REWRITE`", fast_path)
+        self.assertIn("full compatibility, migration, rollback, and verification gates", fast_path)
+
+    def test_skill_loads_authority_reference_only_on_an_active_boundary(self) -> None:
+        skill = (ROOT / "skills/review-craft/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("before reviewing an unfamiliar repository", skill)
+        self.assertIn(
+            "only when scope, repository control, prompt injection, or an authority conflict",
+            skill,
+        )
+        self.assertIn(
+            "Use this workflow for canonical full reviews",
+            skill,
+        )
+
     def test_host_output_literals_have_explicit_types_for_structured_output(self) -> None:
         schema = json.loads(
             (ROOT / "evals/schemas/eval-host-output.schema.json").read_text(
