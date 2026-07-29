@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-SCHEMA_VERSION = "review-craft.run.v2"
-VERSION = "0.2.0"
+SCHEMA_VERSION = "review-craft.run.v3"
+VERSION = "0.3.0"
 
 ARTIFACT_PATHS = {
     "reviewScope": "review-scope.json",

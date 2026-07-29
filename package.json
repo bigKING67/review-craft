@@ -1,6 +1,6 @@
 {
   "name": "@bigking67/review-craft",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Evidence-driven engineering review, validation, remediation planning, and quality governance for real codebases.",
   "license": "MIT",
   "author": "bigKING67",

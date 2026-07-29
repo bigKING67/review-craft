@@ -123,6 +123,14 @@ class ContractTests(unittest.TestCase):
             validate_run(self.run_dir)
         self.assertIn("file counts total", str(captured.exception))
 
+    def test_repository_maps_must_match_deterministic_source_projection(self) -> None:
+        module_map = read_json(self.run_dir / ARTIFACT_PATHS["moduleMap"])
+        module_map["modules"][0]["totalBytes"] += 1
+        write_json(self.run_dir / ARTIFACT_PATHS["moduleMap"], module_map)
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn("does not match the current inventory", str(captured.exception))
+
     def test_source_change_after_preflight_blocks_finalization(self) -> None:
         (self.target / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
         with self.assertRaises(ContractError) as captured:
@@ -153,6 +161,24 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as captured:
             validate_run(self.run_dir)
         self.assertIn("command-receipt.schema.json", str(captured.exception))
+
+    def test_schema_invalid_top_level_artifact_returns_contract_error(self) -> None:
+        write_json(self.run_dir / ARTIFACT_PATHS["reviewScope"], [])
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir, final=False)
+        self.assertIn("review-scope.schema.json", str(captured.exception))
+        self.assertIn("expected a JSON object", str(captured.exception))
+
+    @unittest.skipIf(sys.platform == "win32", "symlink creation is not portable on Windows CI")
+    def test_canonical_artifact_symlink_is_rejected(self) -> None:
+        artifact = self.run_dir / ARTIFACT_PATHS["reviewScope"]
+        outside = Path(self.output_tmp.name) / "outside-review-scope.json"
+        outside.write_bytes(artifact.read_bytes())
+        artifact.unlink()
+        artifact.symlink_to(outside)
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir, final=False)
+        self.assertIn("must not be a symlink", str(captured.exception))
 
     def test_canonical_json_rejects_non_finite_numbers(self) -> None:
         with self.assertRaises(ValueError):

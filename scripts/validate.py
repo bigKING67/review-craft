@@ -20,6 +20,8 @@ REQUIRED_FILES = (
     ".github/workflows/validate.yml",
     ".gitignore",
     "AGENTS.md",
+    "benchmarks/schemas/runtime-result.schema.json",
+    "benchmarks/specs/runtime.json",
     "CONTRIBUTING.md",
     "LICENSE",
     "README.md",
@@ -42,6 +44,16 @@ REQUIRED_FILES = (
     "skills/review-craft/schemas/module-map.schema.json",
     "skills/review-craft/schemas/review-scope.schema.json",
     "skills/review-craft/scripts/review_craft.py",
+    "evals/prompts/ordinary-review.md",
+    "evals/prompts/review-craft.md",
+    "evals/schemas/eval-adapter.schema.json",
+    "evals/schemas/eval-cases.schema.json",
+    "evals/schemas/eval-host-output.schema.json",
+    "evals/schemas/eval-run.schema.json",
+    "scripts/codex_eval_adapter.py",
+    "scripts/benchmark_runtime.py",
+    "scripts/eval_contracts.py",
+    "scripts/run_evals.py",
 )
 
 FORBIDDEN_PARTS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "node_modules"}
@@ -101,8 +113,13 @@ def validate_schemas(errors: list[str]) -> None:
         errors.append("jsonschema is required for schema validation; run `uv sync --group dev`")
         return
     schemas: dict[str, dict] = {}
-    schema_root = ROOT / "skills" / "review-craft" / "schemas"
-    for path in sorted(schema_root.glob("*.schema.json")):
+    schema_roots = (
+        ROOT / "skills" / "review-craft" / "schemas",
+        ROOT / "evals" / "schemas",
+        ROOT / "benchmarks" / "schemas",
+    )
+    schema_paths = sorted(path for root in schema_roots for path in root.glob("*.schema.json"))
+    for path in schema_paths:
         try:
             schema = json.loads(path.read_text(encoding="utf-8"))
             Draft202012Validator.check_schema(schema)
@@ -119,6 +136,19 @@ def validate_schemas(errors: list[str]) -> None:
         for error in schema_errors:
             location = ".".join(str(part) for part in error.path) or "<root>"
             errors.append(f".review-craft.example.json:{location}: {error.message}")
+    cases_path = ROOT / "evals/specs/cases.json"
+    cases_schema_path = ROOT / "evals/schemas/eval-cases.schema.json"
+    if cases_path.exists() and cases_schema_path.exists():
+        cases = json.loads(cases_path.read_text(encoding="utf-8"))
+        schema = schemas.get("eval-cases.schema.json")
+        if schema is not None:
+            case_errors = sorted(
+                Draft202012Validator(schema).iter_errors(cases),
+                key=lambda item: list(item.path),
+            )
+            for error in case_errors:
+                location = ".".join(str(part) for part in error.path) or "<root>"
+                errors.append(f"evals/specs/cases.json:{location}: {error.message}")
 
 
 def validate_required_files(errors: list[str]) -> None:

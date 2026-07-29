@@ -11,6 +11,15 @@ from tests.support import ROOT, create_run, make_target, populate_valid_run, run
 
 
 class SchemaTests(unittest.TestCase):
+    def test_declarative_policy_fields_disclose_their_enforcement_boundary(self) -> None:
+        schema_path = ROOT / "skills/review-craft/schemas/config.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        policy = schema["properties"]["policy"]["properties"]
+        for field in ("allowNetwork", "allowInstall"):
+            description = policy[field].get("description", "")
+            self.assertIn("declarative", description)
+            self.assertIn("does not enforce", description)
+
     def test_final_artifacts_match_public_schemas(self) -> None:
         target_tmp, target = make_target()
         self.addCleanup(target_tmp.cleanup)

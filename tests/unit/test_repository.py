@@ -19,11 +19,39 @@ from review_craft.repository_analysis import (
 
 
 class RepositoryTests(unittest.TestCase):
-    def test_safe_remote_strips_https_userinfo(self) -> None:
-        self.assertEqual(
-            safe_remote("https://user:secret@example.invalid/owner/repo.git"),
-            "https://example.invalid/owner/repo.git",
+    def test_safe_remote_strips_credentials_from_supported_remote_forms(self) -> None:
+        cases = {
+            "https://user:secret@example.invalid/owner/repo.git": (
+                "https://example.invalid/owner/repo.git"
+            ),
+            "ssh://user:secret@example.invalid/owner/repo.git": (
+                "ssh://example.invalid/owner/repo.git"
+            ),
+            "ftp://user:secret@example.invalid/owner/repo.git": (
+                "ftp://example.invalid/owner/repo.git"
+            ),
+            "https://example.invalid/owner/repo.git?access_token=secret#fragment": (
+                "https://example.invalid/owner/repo.git"
+            ),
+            "git@example.invalid:owner/repo.git": "example.invalid:owner/repo.git",
+            "git@example.invalid:owner/repo.git?token=secret#fragment": (
+                "example.invalid:owner/repo.git"
+            ),
+        }
+        for remote, expected in cases.items():
+            with self.subTest(remote=remote):
+                self.assertEqual(safe_remote(remote), expected)
+
+    def test_safe_remote_fails_closed_for_malformed_credential_bearing_values(self) -> None:
+        remotes = (
+            "https:///user:secret@example.invalid/owner/repo.git",
+            "https://user:secret@example.invalid:not-a-port/owner/repo.git",
+            "user:secret@example.invalid/owner/repo.git",
+            "file:///private/repository.git",
         )
+        for remote in remotes:
+            with self.subTest(remote=remote):
+                self.assertIsNone(safe_remote(remote))
 
     def test_inventory_is_sorted_and_excludes_patterns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -76,6 +104,42 @@ class RepositoryTests(unittest.TestCase):
                         "to": "src/b.py",
                         "kind": "python-import",
                         "line": 1,
+                    }
+                ],
+            )
+
+    def test_agent_skill_maps_preserve_runtime_capability_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {
+                "skills/demo/lib/demo/cli.py": "def main():\n    return 0\n",
+                "skills/demo/scripts/tool.py": "from demo.cli import main\n",
+                "skills/demo/schemas/run.schema.json": "{}\n",
+                "skills/demo/references/workflow.md": "# Workflow\n",
+            }
+            for relative, content in paths.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            records, _ = inventory(root)
+            module_map = build_module_map(records)
+            dependency_map = build_dependency_map(root, records)
+            self.assertEqual(
+                {row["id"] for row in module_map["modules"]},
+                {
+                    "skills/demo/lib",
+                    "skills/demo/references",
+                    "skills/demo/schemas",
+                    "skills/demo/scripts",
+                },
+            )
+            self.assertEqual(
+                dependency_map["moduleEdges"],
+                [
+                    {
+                        "from": "skills/demo/scripts",
+                        "to": "skills/demo/lib",
+                        "count": 1,
                     }
                 ],
             )

@@ -4,9 +4,10 @@
   "title": "Evidence command receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "name", "argv", "cwd", "startedAt", "durationMs", "exitCode", "timedOut", "stdoutArtifact", "stderrArtifact", "beforeStatusSha256", "afterStatusSha256", "repositoryMutationDetected"],
+  "required": ["id", "sequence", "name", "argv", "cwd", "startedAt", "durationMs", "exitCode", "timedOut", "stdoutArtifact", "stderrArtifact", "stdoutSha256", "stderrSha256", "beforeStatusSha256", "afterStatusSha256", "repositoryMutationDetected"],
   "properties": {
     "id": {"type": "string", "pattern": "^[a-f0-9]{16}$"},
+    "sequence": {"type": "integer", "minimum": 0},
     "name": {"type": "string", "minLength": 1},
     "argv": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
     "cwd": {"type": "string", "minLength": 1},
@@ -16,6 +17,8 @@
     "timedOut": {"type": "boolean"},
     "stdoutArtifact": {"type": "string", "minLength": 1},
     "stderrArtifact": {"type": "string", "minLength": 1},
+    "stdoutSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "stderrSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "beforeStatusSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "afterStatusSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "repositoryMutationDetected": {"type": "boolean"}

@@ -27,6 +27,7 @@ from .repository import (
     inventory_for_mode,
     worktree_fingerprint,
 )
+from .repository_analysis import build_dependency_map, build_module_map
 from .schema_validation import validate_instance
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
@@ -80,13 +81,27 @@ def _safe_relative(value: Any) -> bool:
 
 
 def _artifact(run_dir: Path, key: str) -> Path:
-    return run_dir / ARTIFACT_PATHS[key]
+    return _run_file(run_dir, ARTIFACT_PATHS[key])
+
+
+def _run_file(run_dir: Path, relative: str) -> Path:
+    path = run_dir / relative
+    if path.is_symlink():
+        raise ContractError([f"run artifact must not be a symlink: {relative}"])
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(run_dir)
+    except (OSError, ValueError) as error:
+        raise ContractError([f"invalid run artifact {relative}: {error}"]) from error
+    if not resolved.is_file():
+        raise ContractError([f"run artifact must be a file: {relative}"])
+    return resolved
 
 
 def load_run(run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.expanduser().resolve(strict=True)
     result = {
-        "manifest": read_json(run_dir / "review-manifest.json"),
+        "manifest": read_json(_run_file(run_dir, "review-manifest.json")),
         "reviewScope": read_json(_artifact(run_dir, "reviewScope")),
         "qualityModel": read_json(_artifact(run_dir, "qualityModel")),
         "coverage": read_json(_artifact(run_dir, "coverage")),
@@ -98,7 +113,7 @@ def load_run(run_dir: Path) -> dict[str, Any]:
         "scorecard": read_json(_artifact(run_dir, "scorecard")),
         "remediationPlan": read_json(_artifact(run_dir, "remediationPlan")),
         "commands": read_jsonl(_artifact(run_dir, "commands")),
-        "runState": read_json(run_dir / "run-state.json"),
+        "runState": read_json(_run_file(run_dir, "run-state.json")),
     }
     return result
 
@@ -645,13 +660,21 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             f"command-receipt.schema.json[{index}]: {error}"
             for error in validate_instance(receipt, _schema("command-receipt.schema.json"))
         )
+    for name in DOCUMENT_SCHEMAS:
+        _validate_document_header(name, data[name], errors)
+    if any(not isinstance(data[name], dict) for name in DOCUMENT_SCHEMAS):
+        raise ContractError(errors)
     manifest_configuration = data["manifest"].get("configuration")
     errors.extend(
         f"config.schema.json: {error}"
         for error in validate_instance(manifest_configuration, _schema("config.schema.json"))
     )
+    if not isinstance(manifest_configuration, dict):
+        raise ContractError(errors)
     manifest = data["manifest"]
-    target = manifest.get("target", {})
+    target = manifest.get("target")
+    if not isinstance(target, dict):
+        target = {}
     coverage = data["coverage"]
     if manifest.get("configFingerprint") != sha256_json(manifest_configuration):
         errors.append("review-manifest.configFingerprint: does not match configuration")
@@ -665,6 +688,8 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     }
     if target.get("identity") != sha256_json(identity_seed):
         errors.append("review-manifest.target.identity: does not match target fields")
+    rebuilt_module_map: dict[str, Any] | None = None
+    rebuilt_dependency_map: dict[str, Any] | None = None
     run_state = data["runState"]
     if not isinstance(run_state, dict) or not _non_empty(run_state.get("targetRoot")):
         errors.append("run-state.targetRoot: required")
@@ -686,6 +711,8 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
             errors.append(f"run-state.targetRoot: source verification failed: {error}")
         else:
+            rebuilt_module_map = build_module_map(records)
+            rebuilt_dependency_map = build_dependency_map(target_root, records)
             if current_source != target.get("sourceFingerprint"):
                 errors.append("run-state.targetRoot: source fingerprint changed after preflight")
             if manifest_configuration.get("mode") == "diff":
@@ -703,29 +730,65 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             )
             if current_status_fingerprint != run_state.get("statusFingerprint"):
                 errors.append("run-state.targetRoot: Git status changed after preflight")
-    for receipt in data["commands"]:
+    if rebuilt_module_map is not None and data["moduleMap"] != rebuilt_module_map:
+        errors.append("module-map: does not match the current inventory")
+    if rebuilt_dependency_map is not None and data["dependencyMap"] != rebuilt_dependency_map:
+        errors.append("dependency-map: does not match the current source projection")
+    receipt_ids: set[str] = set()
+    receipt_sequences: set[int] = set()
+    receipt_artifacts: set[str] = set()
+    for index, receipt in enumerate(data["commands"]):
         if not isinstance(receipt, dict):
             continue
         command_id = receipt.get("id")
-        for field, suffix in (("stdoutArtifact", "stdout"), ("stderrArtifact", "stderr")):
+        prefix = f"command receipt {command_id if isinstance(command_id, str) else index}"
+        if isinstance(command_id, str):
+            if command_id in receipt_ids:
+                errors.append(f"{prefix}: duplicate id")
+            else:
+                receipt_ids.add(command_id)
+        sequence = receipt.get("sequence")
+        if isinstance(sequence, int) and not isinstance(sequence, bool):
+            if sequence in receipt_sequences:
+                errors.append(f"{prefix}: duplicate sequence")
+            else:
+                receipt_sequences.add(sequence)
+        expected_id = sha256_json(
+            {
+                "name": receipt.get("name"),
+                "argv": receipt.get("argv"),
+                "startedAt": receipt.get("startedAt"),
+                "cwd": receipt.get("cwd"),
+                "sequence": sequence,
+            }
+        )[:16]
+        if command_id != expected_id:
+            errors.append(f"{prefix}: id does not match receipt identity fields")
+        if not isinstance(command_id, str) or re.fullmatch(r"[a-f0-9]{16}", command_id) is None:
+            continue
+        for field, hash_field, suffix in (
+            ("stdoutArtifact", "stdoutSha256", "stdout"),
+            ("stderrArtifact", "stderrSha256", "stderr"),
+        ):
             expected = f"evidence/commands/{command_id}.{suffix}"
             if receipt.get(field) != expected:
-                errors.append(f"command receipt {command_id}: {field} must be {expected}")
-            elif not (run_dir / expected).is_file():
-                errors.append(f"command receipt {command_id}: missing {expected}")
-    for name in (
-        "manifest",
-        "reviewScope",
-        "qualityModel",
-        "coverage",
-        "moduleMap",
-        "dependencyMap",
-        "findings",
-        "decisions",
-        "scorecard",
-        "remediationPlan",
-    ):
-        _validate_document_header(name, data[name], errors)
+                errors.append(f"{prefix}: {field} must be {expected}")
+                continue
+            if expected in receipt_artifacts:
+                errors.append(f"{prefix}: duplicate artifact path {expected}")
+            else:
+                receipt_artifacts.add(expected)
+            try:
+                artifact = _run_file(run_dir, expected)
+            except ContractError as error:
+                errors.extend(f"{prefix}: {message}" for message in error.errors)
+                continue
+            actual_hash = sha256_bytes(artifact.read_bytes())
+            if receipt.get(hash_field) != actual_hash:
+                errors.append(f"{prefix}: {hash_field} does not match {expected}")
+    expected_sequences = set(range(len(data["commands"])))
+    if receipt_sequences != expected_sequences:
+        errors.append("command receipts: sequence values must be contiguous from zero")
     if isinstance(manifest, dict):
         artifacts = manifest.get("artifacts")
         if artifacts != ARTIFACT_PATHS:

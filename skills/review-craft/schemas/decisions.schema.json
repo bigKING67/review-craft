@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "decisions"],
   "properties": {
     "documentType": {"const": "review-craft.decisions"},
-    "schemaVersion": {"const": "review-craft.run.v2"},
+    "schemaVersion": {"const": "review-craft.run.v3"},
     "decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}}
   },
   "$defs": {

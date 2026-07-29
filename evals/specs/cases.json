@@ -8,6 +8,7 @@
       "seededIssue": "A critical persistence failure is caught and converted into apparent success.",
       "expectedDecisions": ["CLEAN_UP", "REPLACE"],
       "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["storage.py"],
       "evidenceRequirement": "Trace the exception path to the successful return."
     },
     {
@@ -17,6 +18,7 @@
       "seededIssue": "Two domain modules import each other and expose partially initialized state.",
       "expectedDecisions": ["MERGE", "REPLACE"],
       "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["accounts.py", "orders.py"],
       "evidenceRequirement": "Show both dependency edges and the runtime initialization consequence."
     },
     {
@@ -26,6 +28,7 @@
       "seededIssue": "User-controlled keys accumulate in a process-global cache without a capacity boundary.",
       "expectedDecisions": ["REPLACE", "MEASURE"],
       "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["cache.py"],
       "evidenceRequirement": "Establish the key source, lifetime, and absence of eviction."
     },
     {
@@ -35,6 +38,7 @@
       "seededIssue": "A per-order lookup repeats I/O that the data source can batch.",
       "expectedDecisions": ["REPLACE", "CLEAN_UP"],
       "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["orders.py"],
       "evidenceRequirement": "Trace one external read per order and name the scale assumption."
     },
     {
@@ -44,6 +48,7 @@
       "seededIssue": "Two pricing implementations share a concept but now apply different rounding and fee rules.",
       "expectedDecisions": ["MERGE", "REPLACE"],
       "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["pricing.py"],
       "evidenceRequirement": "Compare behavior and identify the intended authority before merging."
     },
     {
@@ -53,6 +58,7 @@
       "seededIssue": "Tests cover a formatter while the persisted transfer path has no regression protection.",
       "expectedDecisions": ["DOCUMENT", "CLEAN_UP"],
       "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["transfer.py", "test_transfer.py"],
       "evidenceRequirement": "Map tests to the stated critical path rather than counting test files."
     },
     {
@@ -62,6 +68,7 @@
       "seededIssue": "The parser file is substantially longer than neighboring modules but implements one token-stream state machine with focused behavioral tests.",
       "expectedDecisions": ["KEEP", "CLEAN_UP"],
       "prohibitedDecisions": ["REWRITE"],
+      "expectedLocations": ["parser.py", "test_parser.py"],
       "evidenceRequirement": "Evaluate responsibility and change cost, not line count alone."
     },
     {
@@ -71,6 +78,7 @@
       "seededIssue": "Two similar calculations intentionally implement retail and wholesale contracts.",
       "expectedDecisions": ["KEEP", "DOCUMENT"],
       "prohibitedDecisions": ["MERGE", "REWRITE"],
+      "expectedLocations": ["contracts.py"],
       "evidenceRequirement": "Compare business invariants before treating syntax similarity as duplication."
     },
     {
@@ -80,6 +88,7 @@
       "seededIssue": "A legacy decoder remains required for persisted version-1 records.",
       "expectedDecisions": ["KEEP", "DOCUMENT"],
       "prohibitedDecisions": ["DELETE", "REWRITE"],
+      "expectedLocations": ["records.py", "test_records.py"],
       "evidenceRequirement": "Trace the persisted compatibility contract and migration boundary."
     },
     {
@@ -89,6 +98,7 @@
       "seededIssue": "A small self-contained CLI uses one module and has no scaling need for services.",
       "expectedDecisions": ["KEEP"],
       "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["tool.py"],
       "evidenceRequirement": "Use project scale and deployment goals rather than architecture fashion."
     },
     {
@@ -98,6 +108,7 @@
       "seededIssue": "A visible loop looks expensive but committed benchmark evidence is inside budget.",
       "expectedDecisions": ["KEEP", "MEASURE"],
       "prohibitedDecisions": ["REWRITE"],
+      "expectedLocations": ["sum_values.py", "benchmark.json"],
       "evidenceRequirement": "Use the comparable benchmark and do not infer regression from syntax."
     },
     {
@@ -107,6 +118,7 @@
       "seededIssue": "A local single-user tool intentionally has no multi-tenant RBAC or admin service.",
       "expectedDecisions": ["KEEP", "DOCUMENT"],
       "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["app.py", "ENGINEERING.md"],
       "evidenceRequirement": "Respect the explicit single-user non-goal."
     }
   ]

@@ -16,6 +16,7 @@ sys.path.insert(0, str(RUNTIME_LIB))
 from review_craft.constants import (  # noqa: E402
     ARTIFACT_PATHS,
     REMEDIATION_PHASES,
+    SCHEMA_VERSION,
     SCORE_DIMENSIONS,
 )
 from review_craft.jsonio import read_json, write_json, write_jsonl  # noqa: E402
@@ -165,7 +166,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["findings"],
         {
             "documentType": "review-craft.findings",
-            "schemaVersion": "review-craft.run.v2",
+            "schemaVersion": SCHEMA_VERSION,
             "findings": [finding],
         },
     )
@@ -197,7 +198,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["decisions"],
         {
             "documentType": "review-craft.decisions",
-            "schemaVersion": "review-craft.run.v2",
+            "schemaVersion": SCHEMA_VERSION,
             "decisions": [decision, keep],
         },
     )
@@ -228,7 +229,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["scorecard"],
         {
             "documentType": "review-craft.scorecard",
-            "schemaVersion": "review-craft.run.v2",
+            "schemaVersion": SCHEMA_VERSION,
             "status": "final",
             "evidenceLevel": "E2",
             "confidence": "HIGH",
@@ -266,7 +267,7 @@ def populate_valid_run(run_dir: Path) -> None:
         run_dir / ARTIFACT_PATHS["remediationPlan"],
         {
             "documentType": "review-craft.remediation-plan",
-            "schemaVersion": "review-craft.run.v2",
+            "schemaVersion": SCHEMA_VERSION,
             "changeClass": "LOCAL_OPTIMIZATION",
             "targetScore": 92,
             "targetEvidenceLevel": "E3",

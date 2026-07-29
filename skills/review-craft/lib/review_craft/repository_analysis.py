@@ -13,6 +13,7 @@ from .constants import PROFILES, SCHEMA_VERSION
 MAX_ANALYZED_FILE_BYTES = 2 * 1024 * 1024
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 MODULE_CONTAINERS = {"apps", "packages", "services", "libs", "crates", "plugins", "skills"}
+RUNTIME_CAPABILITY_DIRS = {"agents", "lib", "references", "schemas", "scripts", "templates"}
 ENTRY_POINT_NAMES = {
     "__main__.py",
     "app.py",
@@ -150,6 +151,12 @@ def module_id(path: str) -> str:
     parts = PurePosixPath(path).parts
     if len(parts) <= 1:
         return "."
+    if (
+        len(parts) >= 4
+        and parts[0] in {"plugins", "skills"}
+        and parts[2] in RUNTIME_CAPABILITY_DIRS
+    ):
+        return "/".join(parts[:3])
     if parts[0] in MODULE_CONTAINERS and len(parts) >= 3:
         return "/".join(parts[:2])
     if parts[0] == "src" and len(parts) >= 3:
@@ -185,7 +192,10 @@ def build_module_map(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "documentType": "review-craft.module-map",
         "schemaVersion": SCHEMA_VERSION,
-        "strategy": "repository path boundaries; known container directories use two segments",
+        "strategy": (
+            "repository path boundaries; plugin/skill runtime capability directories use three "
+            "segments and other known container directories use two"
+        ),
         "modules": modules,
     }
 
@@ -215,7 +225,7 @@ def _python_module_candidates(source: str, module: str, level: int) -> list[str]
 def _resolve_python_import(
     source: str, module: str, level: int, files: set[str]
 ) -> str | None:
-    return next(
+    resolved = next(
         (
             candidate
             for candidate in _python_module_candidates(source, module, level)
@@ -223,6 +233,17 @@ def _resolve_python_import(
         ),
         None,
     )
+    if resolved is not None or level or not module:
+        return resolved
+    module_path = module.replace(".", "/")
+    suffixes = (f"/{module_path}.py", f"/{module_path}/__init__.py")
+    matches = sorted(
+        path
+        for path in files
+        if path in {suffix[1:] for suffix in suffixes}
+        or any(path.endswith(suffix) for suffix in suffixes)
+    )
+    return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_js_import(source: str, specifier: str, files: set[str]) -> str | None:
@@ -328,6 +349,8 @@ def build_dependency_map(root: Path, records: list[dict[str, Any]]) -> dict[str,
             "Only current, non-deleted source files in the selected inventory are analyzed; "
             "deleted files are not parsed.",
             "Python imports are parsed with ast and resolved only within that selected inventory.",
+            "Absolute Python imports outside the repository root are resolved only when a unique "
+            "selected-inventory suffix matches.",
             "JavaScript and TypeScript imports use conservative line-based matching.",
             "Runtime, plugin, reflection, generated, and framework-injected edges require "
             "separate evidence.",

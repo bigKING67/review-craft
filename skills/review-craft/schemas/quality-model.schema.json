@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "purpose", "audience", "criticalPaths", "invariants", "nonGoals", "compatibility", "performanceBudgets", "reliabilityRequirements", "authoritySources", "assumptions", "unknowns"],
   "properties": {
     "documentType": {"const": "review-craft.quality-model"},
-    "schemaVersion": {"const": "review-craft.run.v2"},
+    "schemaVersion": {"const": "review-craft.run.v3"},
     "purpose": {"type": "string"},
     "audience": {"type": "string"},
     "criticalPaths": {"$ref": "#/$defs/strings"},

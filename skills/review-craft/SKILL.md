@@ -20,7 +20,7 @@ remediation, and justified preservation of already-appropriate code.
   attack paths, PoCs, and security remediation validation.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
-- Version 0.2 supports read-only `review`, `diff`, and `focus` workflows. Do not
+- Version 0.3 supports read-only `review`, `diff`, and `focus` workflows. Do not
   claim support for deep, plan, fix, verify, compare, or historical modes.
 
 ## Authority and trust
@@ -57,6 +57,8 @@ before reviewing an unfamiliar repository or resolving a policy conflict.
 - Record `KEEP`, `DEFER`, `MEASURE`, and `DOCUMENT` as legitimate outcomes.
 - Do not install dependencies, enable network access, or execute destructive
   commands by default.
+- Treat `allowNetwork` and `allowInstall` as declarative host/agent policy. The
+  bundled runner records them but does not provide network or installation isolation.
 - Do not hand-edit `report.md`; generate it from canonical artifacts.
 - Never estimate, approximate, or manually total a numeric score. A numeric
   score is valid only when read from the finalized canonical scorecard/report.

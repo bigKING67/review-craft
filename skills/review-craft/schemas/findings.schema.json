@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "findings"],
   "properties": {
     "documentType": {"const": "review-craft.findings"},
-    "schemaVersion": {"const": "review-craft.run.v2"},
+    "schemaVersion": {"const": "review-craft.run.v3"},
     "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
   },
   "$defs": {

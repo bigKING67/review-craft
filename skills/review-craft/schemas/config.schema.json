@@ -35,10 +35,22 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "allowNetwork": {"type": "boolean"},
-        "allowInstall": {"type": "boolean"},
-        "allowRepositoryMutation": {"type": "boolean"},
-        "outputOutsideRepository": {"type": "boolean"}
+        "allowNetwork": {
+          "type": "boolean",
+          "description": "A declarative host/agent policy. The Review Craft runtime does not enforce network isolation."
+        },
+        "allowInstall": {
+          "type": "boolean",
+          "description": "A declarative host/agent policy. The Review Craft runtime does not enforce installation isolation."
+        },
+        "allowRepositoryMutation": {
+          "type": "boolean",
+          "description": "Controls the runner response after before/after source fingerprints detect a repository mutation; it does not prevent writes."
+        },
+        "outputOutsideRepository": {
+          "type": "boolean",
+          "description": "Enforced by preflight when resolving the run output directory."
+        }
       }
     },
     "reportLanguage": {"const": "zh-CN"}

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from tests.support import create_run, make_target, run_cli
+from tests.support import RUNTIME_LIB, create_run, make_target, run_cli
+
+sys.path.insert(0, str(RUNTIME_LIB))
+
+from review_craft.evidence import run_evidence_command
+from review_craft.jsonio import read_jsonl
 
 
 class CliTests(unittest.TestCase):
@@ -407,6 +414,111 @@ class CliTests(unittest.TestCase):
             self.assertEqual(evidence.returncode, 0, evidence.stderr)
             receipts = json.loads(evidence.stdout)["commands"]
             self.assertEqual([row["name"] for row in receipts], ["first", "second"])
+
+    def test_repeated_evidence_is_unique_and_output_hashes_are_validated(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "stable": {"argv": [sys.executable, "-c", "print('stable')"]}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            fixed_time = "2026-07-29T07:00:00Z"
+            first_exit, first = run_evidence_command(
+                run_dir, "stable", started_at=fixed_time
+            )
+            second_exit, second = run_evidence_command(
+                run_dir, "stable", started_at=fixed_time
+            )
+            self.assertEqual((first_exit, second_exit), (0, 0))
+            self.assertNotEqual(first["id"], second["id"])
+            self.assertNotEqual(first["stdoutArtifact"], second["stdoutArtifact"])
+            self.assertEqual((first["sequence"], second["sequence"]), (0, 1))
+            for receipt in (first, second):
+                stdout = (run_dir / receipt["stdoutArtifact"]).read_bytes()
+                stderr = (run_dir / receipt["stderrArtifact"]).read_bytes()
+                self.assertEqual(receipt["stdoutSha256"], hashlib.sha256(stdout).hexdigest())
+                self.assertEqual(receipt["stderrSha256"], hashlib.sha256(stderr).hexdigest())
+            receipts = read_jsonl(run_dir / "evidence/commands.jsonl")
+            self.assertEqual(len({row["id"] for row in receipts}), 2)
+
+            (run_dir / first["stdoutArtifact"]).write_text("tampered\n", encoding="utf-8")
+            validated = run_cli(
+                "validate", "--run-dir", str(run_dir), "--allow-draft"
+            )
+            self.assertEqual(validated.returncode, 2)
+            self.assertIn("stdoutSha256 does not match", validated.stderr)
+
+    def test_concurrent_evidence_is_serialized_with_a_preexisting_lock_file(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "stable": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(0.1); print('stable')",
+                            ]
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            (run_dir / ".evidence-command.lock").write_bytes(b"\0")
+            fixed_time = "2026-07-29T07:30:00Z"
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(
+                        run_evidence_command,
+                        run_dir,
+                        "stable",
+                        started_at=fixed_time,
+                    )
+                    for _ in range(2)
+                ]
+                results = [future.result() for future in futures]
+            self.assertEqual([code for code, _ in results], [0, 0])
+            receipts = read_jsonl(run_dir / "evidence/commands.jsonl")
+            self.assertEqual(sorted(row["sequence"] for row in receipts), [0, 1])
+            self.assertEqual(len({row["id"] for row in receipts}), 2)
+            self.assertEqual((run_dir / ".evidence-command.lock").read_bytes(), b"\0")
+            validated = run_cli("validate", "--run-dir", str(run_dir), "--allow-draft")
+            self.assertEqual(validated.returncode, 0, validated.stderr)
 
 
 if __name__ == "__main__":

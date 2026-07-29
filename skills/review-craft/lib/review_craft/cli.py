@@ -371,7 +371,6 @@ def command_run_evidence(args: argparse.Namespace) -> int:
             code, receipt = run_evidence_command(
                 args.run_dir,
                 name,
-                started_at=utc_now(),
             )
             receipts.append(receipt)
             if code != 0 and final_code == 0:
@@ -383,7 +382,6 @@ def command_run_evidence(args: argparse.Namespace) -> int:
     code, receipt = run_evidence_command(
         args.run_dir,
         args.command,
-        started_at=utc_now(),
     )
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
     return code

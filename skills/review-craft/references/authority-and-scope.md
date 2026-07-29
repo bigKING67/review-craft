@@ -50,6 +50,14 @@ surface the mutation without reverting it.
 Do not install dependencies or access the network by default. A configured command
 does not override the host's sandbox or approval policy.
 
+`allowNetwork` and `allowInstall` are declarative host/agent policy fields. The
+runtime records them but does not enforce network or installation isolation.
+`allowRepositoryMutation` changes the runner's response after fingerprint-based
+mutation detection; it does not prevent the command from writing. Preflight directly
+enforces `outputOutsideRepository` when resolving the run directory.
+Evidence commands targeting the same run are serialized with an OS-managed file lock so
+receipt sequence and before/after mutation evidence remain attributable.
+
 ## Evidence conflicts
 
 Resolve conflicts in this order:

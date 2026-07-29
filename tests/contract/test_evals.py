@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import unittest
 
+from jsonschema import Draft202012Validator
+
 from tests.support import ROOT
 
 
@@ -17,7 +19,16 @@ class EvalContractTests(unittest.TestCase):
         for case in cases:
             self.assertTrue((ROOT / case["fixture"]).is_dir(), case["id"])
             self.assertTrue(case["expectedDecisions"], case["id"])
+            self.assertTrue(case["expectedLocations"], case["id"])
             self.assertTrue(case["evidenceRequirement"], case["id"])
+
+    def test_eval_cases_match_the_public_schema(self) -> None:
+        payload = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))
+        schema = json.loads(
+            (ROOT / "evals/schemas/eval-cases.schema.json").read_text(encoding="utf-8")
+        )
+        errors = list(Draft202012Validator(schema).iter_errors(payload))
+        self.assertEqual(errors, [])
 
     def test_negative_suite_contains_rewrite_traps(self) -> None:
         cases = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))[

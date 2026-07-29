@@ -38,12 +38,34 @@ def safe_remote(value: str | None) -> str | None:
     if not value:
         return None
     value = value.strip()
-    if re.match(r"^https?://", value, flags=re.IGNORECASE):
-        split = urlsplit(value)
-        host = split.hostname or ""
-        if split.port:
-            host = f"{host}:{split.port}"
-        return urlunsplit((split.scheme, host, split.path, split.query, split.fragment))
+    if re.match(r"^[a-z][a-z0-9+.-]*://", value, flags=re.IGNORECASE):
+        try:
+            split = urlsplit(value)
+            host = split.hostname or ""
+        except ValueError:
+            # A malformed remote is not safe identity material because userinfo
+            # cannot be separated from the host reliably.
+            return None
+        if not host:
+            return None
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        try:
+            port = split.port
+        except ValueError:
+            return None
+        if port:
+            host = f"{host}:{port}"
+        return urlunsplit((split.scheme, host, split.path, "", ""))
+    scp_like = re.match(
+        r"^[^@/\s]+@(?P<host>\[[^\]]+\]|[^:/\s]+):(?P<path>.+)$",
+        value,
+    )
+    if scp_like:
+        path = re.split(r"[?#]", scp_like.group("path"), maxsplit=1)[0]
+        return f"{scp_like.group('host')}:{path}" if path else None
+    if "@" in value:
+        return None
     return value
 
 

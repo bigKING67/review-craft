@@ -26,11 +26,14 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.2.0` provides read-only repository, Git diff, and focused-dimension
-review workflows. The target source stays read-only; canonical run artifacts are
-written outside the target repository by default.
+Version `0.3.0` provides read-only repository, Git diff, and focused-dimension
+review workflows. Command receipts have unique sequences and content-bound output,
+validation rebuilds deterministic repository maps from the bound source, and the
+repository includes an executable, content-bound host evaluation protocol. The target
+source stays read-only; canonical run and eval artifacts are written outside the target
+repository by default.
 
-The following are intentionally not implemented in 0.2.0: deep multi-pass review,
+The following are intentionally not implemented in 0.3.0: deep multi-pass review,
 automated fixes, fix verification, historical comparison, SARIF, MCP, custom UI,
 and a cloud service.
 
@@ -58,7 +61,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.2.0 does not claim to replace or
+Review Craft complements these tools. Version 0.3.0 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -162,14 +165,22 @@ Copy `skills/review-craft/templates/review-config.json` to
 `.review-craft.json` in a target repository.
 Commands use argv arrays and execute with `shell=false`. A configured command is not
 a security sandbox and does not override host approvals, network policy, or sandboxing.
+The `allowNetwork` and `allowInstall` values are declarative host/agent policies;
+the Python runtime records them but does not enforce network or installation isolation.
+`allowRepositoryMutation` controls the runner response after before/after fingerprints
+detect a change; it does not prevent a configured command from writing. Only
+`outputOutsideRepository` is directly enforced during preflight path resolution.
+Evidence commands targeting the same run are serialized with an OS-managed file lock.
+This preserves receipt sequence and mutation attribution across concurrent callers; it
+does not make configured commands run in parallel.
 
 Repository comments, README files, issues, logs, and fixtures are untrusted analysis
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
 `.review-craft.json` control the workflow.
 
-Version 0.2 creates `review-craft.run.v2` artifacts. Finalized v0.1 reports remain
-historical outputs; restart an unfinished v0.1 run with v0.2 preflight rather than
-mutating its canonical artifacts in place.
+Version 0.3 creates `review-craft.run.v3` artifacts. Finalized v0.1/v0.2 reports
+remain historical outputs; finalize an unfinished old run with its matching runtime
+or restart it with v0.3 preflight. Review Craft never mutates an old run in place.
 
 ## Validate this repository
 
@@ -179,6 +190,34 @@ PYTHONDONTWRITEBYTECODE=1 uv run --locked python -m unittest discover -s tests -
 uv run --locked python scripts/validate.py
 python3 scripts/package_check.py
 python3 scripts/release_gate.py
+```
+
+The eval runner does not invoke a model during CI. Contract tests use a synthetic adapter
+that is permanently ineligible for golden status. A real Codex CLI run is explicit and
+may incur host cost:
+
+```text
+uv run --locked python scripts/run_evals.py run \
+  --treatment REVIEW_CRAFT \
+  --adapter-command python3 scripts/codex_eval_adapter.py \
+  --model <model> --reasoning <reasoning>
+```
+
+Run the same full suite with `--treatment ORDINARY_PROMPT` and identical host metadata for
+a matched baseline. Version 0.3 does not claim a golden or comparative quality result until
+those real-host artifacts exist and validate.
+Adapter descriptions are trusted provenance declarations rather than cryptographic
+attestations. The runner binds their metadata and artifacts, records start/completion
+source parity, and rejects Golden eligibility when the source changes during a run, but
+operators must still review and trust any third-party adapter they execute.
+
+Runtime scale measurements are also explicit and external by default. The normal command
+runs the 1k-file tier; `--full` additionally runs 10k and 100k tiers and can take materially
+longer:
+
+```text
+uv run --locked python scripts/benchmark_runtime.py run
+uv run --locked python scripts/benchmark_runtime.py validate --result <result.json>
 ```
 
 The package gate builds the npm tarball in a temporary directory and rejects tests,
