@@ -136,7 +136,8 @@ Do not edit `report.md` directly. Correct the canonical JSON and rerun finalizat
 
 ## Configuration
 
-Copy `.review-craft.example.json` to `.review-craft.json` in a target repository.
+Copy `skills/review-craft/templates/review-config.json` to
+`.review-craft.json` in a target repository.
 Commands use argv arrays and execute with `shell=false`. A configured command is not
 a security sandbox and does not override host approvals, network policy, or sandboxing.
 

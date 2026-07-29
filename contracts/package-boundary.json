@@ -15,6 +15,8 @@
     "package/skills/review-craft/VERSION",
     "package/skills/review-craft/agents/openai.yaml",
     "package/skills/review-craft/scripts/review_craft.py",
+    "package/skills/review-craft/templates/ENGINEERING.md",
+    "package/skills/review-craft/templates/review-config.json",
     "package/README.md",
     "package/LICENSE",
     "package/THIRD_PARTY_NOTICES.md",
