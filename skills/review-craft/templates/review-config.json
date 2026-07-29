@@ -1,0 +1,16 @@
+{
+  "$schema": "./skills/review-craft/schemas/config.schema.json",
+  "profile": "generic",
+  "scope": ["."],
+  "exclude": [],
+  "generated": [],
+  "vendored": [],
+  "commands": {},
+  "policy": {
+    "allowNetwork": false,
+    "allowInstall": false,
+    "allowRepositoryMutation": false,
+    "outputOutsideRepository": true
+  },
+  "reportLanguage": "zh-CN"
+}

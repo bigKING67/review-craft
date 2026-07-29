@@ -1,0 +1,21 @@
+{
+  "schema": "review-craft.release-policy.v1",
+  "versionFiles": [
+    "VERSION",
+    "skills/review-craft/VERSION",
+    "package.json",
+    ".codex-plugin/plugin.json",
+    "skills/review-craft/lib/review_craft/__init__.py"
+  ],
+  "requiredGates": [
+    "unit-tests",
+    "contract-tests",
+    "adversarial-tests",
+    "schema-validation",
+    "skill-validation",
+    "plugin-validation",
+    "package-boundary",
+    "deterministic-report"
+  ],
+  "automaticPublish": false
+}

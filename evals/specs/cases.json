@@ -1,0 +1,113 @@
+{
+  "schema": "review-craft.eval-cases.v1",
+  "cases": [
+    {
+      "id": "swallowed-error",
+      "class": "positive",
+      "fixture": "evals/fixtures/swallowed-error",
+      "seededIssue": "A critical persistence failure is caught and converted into apparent success.",
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"],
+      "evidenceRequirement": "Trace the exception path to the successful return."
+    },
+    {
+      "id": "circular-dependency",
+      "class": "positive",
+      "fixture": "evals/fixtures/circular-dependency",
+      "seededIssue": "Two domain modules import each other and expose partially initialized state.",
+      "expectedDecisions": ["MERGE", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"],
+      "evidenceRequirement": "Show both dependency edges and the runtime initialization consequence."
+    },
+    {
+      "id": "unbounded-cache",
+      "class": "positive",
+      "fixture": "evals/fixtures/unbounded-cache",
+      "seededIssue": "User-controlled keys accumulate in a process-global cache without a capacity boundary.",
+      "expectedDecisions": ["REPLACE", "MEASURE"],
+      "prohibitedDecisions": ["KEEP"],
+      "evidenceRequirement": "Establish the key source, lifetime, and absence of eviction."
+    },
+    {
+      "id": "n-plus-one",
+      "class": "positive",
+      "fixture": "evals/fixtures/n-plus-one",
+      "seededIssue": "A per-order lookup repeats I/O that the data source can batch.",
+      "expectedDecisions": ["REPLACE", "CLEAN_UP"],
+      "prohibitedDecisions": ["KEEP"],
+      "evidenceRequirement": "Trace one external read per order and name the scale assumption."
+    },
+    {
+      "id": "duplicate-drift",
+      "class": "positive",
+      "fixture": "evals/fixtures/duplicate-drift",
+      "seededIssue": "Two pricing implementations share a concept but now apply different rounding and fee rules.",
+      "expectedDecisions": ["MERGE", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"],
+      "evidenceRequirement": "Compare behavior and identify the intended authority before merging."
+    },
+    {
+      "id": "critical-path-untested",
+      "class": "positive",
+      "fixture": "evals/fixtures/critical-path-untested",
+      "seededIssue": "Tests cover a formatter while the persisted transfer path has no regression protection.",
+      "expectedDecisions": ["DOCUMENT", "CLEAN_UP"],
+      "prohibitedDecisions": ["KEEP"],
+      "evidenceRequirement": "Map tests to the stated critical path rather than counting test files."
+    },
+    {
+      "id": "long-cohesive-file",
+      "class": "negative",
+      "fixture": "evals/fixtures/long-cohesive-file",
+      "seededIssue": "The parser file is substantially longer than neighboring modules but implements one token-stream state machine with focused behavioral tests.",
+      "expectedDecisions": ["KEEP", "CLEAN_UP"],
+      "prohibitedDecisions": ["REWRITE"],
+      "evidenceRequirement": "Evaluate responsibility and change cost, not line count alone."
+    },
+    {
+      "id": "semantic-duplication",
+      "class": "negative",
+      "fixture": "evals/fixtures/semantic-duplication",
+      "seededIssue": "Two similar calculations intentionally implement retail and wholesale contracts.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["MERGE", "REWRITE"],
+      "evidenceRequirement": "Compare business invariants before treating syntax similarity as duplication."
+    },
+    {
+      "id": "compatibility-legacy",
+      "class": "negative",
+      "fixture": "evals/fixtures/compatibility-legacy",
+      "seededIssue": "A legacy decoder remains required for persisted version-1 records.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["DELETE", "REWRITE"],
+      "evidenceRequirement": "Trace the persisted compatibility contract and migration boundary."
+    },
+    {
+      "id": "reasonable-monolith",
+      "class": "negative",
+      "fixture": "evals/fixtures/reasonable-monolith",
+      "seededIssue": "A small self-contained CLI uses one module and has no scaling need for services.",
+      "expectedDecisions": ["KEEP"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "evidenceRequirement": "Use project scale and deployment goals rather than architecture fashion."
+    },
+    {
+      "id": "measured-loop",
+      "class": "negative",
+      "fixture": "evals/fixtures/measured-loop",
+      "seededIssue": "A visible loop looks expensive but committed benchmark evidence is inside budget.",
+      "expectedDecisions": ["KEEP", "MEASURE"],
+      "prohibitedDecisions": ["REWRITE"],
+      "evidenceRequirement": "Use the comparable benchmark and do not infer regression from syntax."
+    },
+    {
+      "id": "self-use-no-enterprise-auth",
+      "class": "negative",
+      "fixture": "evals/fixtures/self-use-no-enterprise-auth",
+      "seededIssue": "A local single-user tool intentionally has no multi-tenant RBAC or admin service.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "evidenceRequirement": "Respect the explicit single-user non-goal."
+    }
+  ]
+}

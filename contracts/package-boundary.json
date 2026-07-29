@@ -1,0 +1,32 @@
+{
+  "schema": "review-craft.package-boundary.v1",
+  "allowedRoots": [
+    ".codex-plugin",
+    "skills/review-craft",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "VERSION",
+    "package.json"
+  ],
+  "requiredPackageFiles": [
+    "package/.codex-plugin/plugin.json",
+    "package/skills/review-craft/SKILL.md",
+    "package/skills/review-craft/VERSION",
+    "package/skills/review-craft/agents/openai.yaml",
+    "package/skills/review-craft/scripts/review_craft.py",
+    "package/README.md",
+    "package/LICENSE",
+    "package/THIRD_PARTY_NOTICES.md",
+    "package/VERSION",
+    "package/package.json"
+  ],
+  "forbiddenSegments": [
+    "__pycache__",
+    ".pyc",
+    ".pyo",
+    "run-state.json",
+    "review-manifest.json",
+    ".codex/config.toml"
+  ]
+}

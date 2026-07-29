@@ -1,0 +1,9 @@
+{
+  "source": "synthetic fixture benchmark",
+  "inputSize": 100000,
+  "budgetMs": 10,
+  "p50Ms": 2.4,
+  "p95Ms": 2.9,
+  "runner": "fixture-only",
+  "comparable": true
+}

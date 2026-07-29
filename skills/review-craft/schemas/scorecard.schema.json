@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bigking67.github.io/review-craft/schemas/scorecard.schema.json",
+  "title": "Review scorecard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["documentType", "schemaVersion", "status", "evidenceLevel", "confidence", "coveragePercent", "unresolvedCandidates", "dimensions", "total"],
+  "properties": {
+    "documentType": {"const": "review-craft.scorecard"},
+    "schemaVersion": {"const": "review-craft.run.v1"},
+    "status": {"enum": ["provisional", "final"]},
+    "evidenceLevel": {"enum": ["E0", "E1", "E2", "E3", "E4"]},
+    "confidence": {"enum": ["LOW", "MEDIUM", "MEDIUM_HIGH", "HIGH"]},
+    "coveragePercent": {"type": "number", "minimum": 0, "maximum": 100},
+    "unresolvedCandidates": {"type": "integer", "minimum": 0},
+    "dimensions": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/dimension"}},
+    "total": {"type": "integer", "minimum": 0, "maximum": 100}
+  },
+  "$defs": {
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "maximum", "awarded", "deductions"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "maximum": {"type": "integer", "minimum": 1},
+        "awarded": {"type": "integer", "minimum": 0},
+        "deductions": {"type": "array", "items": {"$ref": "#/$defs/deduction"}}
+      }
+    },
+    "deduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["points", "reason", "evidenceRefs"],
+      "properties": {
+        "points": {"type": "integer", "minimum": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "evidenceRefs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}
