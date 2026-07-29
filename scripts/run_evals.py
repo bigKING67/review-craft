@@ -161,6 +161,8 @@ def _case_record(
                     failure_reason = "normalized output schema failed: " + "; ".join(
                         output_errors
                     )
+                elif len(output["decisions"]) != len(set(output["decisions"])):
+                    failure_reason = "normalized output contains duplicate decisions"
                 else:
                     invalid_ranges = [
                         location
@@ -298,7 +300,7 @@ def command_run(args: argparse.Namespace) -> int:
     )
     source["stableThroughoutRun"] = source_stable(source)
     payload = {
-        "schema": "review-craft.eval-run.v1",
+        "schema": "review-craft.eval-run.v2",
         "runId": run_dir.name,
         "status": overall_status(records),
         "startedAt": started_at,
@@ -401,6 +403,8 @@ def _comparison_fields(payload: dict[str, Any]) -> dict[str, Any]:
         "reasoning": description["reasoning"],
         "adapterVersion": description["adapterVersion"],
         "evidenceKind": description["evidenceKind"],
+        "provider": description["provider"],
+        "isolation": description["isolation"],
         "adapterCommand": payload["adapter"]["command"],
         "caseTimeoutSeconds": payload["caseTimeoutSeconds"],
     }

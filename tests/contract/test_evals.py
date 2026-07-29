@@ -9,6 +9,26 @@ from tests.support import ROOT
 
 
 class EvalContractTests(unittest.TestCase):
+    def test_host_output_literals_have_explicit_types_for_structured_output(self) -> None:
+        schema = json.loads(
+            (ROOT / "evals/schemas/eval-host-output.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        def visit(value: object) -> None:
+            if isinstance(value, dict):
+                self.assertNotIn("uniqueItems", value)
+                if "const" in value or "enum" in value:
+                    self.assertIn("type", value)
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(schema)
+
     def test_eval_suite_has_six_positive_and_six_negative_cases(self) -> None:
         payload = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))
         cases = payload["cases"]

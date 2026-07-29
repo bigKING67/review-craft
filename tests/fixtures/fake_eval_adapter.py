@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--treatment")
     parser.add_argument(
         "--mode",
-        choices=("valid", "invalid", "mutate-source"),
+        choices=("valid", "invalid", "mutate-source", "duplicate-decisions"),
         default="valid",
     )
     return parser.parse_args()
@@ -29,13 +30,29 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v1",
+                    "schema": "review-craft.eval-adapter.v2",
                     "name": "synthetic-contract-adapter",
                     "version": "test-only",
                     "model": "deterministic-fixture",
                     "reasoning": "none",
                     "adapterVersion": "0.1.0",
                     "evidenceKind": "SYNTHETIC_CONTRACT",
+                    "provider": {
+                        "name": "synthetic",
+                        "baseUrl": None,
+                        "wireApi": "responses",
+                        "requiresOpenAIAuth": False,
+                        "supportsWebsockets": False,
+                    },
+                    "isolation": {
+                        "ignoreUserConfig": True,
+                        "ignoreRules": True,
+                        "allowCodexHomeExtensions": False,
+                        "codexHomeSystemFileCount": 0,
+                        "codexHomeSystemTreeSha256": hashlib.sha256(b"[]").hexdigest(),
+                        "codexHomeExtensionFileCount": 0,
+                        "codexHomeExtensionTreeSha256": hashlib.sha256(b"[]").hexdigest(),
+                    },
                 },
                 sort_keys=True,
             )
@@ -78,6 +95,8 @@ def main() -> int:
         }
     else:
         return 3
+    if args.mode == "duplicate-decisions":
+        output["decisions"].append(output["decisions"][0])
     rendered = (
         "{not valid json\n"
         if args.mode == "invalid"

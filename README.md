@@ -203,6 +203,23 @@ uv run --locked python scripts/run_evals.py run \
   --model <model> --reasoning <reasoning>
 ```
 
+The Codex adapter ignores user configuration and rules. For a non-default provider,
+pass credential-free provider metadata explicitly after `--adapter-command`:
+
+```text
+--provider-name <name> \
+--provider-base-url <http-or-https-url> \
+--provider-wire-api responses \
+--provider-requires-openai-auth \
+--provider-supports-websockets
+```
+
+Use an auth-only temporary `CODEX_HOME` for real evaluations. Codex-managed
+`skills/.system/` files are allowed and fingerprinted separately. By default the adapter
+fails closed on other `skills/` or `plugins/`; both system and extension surfaces become
+matched provenance fields. Credentials remain external and must never be placed in
+adapter argv or run artifacts.
+
 Run the same full suite with `--treatment ORDINARY_PROMPT` and identical host metadata for
 a matched baseline. Version 0.3 does not claim a golden or comparative quality result until
 those real-host artifacts exist and validate.

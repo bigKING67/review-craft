@@ -147,6 +147,27 @@ class EvalRunnerTests(unittest.TestCase):
             validated = run_eval("validate", "--run-dir", str(run_dir))
             self.assertEqual(validated.returncode, 0, validated.stderr)
 
+    def test_duplicate_decisions_are_rejected_after_host_schema_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            completed = run_eval(
+                "run",
+                "--output-root",
+                directory,
+                "--case",
+                "swallowed-error",
+                "--adapter-command",
+                sys.executable,
+                str(FAKE_ADAPTER),
+                "--mode",
+                "duplicate-decisions",
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            run_dir = Path(json.loads(completed.stdout)["runDir"])
+            result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            record = result["cases"][0]
+            self.assertEqual(record["status"], "FAILED")
+            self.assertIn("duplicate decisions", record["failureReason"])
+
     def test_source_mutation_is_recorded_and_blocks_golden_eligibility(self) -> None:
         marker = ROOT / ".eval-source-mutation-test"
         marker.unlink(missing_ok=True)

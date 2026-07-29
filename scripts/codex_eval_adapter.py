@@ -2,13 +2,23 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
-ADAPTER_VERSION = "0.1.0"
+ADAPTER_VERSION = "0.2.0"
+PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class AdapterError(RuntimeError):
+    pass
 
 
 def codex_version() -> str:
@@ -23,10 +33,24 @@ def codex_version() -> str:
     return completed.stdout.strip() or completed.stderr.strip() or "unknown"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Codex CLI adapter for Review Craft evals")
     parser.add_argument("--model", required=True)
     parser.add_argument("--reasoning", required=True)
+    parser.add_argument("--provider-name", default="openai")
+    parser.add_argument("--provider-base-url")
+    parser.add_argument("--provider-wire-api", choices=("responses", "chat"), default="responses")
+    parser.add_argument(
+        "--provider-requires-openai-auth",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--provider-supports-websockets",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--allow-codex-home-extensions", action="store_true")
     parser.add_argument("--describe", action="store_true")
     parser.add_argument("--fixture-root")
     parser.add_argument("--skill-root")
@@ -34,22 +58,183 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-schema")
     parser.add_argument("--output-file")
     parser.add_argument("--treatment")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def _canonical_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
+    rows = []
+    for path in paths:
+        content = (
+            os.readlink(path).encode("utf-8", errors="surrogateescape")
+            if path.is_symlink()
+            else path.read_bytes()
+        )
+        rows.append(
+            {
+                "path": path.relative_to(home).as_posix(),
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    return rows
+
+
+def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
+    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    paths = sorted(
+        path
+        for root_name in ("skills", "plugins")
+        for root in [home / root_name]
+        if root.is_dir()
+        for path in root.rglob("*")
+        if path.is_file() or path.is_symlink()
+    )
+    system_paths = [
+        path
+        for path in paths
+        if path.relative_to(home).parts[:2] == ("skills", ".system")
+    ]
+    extension_paths = [path for path in paths if path not in system_paths]
+    if extension_paths and not allow_extensions:
+        raise AdapterError(
+            "CODEX_HOME contains user skills or plugins; "
+            "use an isolated auth-only CODEX_HOME"
+        )
+    system_rows = _fingerprint_rows(system_paths, home=home)
+    extension_rows = _fingerprint_rows(extension_paths, home=home)
+    return {
+        "ignoreUserConfig": True,
+        "ignoreRules": True,
+        "allowCodexHomeExtensions": allow_extensions,
+        "codexHomeSystemFileCount": len(system_rows),
+        "codexHomeSystemTreeSha256": hashlib.sha256(
+            _canonical_bytes(system_rows)
+        ).hexdigest(),
+        "codexHomeExtensionFileCount": len(extension_rows),
+        "codexHomeExtensionTreeSha256": hashlib.sha256(
+            _canonical_bytes(extension_rows)
+        ).hexdigest(),
+    }
+
+
+def provider_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    if PROVIDER_NAME.fullmatch(args.provider_name) is None:
+        raise AdapterError(
+            "provider name must contain only letters, digits, underscores, or hyphens"
+        )
+    base_url = args.provider_base_url
+    if base_url is not None:
+        try:
+            parsed = urlsplit(base_url)
+        except ValueError as error:
+            raise AdapterError("provider base URL is invalid") from error
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise AdapterError(
+                "provider base URL must be credential-free HTTP(S) without query or fragment"
+            )
+        base_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    elif args.provider_name != "openai":
+        raise AdapterError("a non-default provider requires --provider-base-url")
+    return {
+        "name": args.provider_name,
+        "baseUrl": base_url,
+        "wireApi": args.provider_wire_api,
+        "requiresOpenAIAuth": args.provider_requires_openai_auth,
+        "supportsWebsockets": args.provider_supports_websockets,
+    }
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def provider_config_args(provider: dict[str, Any]) -> list[str]:
+    if provider["baseUrl"] is None:
+        return []
+    name = provider["name"]
+    values = {
+        "model_provider": _toml_string(name),
+        f"model_providers.{name}.name": _toml_string(name),
+        f"model_providers.{name}.base_url": _toml_string(provider["baseUrl"]),
+        f"model_providers.{name}.wire_api": _toml_string(provider["wireApi"]),
+        f"model_providers.{name}.requires_openai_auth": str(
+            provider["requiresOpenAIAuth"]
+        ).lower(),
+        f"model_providers.{name}.supports_websockets": str(
+            provider["supportsWebsockets"]
+        ).lower(),
+    }
+    return [item for key, value in values.items() for item in ("--config", f"{key}={value}")]
+
+
+def build_codex_command(
+    *,
+    executable: str,
+    args: argparse.Namespace,
+    fixture_root: Path,
+    skill_root: Path,
+    output_schema: Path,
+    output_file: Path,
+    provider: dict[str, Any],
+) -> list[str]:
+    return [
+        executable,
+        "exec",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--color",
+        "never",
+        "--cd",
+        str(fixture_root),
+        "--add-dir",
+        str(skill_root),
+        "--model",
+        args.model,
+        "--config",
+        f'model_reasoning_effort={_toml_string(args.reasoning)}',
+        *provider_config_args(provider),
+        "--output-schema",
+        str(output_schema),
+        "--output-last-message",
+        str(output_file),
+        "-",
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    provider = provider_metadata(args)
+    isolation = codex_home_extension_state(
+        allow_extensions=args.allow_codex_home_extensions
+    )
     if args.describe:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v1",
+                    "schema": "review-craft.eval-adapter.v2",
                     "name": "codex-cli",
                     "version": codex_version(),
                     "model": args.model,
                     "reasoning": args.reasoning,
                     "adapterVersion": ADAPTER_VERSION,
                     "evidenceKind": "REAL_HOST",
+                    "provider": provider,
+                    "isolation": isolation,
                 },
                 sort_keys=True,
             )
@@ -77,34 +262,22 @@ def main() -> int:
     fixture_root = Path(args.fixture_root).resolve(strict=True)
     skill_root = Path(args.skill_root).resolve(strict=True)
     prompt = Path(args.prompt_file).read_text(encoding="utf-8")
-    command = [
-        executable,
-        "exec",
-        "--ephemeral",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "--color",
-        "never",
-        "--cd",
-        str(fixture_root),
-        "--add-dir",
-        str(skill_root),
-        "--model",
-        args.model,
-        "--config",
-        f'model_reasoning_effort="{args.reasoning}"',
-        "--output-schema",
-        str(Path(args.output_schema).resolve(strict=True)),
-        "--output-last-message",
-        str(Path(args.output_file).resolve()),
-        "-",
-    ]
+    command = build_codex_command(
+        executable=executable,
+        args=args,
+        fixture_root=fixture_root,
+        skill_root=skill_root,
+        output_schema=Path(args.output_schema).resolve(strict=True),
+        output_file=Path(args.output_file).resolve(),
+        provider=provider,
+    )
     completed = subprocess.run(command, input=prompt, text=True)
     return completed.returncode
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (AdapterError, OSError, ValueError) as error:
+        print(f"codex eval adapter: {error}", file=sys.stderr)
+        raise SystemExit(2) from None

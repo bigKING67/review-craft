@@ -10,7 +10,8 @@ human or host-specific validation protocol.
 
 Run `REVIEW_CRAFT` and `ORDINARY_PROMPT` as separate full-suite runs with the same host,
 version, model, reasoning profile, revision, case timeout, and case selection. Do not call
-the result matched if any of those fields differ. `CODEX_NATIVE_REVIEW` remains reserved
+the result matched if any of those fields differ. Provider and Codex-home isolation
+metadata must also match; external credentials are never included. `CODEX_NATIVE_REVIEW` remains reserved
 until a diff-aware adapter can provide equivalent target and scope semantics.
 
 Use the deterministic matcher rather than comparing filenames or scores by inspection:

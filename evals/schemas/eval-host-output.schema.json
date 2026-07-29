@@ -15,6 +15,7 @@
   ],
   "properties": {
     "schema": {
+      "type": "string",
       "const": "review-craft.eval-host-output.v1"
     },
     "findingDetected": {
@@ -23,8 +24,8 @@
     "decisions": {
       "type": "array",
       "minItems": 1,
-      "uniqueItems": true,
       "items": {
+        "type": "string",
         "enum": [
           "KEEP",
           "CLEAN_UP",
@@ -65,6 +66,7 @@
       }
     },
     "confidence": {
+      "type": "string",
       "enum": ["LOW", "MEDIUM", "HIGH"]
     },
     "summary": {

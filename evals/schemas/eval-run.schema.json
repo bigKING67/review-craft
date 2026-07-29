@@ -24,7 +24,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "review-craft.eval-run.v1"
+      "const": "review-craft.eval-run.v2"
     },
     "runId": {
       "type": "string",

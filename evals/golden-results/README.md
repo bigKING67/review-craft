@@ -15,3 +15,5 @@ golden evidence. A content hash detects later artifact or metadata drift; it is 
 cryptographic identity or authenticity signature.
 `REAL_HOST` is a trusted adapter declaration, not remote attestation; only execute and
 publish results from adapters whose implementation and invocation you have reviewed.
+The Codex adapter additionally requires explicit provider provenance and records the
+`CODEX_HOME` skill/plugin surface. Use an auth-only isolated home for publishable runs.

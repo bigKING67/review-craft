@@ -11,11 +11,13 @@
     "model",
     "reasoning",
     "adapterVersion",
-    "evidenceKind"
+    "evidenceKind",
+    "provider",
+    "isolation"
   ],
   "properties": {
     "schema": {
-      "const": "review-craft.eval-adapter.v1"
+      "const": "review-craft.eval-adapter.v2"
     },
     "name": {
       "type": "string",
@@ -39,6 +41,52 @@
     },
     "evidenceKind": {
       "enum": ["REAL_HOST", "SYNTHETIC_CONTRACT"]
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "baseUrl",
+        "wireApi",
+        "requiresOpenAIAuth",
+        "supportsWebsockets"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
+        "baseUrl": {"type": ["string", "null"]},
+        "wireApi": {"enum": ["responses", "chat"]},
+        "requiresOpenAIAuth": {"type": "boolean"},
+        "supportsWebsockets": {"type": "boolean"}
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ignoreUserConfig",
+        "ignoreRules",
+        "allowCodexHomeExtensions",
+        "codexHomeSystemFileCount",
+        "codexHomeSystemTreeSha256",
+        "codexHomeExtensionFileCount",
+        "codexHomeExtensionTreeSha256"
+      ],
+      "properties": {
+        "ignoreUserConfig": {"const": true},
+        "ignoreRules": {"const": true},
+        "allowCodexHomeExtensions": {"type": "boolean"},
+        "codexHomeSystemFileCount": {"type": "integer", "minimum": 0},
+        "codexHomeSystemTreeSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "codexHomeExtensionFileCount": {"type": "integer", "minimum": 0},
+        "codexHomeExtensionTreeSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
     }
   }
 }
