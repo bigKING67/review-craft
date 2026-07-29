@@ -17,3 +17,9 @@ cryptographic identity or authenticity signature.
 publish results from adapters whose implementation and invocation you have reviewed.
 The Codex adapter additionally requires explicit provider provenance and records the
 `CODEX_HOME` skill/plugin surface. Use an auth-only isolated home for publishable runs.
+
+`goldenEligible: true` proves execution completeness and provenance gates, not semantic
+finding correctness. Do not publish the run's structural recall, precision, or
+false-positive fields as semantic quality claims without a separately validated
+`review-craft.eval-adjudication-result.v1` artifact. Keep unresolved adjudications explicit;
+do not replace `null` semantic metrics with inferred values.

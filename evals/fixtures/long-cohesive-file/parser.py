@@ -1,5 +1,9 @@
 """Recursive-descent parser for a compact JSON-like token stream."""
 
+import re
+
+NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
+
 
 class ParseError(ValueError):
     pass
@@ -44,9 +48,12 @@ class Parser:
         return self.previous()
 
     def error(self, message):
-        token = self.current()
+        return self.error_at(self.index, message)
+
+    def error_at(self, index, message):
+        token = None if index >= len(self.tokens) else self.tokens[index]
         rendered = "end of input" if token is None else repr(token)
-        return ParseError(f"{message} at token {self.index}: {rendered}")
+        return ParseError(f"{message} at token {index}: {rendered}")
 
     def parse(self):
         if self.at_end():
@@ -78,9 +85,10 @@ class Parser:
         while True:
             if self.current() is None or not self.current().startswith('"'):
                 raise self.error("expected a quoted object key")
+            key_index = self.index
             key = self.parse_string()
             if key in result:
-                raise self.error(f"duplicate object key {key!r}")
+                raise self.error_at(key_index, f"duplicate object key {key!r}")
             self.expect(":", "expected ':' after object key")
             result[key] = self.parse_value()
             if self.match("}"):
@@ -99,7 +107,7 @@ class Parser:
             self.expect(",", "expected ',' between array items")
 
     def parse_string(self):
-        token = self.advance()
+        token = self.current()
         if token is None or len(token) < 2 or not token.endswith('"'):
             raise self.error("unterminated string")
         body = token[1:-1]
@@ -126,13 +134,16 @@ class Parser:
                 raise self.error("unsupported string escape")
             result.append(escapes[body[index]])
             index += 1
+        self.advance()
         return "".join(result)
 
     def looks_like_number(self, token):
         return bool(token) and token[0] in "-0123456789"
 
     def parse_number(self):
-        token = self.advance()
+        token = self.current()
+        if token is None or NUMBER.fullmatch(token) is None:
+            raise self.error("invalid number")
         try:
             if any(marker in token for marker in (".", "e", "E")):
                 value = float(token)
@@ -142,6 +153,7 @@ class Parser:
             raise self.error("invalid number") from error
         if isinstance(value, float) and (value != value or abs(value) == float("inf")):
             raise self.error("non-finite numbers are not supported")
+        self.advance()
         return value
 
     def parse_literal(self):

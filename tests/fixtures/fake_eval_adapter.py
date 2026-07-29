@@ -18,7 +18,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--treatment")
     parser.add_argument(
         "--mode",
-        choices=("valid", "invalid", "mutate-source", "duplicate-decisions"),
+        choices=(
+            "valid",
+            "invalid",
+            "mutate-source",
+            "duplicate-decisions",
+            "negative-finding",
+        ),
         default="valid",
     )
     return parser.parse_args()
@@ -93,8 +99,39 @@ def main() -> int:
             "confidence": "HIGH",
             "summary": "Synthetic negative contract output.",
         }
+    elif (fixture / "tool.py").is_file():
+        output = {
+            "schema": "review-craft.eval-host-output.v1",
+            "findingDetected": False,
+            "decisions": ["KEEP"],
+            "locations": [{"path": "tool.py", "lineStart": 1, "lineEnd": 18}],
+            "evidence": [
+                {
+                    "claim": "The small CLI is cohesive and does not need service boundaries.",
+                    "locations": [{"path": "tool.py", "lineStart": 1, "lineEnd": 18}],
+                }
+            ],
+            "confidence": "HIGH",
+            "summary": "Synthetic clean-negative contract output.",
+        }
     else:
         return 3
+    if args.mode == "negative-finding" and (fixture / "parser.py").is_file():
+        output.update(
+            {
+                "findingDetected": True,
+                "decisions": ["CLEAN_UP"],
+                "evidence": [
+                    {
+                        "claim": "A separate valid issue exists in the negative fixture.",
+                        "locations": [
+                            {"path": "parser.py", "lineStart": 1, "lineEnd": 1}
+                        ],
+                    }
+                ],
+                "summary": "Synthetic contaminated-negative output.",
+            }
+        )
     if args.mode == "duplicate-decisions":
         output["decisions"].append(output["decisions"][0])
     rendered = (

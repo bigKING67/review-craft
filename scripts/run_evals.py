@@ -18,6 +18,8 @@ from eval_contracts import (
     HOST_OUTPUT_SCHEMA,
     SCHEMA_ROOT,
     EvalError,
+    build_adjudication_result,
+    build_adjudication_template,
     file_hash,
     golden_eligible,
     overall_status,
@@ -30,6 +32,7 @@ from eval_contracts import (
     source_stable,
     tree_sha256,
     utc_now,
+    validate_adjudication_result,
     validate_run,
     write_bytes,
     write_json,
@@ -380,6 +383,57 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_adjudicate(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
+    adjudication_path = Path(args.adjudication).expanduser().resolve(strict=True)
+    adjudication = read_json(adjudication_path)
+    result = build_adjudication_result(run_dir, adjudication)
+    if args.output:
+        write_json(Path(args.output).expanduser().resolve(), result)
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def command_prepare_adjudication(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
+    template = build_adjudication_template(
+        run_dir,
+        kind=args.kind,
+        protocol=args.protocol,
+    )
+    if args.output:
+        write_json(Path(args.output).expanduser().resolve(), template)
+    print(json.dumps(template, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def command_validate_adjudication(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
+    result_path = Path(args.result).expanduser().resolve(strict=True)
+    payload = read_json(result_path)
+    errors = validate_adjudication_result(run_dir, payload)
+    if errors:
+        print("review-craft semantic adjudication validation failed:", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "runId": payload["run"]["id"],
+                "semanticEvidenceValidation": payload["metrics"][
+                    "semanticEvidenceValidation"
+                ],
+                "contentSha256": payload["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _comparison_fields(payload: dict[str, Any]) -> dict[str, Any]:
     description = payload["adapter"]["description"]
     return {
@@ -508,6 +562,37 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate a completed eval run")
     validate.add_argument("--run-dir", required=True)
     validate.set_defaults(handler=command_validate)
+
+    prepare_adjudication = subparsers.add_parser(
+        "prepare-adjudication",
+        help="Create an unresolved semantic adjudication template bound to a run",
+    )
+    prepare_adjudication.add_argument("--run-dir", required=True)
+    prepare_adjudication.add_argument(
+        "--kind",
+        choices=("HUMAN", "AGENT_ASSISTED"),
+        required=True,
+    )
+    prepare_adjudication.add_argument("--protocol", required=True)
+    prepare_adjudication.add_argument("--output")
+    prepare_adjudication.set_defaults(handler=command_prepare_adjudication)
+
+    adjudicate = subparsers.add_parser(
+        "adjudicate",
+        help="Create content-bound semantic metrics from explicit case adjudications",
+    )
+    adjudicate.add_argument("--run-dir", required=True)
+    adjudicate.add_argument("--adjudication", required=True)
+    adjudicate.add_argument("--output")
+    adjudicate.set_defaults(handler=command_adjudicate)
+
+    validate_adjudication = subparsers.add_parser(
+        "validate-adjudication",
+        help="Validate a semantic adjudication result against its bound run",
+    )
+    validate_adjudication.add_argument("--run-dir", required=True)
+    validate_adjudication.add_argument("--result", required=True)
+    validate_adjudication.set_defaults(handler=command_validate_adjudication)
 
     compare = subparsers.add_parser(
         "compare", help="Compare matched Review Craft and baseline runs"

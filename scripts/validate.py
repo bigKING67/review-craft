@@ -47,6 +47,8 @@ REQUIRED_FILES = (
     "evals/prompts/ordinary-review.md",
     "evals/prompts/review-craft.md",
     "evals/schemas/eval-adapter.schema.json",
+    "evals/schemas/eval-adjudication-result.schema.json",
+    "evals/schemas/eval-adjudication.schema.json",
     "evals/schemas/eval-cases.schema.json",
     "evals/schemas/eval-host-output.schema.json",
     "evals/schemas/eval-run.schema.json",

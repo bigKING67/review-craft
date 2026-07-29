@@ -16,6 +16,8 @@ SCHEMA_ROOT = ROOT / "evals/schemas"
 RUN_SCHEMA = SCHEMA_ROOT / "eval-run.schema.json"
 HOST_OUTPUT_SCHEMA = SCHEMA_ROOT / "eval-host-output.schema.json"
 ADAPTER_SCHEMA = SCHEMA_ROOT / "eval-adapter.schema.json"
+ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-adjudication.schema.json"
+ADJUDICATION_RESULT_SCHEMA = SCHEMA_ROOT / "eval-adjudication-result.schema.json"
 IGNORED_TREE_PARTS = {
     ".git",
     ".pytest_cache",
@@ -419,4 +421,252 @@ def validate_run(run_dir: Path) -> list[str]:
     )
     if payload["contentSha256"] != expected_content:
         errors.append("contentSha256 does not match result metadata")
+    return errors
+
+
+def _adjudication_context(
+    run_dir: Path,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    run_errors = validate_run(run_dir)
+    if run_errors:
+        raise EvalError("evaluation run is invalid: " + "; ".join(run_errors))
+    run = read_json(run_dir / "result.json")
+    if run["status"] != "COMPLETED":
+        raise EvalError("semantic adjudication requires a completed evaluation run")
+    suite = read_json(safe_artifact(run_dir, run["suite"]["artifact"]))
+    cases_by_id = {case["id"]: case for case in suite["cases"]}
+    outputs = _normalized_outputs(run_dir, run["cases"])
+    return run, cases_by_id, outputs
+
+
+def _validate_adjudication_entry(
+    *,
+    case: dict[str, Any],
+    output: dict[str, Any],
+    entry: dict[str, Any],
+) -> None:
+    outcome = entry["outcome"]
+    finding_detected = output["findingDetected"]
+    if finding_detected:
+        allowed = {
+            "SEEDED_ISSUE_MATCH",
+            "OTHER_VALID_FINDING",
+            "FALSE_POSITIVE",
+            "UNRESOLVED",
+        }
+    else:
+        allowed = {"MISS", "NO_FINDING_CORRECT", "UNRESOLVED"}
+    if outcome not in allowed:
+        raise EvalError(
+            f"case {case['id']}: outcome {outcome} conflicts with findingDetected="
+            f"{str(finding_detected).lower()}"
+        )
+    if case["class"] == "positive" and outcome == "NO_FINDING_CORRECT":
+        raise EvalError(f"case {case['id']}: a positive case cannot be NO_FINDING_CORRECT")
+    if case["class"] == "negative" and outcome in {"SEEDED_ISSUE_MATCH", "MISS"}:
+        raise EvalError(f"case {case['id']}: a negative case cannot use outcome {outcome}")
+
+
+def _semantic_metrics(
+    *,
+    entries: list[dict[str, Any]],
+    cases_by_id: dict[str, dict[str, Any]],
+    outputs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    positive = [entry for entry in entries if cases_by_id[entry["id"]]["class"] == "positive"]
+    negative = [entry for entry in entries if cases_by_id[entry["id"]]["class"] == "negative"]
+    unresolved = [
+        entry
+        for entry in entries
+        if entry["outcome"] == "UNRESOLVED"
+        or entry["decisionDisposition"] == "UNRESOLVED"
+    ]
+    seeded_matches = sum(entry["outcome"] == "SEEDED_ISSUE_MATCH" for entry in positive)
+    missed_seeded = sum(
+        entry["outcome"] in {"OTHER_VALID_FINDING", "FALSE_POSITIVE", "MISS"}
+        for entry in positive
+    )
+    valid_findings = sum(
+        entry["outcome"] in {"SEEDED_ISSUE_MATCH", "OTHER_VALID_FINDING"}
+        for entry in entries
+    )
+    false_positive_findings = sum(
+        entry["outcome"] == "FALSE_POSITIVE" for entry in entries
+    )
+    negative_false_positives = sum(
+        entry["outcome"] == "FALSE_POSITIVE" for entry in negative
+    )
+    contaminated_negative = sum(
+        entry["outcome"] == "OTHER_VALID_FINDING" for entry in negative
+    )
+
+    unresolved_positive = any(entry["outcome"] == "UNRESOLVED" for entry in positive)
+    detected = [entry for entry in entries if outputs[entry["id"]]["findingDetected"]]
+    unresolved_detection = any(entry["outcome"] == "UNRESOLVED" for entry in detected)
+    unresolved_negative = any(entry["outcome"] == "UNRESOLVED" for entry in negative)
+    clean_negative_count = len(negative) - contaminated_negative
+    unresolved_decision = any(
+        entry["decisionDisposition"] == "UNRESOLVED" for entry in entries
+    )
+
+    return {
+        "totalCases": len(entries),
+        "resolvedCases": len(entries) - len(unresolved),
+        "unresolvedCases": len(unresolved),
+        "positiveCases": len(positive),
+        "negativeCases": len(negative),
+        "seededIssueMatches": seeded_matches,
+        "missedSeededIssues": missed_seeded,
+        "validFindings": valid_findings,
+        "falsePositiveFindings": false_positive_findings,
+        "contaminatedNegativeCases": contaminated_negative,
+        "semanticSeededRecallPercent": (
+            None if unresolved_positive else _percent(seeded_matches, len(positive))
+        ),
+        "semanticFindingPrecisionPercent": (
+            None if unresolved_detection else _percent(valid_findings, len(detected))
+        ),
+        "semanticFalsePositiveRatePercent": (
+            None
+            if unresolved_negative
+            else _percent(negative_false_positives, clean_negative_count)
+        ),
+        "semanticDecisionAccuracyPercent": (
+            None
+            if unresolved_decision
+            else _percent(
+                sum(entry["decisionDisposition"] == "APPROPRIATE" for entry in entries),
+                len(entries),
+            )
+        ),
+        "semanticEvidenceValidation": "PARTIAL" if unresolved else "ADJUDICATED",
+    }
+
+
+def build_adjudication_template(
+    run_dir: Path,
+    *,
+    kind: str,
+    protocol: str,
+) -> dict[str, Any]:
+    run, _, _ = _adjudication_context(run_dir)
+    template = {
+        "schema": "review-craft.eval-adjudication.v1",
+        "runId": run["runId"],
+        "runContentSha256": run["contentSha256"],
+        "adjudicator": {
+            "kind": kind,
+            "protocol": protocol,
+        },
+        "cases": [
+            {
+                "id": record["id"],
+                "normalizedOutputSha256": record["normalizedOutputSha256"],
+                "outcome": "UNRESOLVED",
+                "decisionDisposition": "UNRESOLVED",
+                "rationale": "Pending semantic adjudication.",
+            }
+            for record in run["cases"]
+        ],
+    }
+    errors = schema_errors(template, ADJUDICATION_SCHEMA)
+    if errors:
+        raise EvalError("generated semantic adjudication template is invalid: " + "; ".join(errors))
+    return template
+
+
+def build_adjudication_result(run_dir: Path, adjudication: dict[str, Any]) -> dict[str, Any]:
+    input_errors = schema_errors(adjudication, ADJUDICATION_SCHEMA)
+    if input_errors:
+        raise EvalError("semantic adjudication input is invalid: " + "; ".join(input_errors))
+    run, cases_by_id, outputs = _adjudication_context(run_dir)
+    if adjudication["runId"] != run["runId"]:
+        raise EvalError("semantic adjudication runId does not match the evaluation run")
+    if adjudication["runContentSha256"] != run["contentSha256"]:
+        raise EvalError("semantic adjudication runContentSha256 does not match the evaluation run")
+
+    entries_by_id: dict[str, dict[str, Any]] = {}
+    for entry in adjudication["cases"]:
+        case_id = entry["id"]
+        if case_id in entries_by_id:
+            raise EvalError(f"semantic adjudication contains duplicate case id: {case_id}")
+        entries_by_id[case_id] = entry
+    selected_ids = [record["id"] for record in run["cases"]]
+    missing = sorted(set(selected_ids) - set(entries_by_id))
+    extra = sorted(set(entries_by_id) - set(selected_ids))
+    if missing or extra:
+        detail = []
+        if missing:
+            detail.append("missing=" + ",".join(missing))
+        if extra:
+            detail.append("extra=" + ",".join(extra))
+        raise EvalError("semantic adjudication case coverage mismatch: " + "; ".join(detail))
+
+    records_by_id = {record["id"]: record for record in run["cases"]}
+    entries = []
+    for case_id in selected_ids:
+        record = records_by_id[case_id]
+        entry = entries_by_id[case_id]
+        if entry["normalizedOutputSha256"] != record["normalizedOutputSha256"]:
+            raise EvalError(f"case {case_id}: normalized output sha256 does not match the run")
+        _validate_adjudication_entry(
+            case=cases_by_id[case_id],
+            output=outputs[case_id],
+            entry=entry,
+        )
+        entries.append(entry)
+
+    normalized_input = {
+        "schema": adjudication["schema"],
+        "runId": adjudication["runId"],
+        "runContentSha256": adjudication["runContentSha256"],
+        "adjudicator": adjudication["adjudicator"],
+        "cases": entries,
+    }
+    result = {
+        "schema": "review-craft.eval-adjudication-result.v1",
+        "run": {
+            "id": run["runId"],
+            "contentSha256": run["contentSha256"],
+            "suiteSha256": run["suite"]["sha256"],
+            "treatment": run["treatment"],
+        },
+        "adjudicator": adjudication["adjudicator"],
+        "inputContentSha256": sha256_json(normalized_input),
+        "cases": entries,
+        "metrics": _semantic_metrics(
+            entries=entries,
+            cases_by_id=cases_by_id,
+            outputs=outputs,
+        ),
+        "contentSha256": "0" * 64,
+    }
+    result["contentSha256"] = sha256_json(
+        {key: value for key, value in result.items() if key != "contentSha256"}
+    )
+    result_errors = schema_errors(result, ADJUDICATION_RESULT_SCHEMA)
+    if result_errors:
+        raise EvalError("generated semantic adjudication is invalid: " + "; ".join(result_errors))
+    return result
+
+
+def validate_adjudication_result(run_dir: Path, payload: dict[str, Any]) -> list[str]:
+    errors = [
+        f"result:{error}" for error in schema_errors(payload, ADJUDICATION_RESULT_SCHEMA)
+    ]
+    if errors:
+        return errors
+    adjudication = {
+        "schema": "review-craft.eval-adjudication.v1",
+        "runId": payload["run"]["id"],
+        "runContentSha256": payload["run"]["contentSha256"],
+        "adjudicator": payload["adjudicator"],
+        "cases": payload["cases"],
+    }
+    try:
+        expected = build_adjudication_result(run_dir, adjudication)
+    except (EvalError, KeyError, TypeError, OSError, json.JSONDecodeError) as error:
+        return [str(error)]
+    if payload != expected:
+        errors.append("semantic adjudication result does not match the bound run and decisions")
     return errors

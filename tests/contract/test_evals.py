@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import runpy
+import subprocess
+import sys
 import unittest
 
 from jsonschema import Draft202012Validator
@@ -64,8 +68,30 @@ class EvalContractTests(unittest.TestCase):
     def test_long_cohesive_fixture_is_a_real_length_trap(self) -> None:
         parser = ROOT / "evals/fixtures/long-cohesive-file/parser.py"
         tests = ROOT / "evals/fixtures/long-cohesive-file/test_parser.py"
+        context = ROOT / "evals/fixtures/long-cohesive-file/ENGINEERING.md"
         self.assertGreaterEqual(len(parser.read_text(encoding="utf-8").splitlines()), 120)
         self.assertGreaterEqual(tests.read_text(encoding="utf-8").count("def test_"), 6)
+        self.assertIn("one cohesive state machine", context.read_text(encoding="utf-8"))
+        completed = subprocess.run(
+            [sys.executable, "-m", "unittest", "test_parser.py"],
+            cwd=parser.parent,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_unbounded_cache_fixture_has_no_composite_key_collision(self) -> None:
+        fixture = ROOT / "evals/fixtures/unbounded-cache"
+        namespace = runpy.run_path(str(fixture / "cache.py"))
+        cache = namespace["_CACHE"]
+        render = namespace["render_for_user"]
+        self.assertEqual(render("a:b", "{user_id}"), "a:b")
+        self.assertEqual(render("a", "b:{user_id}"), "b:a")
+        self.assertEqual(len(cache), 2)
+        context = (fixture / "ENGINEERING.md").read_text(encoding="utf-8")
+        self.assertIn("long-lived shared service", context)
+        self.assertIn("not bounded", context)
 
 
 if __name__ == "__main__":

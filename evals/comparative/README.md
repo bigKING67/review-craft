@@ -2,17 +2,19 @@
 
 Compare Review Craft with an ordinary repository-review prompt and the host's native
 Codex Review only on matched repository, revision, model, reasoning, scope, and output
-constraints. Measure recall, precision, false positives, location accuracy, evidence
-presence, decision quality, rewrite restraint, and runtime from matched, schema-valid
-outputs. The v1 scorer does not claim to automate semantic evidence quality, review
-coverage honesty, remediation completeness, or cost. Those require a separately recorded
-human or host-specific validation protocol.
+constraints. Each normalized case output is limited to one primary candidate finding so
+case-level semantic adjudication remains unambiguous. Measure structural detection, raw
+false positives, location overlap, evidence presence, decision quality, rewrite restraint,
+and runtime from matched, schema-valid outputs. `candidateRecallPercent` means that a
+positive fixture produced a finding; it does not prove that the evidence matches the seeded
+issue. The scorer does not claim to automate semantic evidence quality, review coverage
+honesty, remediation completeness, or cost.
 
 Run `REVIEW_CRAFT` and `ORDINARY_PROMPT` as separate full-suite runs with the same host,
 version, model, reasoning profile, revision, case timeout, and case selection. Do not call
-the result matched if any of those fields differ. Provider and Codex-home isolation
-metadata must also match; external credentials are never included. `CODEX_NATIVE_REVIEW` remains reserved
-until a diff-aware adapter can provide equivalent target and scope semantics.
+the result matched if any of those fields differ. Provider and Codex-home isolation metadata
+must also match; external credentials are never included. `CODEX_NATIVE_REVIEW` remains
+reserved until a diff-aware adapter can provide equivalent target and scope semantics.
 
 Use the deterministic matcher rather than comparing filenames or scores by inspection:
 
@@ -24,6 +26,34 @@ uv run --locked python scripts/run_evals.py compare \
 
 `comparativeEligible` is true only when both input runs independently pass their full-suite,
 clean-source, real-host golden gates.
+
+Before publishing semantic recall, precision, or false-positive claims, create and validate
+a content-bound adjudication for each run:
+
+```text
+uv run --locked python scripts/run_evals.py prepare-adjudication \
+  --run-dir <run-dir> \
+  --kind HUMAN \
+  --protocol <protocol-id> \
+  --output <input.json>
+
+uv run --locked python scripts/run_evals.py adjudicate \
+  --run-dir <run-dir> \
+  --adjudication <input.json> \
+  --output <result.json>
+
+uv run --locked python scripts/run_evals.py validate-adjudication \
+  --run-dir <run-dir> \
+  --result <result.json>
+```
+
+Every adjudicated case binds the run ID, run content hash, and normalized output hash. The
+outcome must be one of `SEEDED_ISSUE_MATCH`, `OTHER_VALID_FINDING`, `FALSE_POSITIVE`, `MISS`,
+`NO_FINDING_CORRECT`, or `UNRESOLVED`. A valid finding in a nominally negative fixture is
+reported as fixture contamination and excluded from the clean-negative FPR denominator.
+An unresolved detected finding keeps semantic precision at `null`; an unresolved negative
+case keeps FPR at `null`. An unresolved decision disposition independently keeps decision
+accuracy at `null` rather than hiding the uncertainty.
 
 Do not compare Review Craft with Codex Security by vulnerability count. Future security
 integration should measure identity, severity, confidence, and provenance preservation,

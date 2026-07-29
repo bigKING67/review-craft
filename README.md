@@ -228,6 +228,34 @@ attestations. The runner binds their metadata and artifacts, records start/compl
 source parity, and rejects Golden eligibility when the source changes during a run, but
 operators must still review and trust any third-party adapter they execute.
 
+The run's recall, precision, false-positive, location, and evidence-presence fields are
+deterministic structural metrics. They do not prove that a finding's evidence matches the
+seeded issue. Bind an explicit human or agent-assisted semantic adjudication to the run and
+every normalized output before publishing semantic quality claims:
+
+```text
+uv run --locked python scripts/run_evals.py prepare-adjudication \
+  --run-dir <run-dir> \
+  --kind HUMAN \
+  --protocol <protocol-id> \
+  --output <eval-adjudication-input.json>
+
+uv run --locked python scripts/run_evals.py adjudicate \
+  --run-dir <run-dir> \
+  --adjudication <eval-adjudication-input.json> \
+  --output <eval-adjudication-result.json>
+
+uv run --locked python scripts/run_evals.py validate-adjudication \
+  --run-dir <run-dir> \
+  --result <eval-adjudication-result.json>
+```
+
+Adjudication does not mutate the original run. It distinguishes a seeded-issue match, a
+different valid finding, a false positive, a miss, a correct no-finding outcome, and an
+unresolved case. Evaluation prompts limit each normalized output to one primary candidate
+finding. Unresolved evidence produces partial rather than fabricated semantic precision,
+false-positive, or decision-accuracy metrics.
+
 Runtime scale measurements are also explicit and external by default. The normal command
 runs the 1k-file tier; `--full` additionally runs 10k and 100k tiers and can take materially
 longer:

@@ -41,6 +41,37 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return Path(json.loads(completed.stdout)["runDir"])
 
+    def _adjudication_payload(
+        self,
+        run_dir: Path,
+        outcomes: dict[str, str] | None = None,
+    ) -> dict:
+        run = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        default_outcomes = {
+            "swallowed-error": "SEEDED_ISSUE_MATCH",
+            "long-cohesive-file": "NO_FINDING_CORRECT",
+        }
+        default_outcomes.update(outcomes or {})
+        return {
+            "schema": "review-craft.eval-adjudication.v1",
+            "runId": run["runId"],
+            "runContentSha256": run["contentSha256"],
+            "adjudicator": {
+                "kind": "AGENT_ASSISTED",
+                "protocol": "test-semantic-v1",
+            },
+            "cases": [
+                {
+                    "id": record["id"],
+                    "normalizedOutputSha256": record["normalizedOutputSha256"],
+                    "outcome": default_outcomes[record["id"]],
+                    "decisionDisposition": "APPROPRIATE",
+                    "rationale": f"Contract adjudication for {record['id']}.",
+                }
+                for record in run["cases"]
+            ],
+        }
+
     def test_synthetic_adapter_exercises_runner_without_claiming_golden_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self._synthetic_run(Path(directory))
@@ -81,6 +112,220 @@ class EvalRunnerTests(unittest.TestCase):
             self.assertTrue(payload["matched"])
             self.assertFalse(payload["comparativeEligible"])
             self.assertEqual(payload["metricDeltaPercentagePoints"]["candidateRecallPercent"], 0.0)
+
+    def test_semantic_adjudication_is_content_bound_and_revalidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = self._synthetic_run(root)
+            template_path = root / "adjudication-template.json"
+            prepared = run_eval(
+                "prepare-adjudication",
+                "--run-dir",
+                str(run_dir),
+                "--kind",
+                "AGENT_ASSISTED",
+                "--protocol",
+                "test-semantic-v1",
+                "--output",
+                str(template_path),
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            template = json.loads(template_path.read_text(encoding="utf-8"))
+            self.assertTrue(all(case["outcome"] == "UNRESOLVED" for case in template["cases"]))
+            self.assertTrue(
+                all(case["normalizedOutputSha256"] != "0" * 64 for case in template["cases"])
+            )
+            adjudication_path = root / "adjudication-input.json"
+            result_path = root / "adjudication-result.json"
+            adjudication = self._adjudication_payload(run_dir)
+            adjudication["cases"].reverse()
+            adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+            completed = run_eval(
+                "adjudicate",
+                "--run-dir",
+                str(run_dir),
+                "--adjudication",
+                str(adjudication_path),
+                "--output",
+                str(result_path),
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [case["id"] for case in result["cases"]],
+                ["swallowed-error", "long-cohesive-file"],
+            )
+            self.assertEqual(result["metrics"]["semanticSeededRecallPercent"], 100.0)
+            self.assertEqual(result["metrics"]["semanticFindingPrecisionPercent"], 100.0)
+            self.assertEqual(result["metrics"]["semanticFalsePositiveRatePercent"], 0.0)
+            self.assertEqual(result["metrics"]["semanticDecisionAccuracyPercent"], 100.0)
+            self.assertEqual(result["metrics"]["semanticEvidenceValidation"], "ADJUDICATED")
+
+            validated = run_eval(
+                "validate-adjudication",
+                "--run-dir",
+                str(run_dir),
+                "--result",
+                str(result_path),
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+            result["cases"][0]["rationale"] = "Tampered rationale."
+            result_path.write_text(json.dumps(result), encoding="utf-8")
+            tampered = run_eval(
+                "validate-adjudication",
+                "--run-dir",
+                str(run_dir),
+                "--result",
+                str(result_path),
+            )
+            self.assertEqual(tampered.returncode, 2)
+            self.assertIn("does not match the bound run", tampered.stderr)
+
+    def test_semantic_adjudication_rejects_output_hash_and_outcome_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = self._synthetic_run(root)
+            adjudication_path = root / "adjudication-input.json"
+            payload = self._adjudication_payload(run_dir)
+            payload["cases"][0]["normalizedOutputSha256"] = "0" * 64
+            adjudication_path.write_text(json.dumps(payload), encoding="utf-8")
+            hash_mismatch = run_eval(
+                "adjudicate",
+                "--run-dir",
+                str(run_dir),
+                "--adjudication",
+                str(adjudication_path),
+            )
+            self.assertEqual(hash_mismatch.returncode, 2)
+            self.assertIn("normalized output sha256 does not match", hash_mismatch.stderr)
+
+            payload = self._adjudication_payload(
+                run_dir,
+                outcomes={"swallowed-error": "NO_FINDING_CORRECT"},
+            )
+            adjudication_path.write_text(json.dumps(payload), encoding="utf-8")
+            outcome_mismatch = run_eval(
+                "adjudicate",
+                "--run-dir",
+                str(run_dir),
+                "--adjudication",
+                str(adjudication_path),
+            )
+            self.assertEqual(outcome_mismatch.returncode, 2)
+            self.assertIn("conflicts with findingDetected=true", outcome_mismatch.stderr)
+
+    def test_semantic_adjudication_excludes_contaminated_negative_from_fpr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            completed = run_eval(
+                "run",
+                "--output-root",
+                str(root),
+                "--case",
+                "long-cohesive-file",
+                "--case",
+                "reasonable-monolith",
+                "--adapter-command",
+                sys.executable,
+                str(FAKE_ADAPTER),
+                "--mode",
+                "negative-finding",
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_dir = Path(json.loads(completed.stdout)["runDir"])
+            adjudication = self._adjudication_payload(
+                run_dir,
+                outcomes={
+                    "long-cohesive-file": "OTHER_VALID_FINDING",
+                    "reasonable-monolith": "NO_FINDING_CORRECT",
+                },
+            )
+            adjudication_path = root / "adjudication-input.json"
+            adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+            adjudicated = run_eval(
+                "adjudicate",
+                "--run-dir",
+                str(run_dir),
+                "--adjudication",
+                str(adjudication_path),
+            )
+            self.assertEqual(adjudicated.returncode, 0, adjudicated.stderr)
+            metrics = json.loads(adjudicated.stdout)["metrics"]
+            self.assertEqual(metrics["contaminatedNegativeCases"], 1)
+            self.assertEqual(metrics["validFindings"], 1)
+            self.assertEqual(metrics["semanticFindingPrecisionPercent"], 100.0)
+            self.assertEqual(metrics["semanticFalsePositiveRatePercent"], 0.0)
+
+    def test_semantic_fpr_does_not_count_false_positives_from_positive_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = self._synthetic_run(root)
+            adjudication = self._adjudication_payload(
+                run_dir,
+                outcomes={"swallowed-error": "FALSE_POSITIVE"},
+            )
+            adjudication["cases"][0]["decisionDisposition"] = "INAPPROPRIATE"
+            adjudication_path = root / "adjudication-input.json"
+            adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+            adjudicated = run_eval(
+                "adjudicate",
+                "--run-dir",
+                str(run_dir),
+                "--adjudication",
+                str(adjudication_path),
+            )
+            self.assertEqual(adjudicated.returncode, 0, adjudicated.stderr)
+            metrics = json.loads(adjudicated.stdout)["metrics"]
+            self.assertEqual(metrics["seededIssueMatches"], 0)
+            self.assertEqual(metrics["missedSeededIssues"], 1)
+            self.assertEqual(metrics["falsePositiveFindings"], 1)
+            self.assertEqual(metrics["semanticSeededRecallPercent"], 0.0)
+            self.assertEqual(metrics["semanticFindingPrecisionPercent"], 0.0)
+            self.assertEqual(metrics["semanticFalsePositiveRatePercent"], 0.0)
+
+    def test_semantic_adjudication_keeps_unresolved_metrics_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = self._synthetic_run(root)
+            adjudication = self._adjudication_payload(
+                run_dir,
+                outcomes={"swallowed-error": "UNRESOLVED"},
+            )
+            adjudication["cases"][0]["decisionDisposition"] = "UNRESOLVED"
+            adjudication_path = root / "adjudication-input.json"
+            adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+            adjudicated = run_eval(
+                "adjudicate",
+                "--run-dir",
+                str(run_dir),
+                "--adjudication",
+                str(adjudication_path),
+            )
+            self.assertEqual(adjudicated.returncode, 0, adjudicated.stderr)
+            metrics = json.loads(adjudicated.stdout)["metrics"]
+            self.assertEqual(metrics["unresolvedCases"], 1)
+            self.assertIsNone(metrics["semanticSeededRecallPercent"])
+            self.assertIsNone(metrics["semanticFindingPrecisionPercent"])
+            self.assertEqual(metrics["semanticFalsePositiveRatePercent"], 0.0)
+            self.assertIsNone(metrics["semanticDecisionAccuracyPercent"])
+            self.assertEqual(metrics["semanticEvidenceValidation"], "PARTIAL")
+
+    def test_prepare_adjudication_rejects_whitespace_only_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = self._synthetic_run(root)
+            prepared = run_eval(
+                "prepare-adjudication",
+                "--run-dir",
+                str(run_dir),
+                "--kind",
+                "HUMAN",
+                "--protocol",
+                "   ",
+            )
+            self.assertEqual(prepared.returncode, 2)
+            self.assertIn("does not match", prepared.stderr)
 
     def test_single_class_selection_uses_null_for_undefined_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
