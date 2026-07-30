@@ -90,22 +90,80 @@ Only `skills/review-craft/` is the installable runtime product.
 The installed runtime has no third-party Python dependencies. Repository development
 uses locked tooling through `uv`.
 
-## Use as a source skill
+## Install as a Codex or Agent Skill
 
-Codex can load a checked-out skill from a repository-local `.agents/skills` path or
-from the user's skill directory. Pi can load the source directly without installing:
+`skills/review-craft/` is the complete installable Skill. Install the whole directory;
+copying only `SKILL.md` omits the runtime, schemas, references, and templates.
+
+For hosts that share Agent Skills, install the pinned release into
+`~/.agents/skills`:
+
+```bash
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+python3 "$CODEX_HOME/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
+  --repo bigKING67/review-craft \
+  --path skills/review-craft \
+  --ref v0.4.0 \
+  --dest "$HOME/.agents/skills"
+```
+
+The Codex installer defaults to `$CODEX_HOME/skills` (normally
+`~/.codex/skills`) when `--dest` is omitted. Choose one active root for
+`review-craft`; do not install different copies under both `~/.agents/skills` and
+`~/.codex/skills`. The installer fails rather than overwriting an existing target,
+so back up or remove an old installation intentionally before upgrading.
+
+The installed directory must contain at least:
+
+```text
+review-craft/
+├── SKILL.md
+├── VERSION
+├── agents/
+├── lib/
+├── references/
+├── schemas/
+├── scripts/
+└── templates/
+```
+
+Start the next Codex turn after installation so the host can discover the Skill,
+then validate the installed runtime rather than the repository checkout:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  "$HOME/.agents/skills/review-craft/scripts/review_craft.py" \
+  doctor --json
+```
+
+The result should report `"ready": true` and `"version": "0.4.0"`.
+If you selected the Codex-only root, replace `$HOME/.agents/skills` in the
+verification path with `$CODEX_HOME/skills`.
+
+## Use from a source checkout
+
+The repository keeps the canonical Skill under `skills/review-craft/`. A host may
+load that directory directly or expose it through a repository-local
+`.agents/skills` root. Pi can load the source without installing it:
 
 ```text
 pi --skill ./skills/review-craft
 ```
 
-Or install the public Pi package:
+## Use with Pi or the Codex plugin
+
+Install the public Pi package with:
 
 ```text
 pi install npm:@bigking67/review-craft
 ```
 
-Then request:
+Pi/npm installation does not install or register the Skill under a Codex or Agent
+Skill root. The Codex plugin entrypoint is declared separately in
+`.codex-plugin/plugin.json`; plugin installation and direct Skill-directory
+installation are alternative host integration paths, not cumulative requirements.
+
+After the host has discovered the Skill, request:
 
 ```text
 Use $review-craft to perform an evidence-driven engineering review of this repository.
