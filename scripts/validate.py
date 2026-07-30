@@ -54,6 +54,7 @@ REQUIRED_FILES = (
     "evals/schemas/eval-golden-snapshot.schema.json",
     "evals/schemas/eval-host-output.schema.json",
     "evals/schemas/eval-run.schema.json",
+    "evals/schemas/eval-usage.schema.json",
     "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
     "scripts/codex_eval_adapter.py",

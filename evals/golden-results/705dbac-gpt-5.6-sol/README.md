@@ -14,6 +14,10 @@ raw host output, logs, adapter argv, provider URLs, credentials, or machine-loca
 - suite: all 12 controlled fixtures, six positive and six negative;
 - adjudication: `AGENT_ASSISTED`, protocol `matched-semantic-adjudication-v1`.
 
+This snapshot was produced by Codex adapter `0.2.0` and eval run v2, before structured usage
+sidecars were introduced. Its missing usage object means token and tool-call cost is
+unavailable in the canonical snapshot, not zero. The recorded duration remains structured.
+
 ## Result
 
 Both treatments reached 100% semantic seeded-issue recall, 100% semantic finding

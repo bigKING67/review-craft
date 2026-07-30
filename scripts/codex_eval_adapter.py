@@ -13,8 +13,49 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-ADAPTER_VERSION = "0.2.0"
+ADAPTER_VERSION = "0.3.0"
 PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
+USAGE_COLLECTOR = {
+    "name": "codex-cli",
+    "version": ADAPTER_VERSION,
+    "format": "codex-exec-jsonl-v1",
+}
+EVENT_TYPES = {
+    "thread.started",
+    "turn.started",
+    "turn.completed",
+    "turn.failed",
+    "item.started",
+    "item.updated",
+    "item.completed",
+    "error",
+}
+ITEM_TYPES = {
+    "agent_message",
+    "reasoning",
+    "command_execution",
+    "file_change",
+    "mcp_tool_call",
+    "collab_tool_call",
+    "web_search",
+    "todo_list",
+    "error",
+}
+TOOL_ITEM_TYPES = {
+    "command_execution": "commandExecution",
+    "file_change": "fileChange",
+    "mcp_tool_call": "mcpToolCall",
+    "collab_tool_call": "collabToolCall",
+    "web_search": "webSearch",
+}
+TOKEN_FIELDS = {
+    "input_tokens": "inputTokens",
+    "cached_input_tokens": "cachedInputTokens",
+    "cache_write_input_tokens": "cacheWriteInputTokens",
+    "output_tokens": "outputTokens",
+    "reasoning_output_tokens": "reasoningOutputTokens",
+}
 
 
 class AdapterError(RuntimeError):
@@ -63,6 +104,94 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def unavailable_usage(reason: str) -> dict[str, Any]:
+    return {
+        "schema": "review-craft.eval-usage.v1",
+        "availability": "UNAVAILABLE",
+        "collector": USAGE_COLLECTOR,
+        "inputTokens": None,
+        "cachedInputTokens": None,
+        "cacheWriteInputTokens": None,
+        "outputTokens": None,
+        "reasoningOutputTokens": None,
+        "totalTokens": None,
+        "turnCount": None,
+        "toolCalls": None,
+        "unavailableReason": reason,
+    }
+
+
+def parse_codex_jsonl(value: str) -> dict[str, Any]:
+    lines = [line for line in value.splitlines() if line.strip()]
+    if not lines:
+        return unavailable_usage("HOST_OUTPUT_EMPTY")
+    token_totals = {field: 0 for field in TOKEN_FIELDS.values()}
+    tool_counts = {field: 0 for field in TOOL_ITEM_TYPES.values()}
+    turn_count = 0
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return unavailable_usage("HOST_OUTPUT_INVALID")
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            return unavailable_usage("HOST_OUTPUT_INVALID")
+        event_type = event["type"]
+        if event_type not in EVENT_TYPES:
+            return unavailable_usage("HOST_FORMAT_UNSUPPORTED")
+        if event_type.startswith("item."):
+            item = event.get("item")
+            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                return unavailable_usage("HOST_OUTPUT_INVALID")
+            item_type = item["type"]
+            if item_type not in ITEM_TYPES:
+                return unavailable_usage("HOST_FORMAT_UNSUPPORTED")
+            if event_type == "item.completed" and item_type in TOOL_ITEM_TYPES:
+                tool_counts[TOOL_ITEM_TYPES[item_type]] += 1
+        if event_type != "turn.completed":
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            return unavailable_usage("HOST_USAGE_INVALID")
+        parsed_usage = {}
+        for source, target in TOKEN_FIELDS.items():
+            count = usage.get(source)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                return unavailable_usage("HOST_USAGE_INVALID")
+            parsed_usage[target] = count
+        for field, count in parsed_usage.items():
+            token_totals[field] += count
+        turn_count += 1
+    if turn_count == 0:
+        return unavailable_usage("HOST_USAGE_MISSING")
+    tool_total = sum(tool_counts.values())
+    return {
+        "schema": "review-craft.eval-usage.v1",
+        "availability": "AVAILABLE",
+        "collector": USAGE_COLLECTOR,
+        **token_totals,
+        "totalTokens": token_totals["inputTokens"] + token_totals["outputTokens"],
+        "turnCount": turn_count,
+        "toolCalls": {
+            "total": tool_total,
+            "byType": tool_counts,
+        },
+        "unavailableReason": None,
+    }
+
+
+def write_usage_output(payload: dict[str, Any]) -> None:
+    output = os.environ.get(USAGE_OUTPUT_ENV)
+    if output is None:
+        return
+    path = Path(output).expanduser()
+    if not path.parent.is_dir():
+        raise AdapterError("usage output parent directory does not exist")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
@@ -199,6 +328,7 @@ def build_codex_command(
         "--skip-git-repo-check",
         "--color",
         "never",
+        "--json",
         "--cd",
         str(fixture_root),
         "--add-dir",
@@ -226,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v2",
+                    "schema": "review-craft.eval-adapter.v3",
                     "name": "codex-cli",
                     "version": codex_version(),
                     "model": args.model,
@@ -235,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
                     "evidenceKind": "REAL_HOST",
                     "provider": provider,
                     "isolation": isolation,
+                    "usage": {
+                        "protocol": "review-craft.eval-usage.v1",
+                        "transport": "ENV_PATH",
+                        "environmentVariable": USAGE_OUTPUT_ENV,
+                    },
                 },
                 sort_keys=True,
             )
@@ -271,7 +406,15 @@ def main(argv: list[str] | None = None) -> int:
         output_file=Path(args.output_file).resolve(),
         provider=provider,
     )
-    completed = subprocess.run(command, input=prompt, text=True)
+    completed = subprocess.run(
+        command,
+        input=prompt,
+        text=True,
+        capture_output=True,
+    )
+    sys.stdout.write(completed.stdout)
+    sys.stderr.write(completed.stderr)
+    write_usage_output(parse_codex_jsonl(completed.stdout))
     return completed.returncode
 
 

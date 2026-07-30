@@ -32,6 +32,11 @@ self-contained reproduction bundle or an authenticity signature. Repository vali
 checks every tracked snapshot against `eval-golden-snapshot.schema.json` and recomputes its
 canonical content hash.
 
+Snapshots created from eval run v3 may include sanitized aggregate usage under each
+treatment's structural metrics. The aggregate identifies complete, partial, or unavailable
+coverage and includes only reported-case totals. Historical run v2 snapshots remain valid
+without a usage object; absence means unmeasured, not zero.
+
 `REAL_HOST` is a trusted adapter declaration, not remote attestation; only execute and
 publish results from adapters whose implementation and invocation you have reviewed.
 The Codex adapter additionally requires explicit provider provenance and records the

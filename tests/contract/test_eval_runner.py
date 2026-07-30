@@ -11,6 +11,7 @@ from tests.support import ROOT
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import eval_contracts  # noqa: E402
 import run_evals as eval_runner  # noqa: E402
 
 RUNNER = ROOT / "scripts/run_evals.py"
@@ -80,6 +81,7 @@ class EvalRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self._synthetic_run(Path(directory))
             result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["schema"], "review-craft.eval-run.v3")
             self.assertEqual(result["status"], "COMPLETED")
             self.assertFalse(result["suite"]["fullSuite"])
             self.assertFalse(result["goldenEligible"])
@@ -96,8 +98,106 @@ class EvalRunnerTests(unittest.TestCase):
                 result["metrics"]["semanticEvidenceValidation"],
                 "NOT_AUTOMATED",
             )
+            self.assertEqual(result["metrics"]["usage"]["availability"], "UNAVAILABLE")
+            self.assertEqual(result["metrics"]["usage"]["reportedCases"], 0)
+            self.assertIsNone(result["metrics"]["usage"]["reportedUsage"])
+            self.assertEqual(
+                result["metrics"]["usage"]["unavailableReasons"],
+                {"ADAPTER_DID_NOT_REPORT_USAGE": 2},
+            )
+            self.assertTrue(
+                all(
+                    record["usage"]["availability"] == "UNAVAILABLE"
+                    for record in result["cases"]
+                )
+            )
             validated = run_eval("validate", "--run-dir", str(run_dir))
             self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_adapter_usage_is_structured_aggregated_and_content_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            completed = run_eval(
+                "run",
+                "--output-root",
+                directory,
+                "--case",
+                "swallowed-error",
+                "--adapter-command",
+                sys.executable,
+                str(FAKE_ADAPTER),
+                "--mode",
+                "usage",
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_dir = Path(json.loads(completed.stdout)["runDir"])
+            result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            usage = result["cases"][0]["usage"]
+            self.assertEqual(usage["availability"], "AVAILABLE")
+            self.assertEqual(usage["inputTokens"], 100)
+            self.assertEqual(usage["cachedInputTokens"], 25)
+            self.assertEqual(usage["outputTokens"], 20)
+            self.assertEqual(usage["totalTokens"], 120)
+            self.assertEqual(usage["toolCalls"]["total"], 2)
+            aggregate = result["metrics"]["usage"]
+            self.assertEqual(aggregate["availability"], "COMPLETE")
+            self.assertEqual(aggregate["reportedCases"], 1)
+            self.assertEqual(aggregate["unavailableCases"], 0)
+            self.assertEqual(aggregate["reportedUsage"]["totalTokens"], 120)
+            self.assertEqual(aggregate["reportedUsage"]["toolCalls"]["total"], 2)
+            partial = eval_contracts.aggregate_usage(
+                [
+                    {"usage": usage},
+                    {
+                        "usage": eval_contracts.unavailable_usage(
+                            "ADAPTER_DID_NOT_REPORT_USAGE"
+                        )
+                    },
+                ]
+            )
+            self.assertEqual(partial["availability"], "PARTIAL")
+            self.assertEqual(partial["reportedCases"], 1)
+            self.assertEqual(partial["unavailableCases"], 1)
+            self.assertEqual(partial["reportedUsage"]["totalTokens"], 120)
+            self.assertEqual(
+                partial["unavailableReasons"],
+                {"ADAPTER_DID_NOT_REPORT_USAGE": 1},
+            )
+            validated = run_eval("validate", "--run-dir", str(run_dir))
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+            usage_path = run_dir / result["cases"][0]["usageArtifact"]
+            usage["inputTokens"] = 101
+            usage_path.write_text(json.dumps(usage), encoding="utf-8")
+            tampered = run_eval("validate", "--run-dir", str(run_dir))
+            self.assertEqual(tampered.returncode, 2)
+            self.assertIn("usage: sha256 mismatch", tampered.stderr)
+
+    def test_invalid_adapter_usage_is_unavailable_not_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            completed = run_eval(
+                "run",
+                "--output-root",
+                directory,
+                "--case",
+                "swallowed-error",
+                "--adapter-command",
+                sys.executable,
+                str(FAKE_ADAPTER),
+                "--mode",
+                "invalid-usage",
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_dir = Path(json.loads(completed.stdout)["runDir"])
+            result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            usage = result["cases"][0]["usage"]
+            self.assertEqual(usage["availability"], "UNAVAILABLE")
+            self.assertEqual(usage["unavailableReason"], "ADAPTER_USAGE_INVALID")
+            self.assertIsNone(usage["totalTokens"])
+            self.assertIsNone(usage["toolCalls"])
+            self.assertEqual(
+                result["metrics"]["usage"]["unavailableReasons"],
+                {"ADAPTER_USAGE_INVALID": 1},
+            )
 
     def test_synthetic_runs_exercise_matched_comparison_without_becoming_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

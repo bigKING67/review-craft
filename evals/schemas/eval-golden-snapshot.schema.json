@@ -204,7 +204,10 @@
         "evidencePresencePercent": {"$ref": "#/$defs/nullablePercentage"},
         "decisionAccuracyPercent": {"$ref": "#/$defs/percentage"},
         "rewriteRestraintPercent": {"$ref": "#/$defs/nullablePercentage"},
-        "semanticEvidenceValidation": {"const": "NOT_AUTOMATED"}
+        "semanticEvidenceValidation": {"const": "NOT_AUTOMATED"},
+        "usage": {
+          "$ref": "eval-usage.schema.json#/$defs/usageAggregate"
+        }
       }
     },
     "semanticMetrics": {
@@ -386,6 +389,22 @@
         },
         "isolation": {
           "$ref": "#/$defs/isolation"
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["protocol", "transport", "environmentVariable"],
+          "properties": {
+            "protocol": {
+              "const": "review-craft.eval-usage.v1"
+            },
+            "transport": {
+              "const": "ENV_PATH"
+            },
+            "environmentVariable": {
+              "const": "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
+            }
+          }
         }
       }
     },

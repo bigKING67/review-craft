@@ -24,7 +24,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "review-craft.eval-run.v2"
+      "enum": [
+        "review-craft.eval-run.v2",
+        "review-craft.eval-run.v3"
+      ]
     },
     "runId": {
       "type": "string",
@@ -259,6 +262,15 @@
           },
           "failureReason": {
             "type": "string"
+          },
+          "usageArtifact": {
+            "$ref": "#/$defs/artifact"
+          },
+          "usageSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "usage": {
+            "$ref": "eval-usage.schema.json"
           }
         }
       }
@@ -328,6 +340,9 @@
         },
         "semanticEvidenceValidation": {
           "const": "NOT_AUTOMATED"
+        },
+        "usage": {
+          "$ref": "eval-usage.schema.json#/$defs/usageAggregate"
         }
       }
     },
@@ -338,6 +353,28 @@
       "$ref": "#/$defs/sha256"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema": {"const": "review-craft.eval-run.v3"}
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "properties": {
+          "cases": {
+            "items": {
+              "required": ["usageArtifact", "usageSha256", "usage"]
+            }
+          },
+          "metrics": {
+            "required": ["usage"]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sha256": {
       "type": "string",

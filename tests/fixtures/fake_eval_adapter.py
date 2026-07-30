@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 
 
@@ -24,6 +25,8 @@ def parse_args() -> argparse.Namespace:
             "mutate-source",
             "duplicate-decisions",
             "negative-finding",
+            "usage",
+            "invalid-usage",
         ),
         default="valid",
     )
@@ -140,6 +143,44 @@ def main() -> int:
         else json.dumps(output, ensure_ascii=False, indent=2) + "\n"
     )
     Path(args.output_file).write_text(rendered, encoding="utf-8")
+    usage_output = os.environ.get("REVIEW_CRAFT_EVAL_USAGE_OUTPUT")
+    if usage_output and args.mode == "usage":
+        Path(usage_output).write_text(
+            json.dumps(
+                {
+                    "schema": "review-craft.eval-usage.v1",
+                    "availability": "AVAILABLE",
+                    "collector": {
+                        "name": "synthetic",
+                        "version": "0.1.0",
+                        "format": "synthetic-v1",
+                    },
+                    "inputTokens": 100,
+                    "cachedInputTokens": 25,
+                    "cacheWriteInputTokens": 5,
+                    "outputTokens": 20,
+                    "reasoningOutputTokens": 10,
+                    "totalTokens": 120,
+                    "turnCount": 1,
+                    "toolCalls": {
+                        "total": 2,
+                        "byType": {
+                            "commandExecution": 2,
+                            "fileChange": 0,
+                            "mcpToolCall": 0,
+                            "collabToolCall": 0,
+                            "webSearch": 0,
+                        },
+                    },
+                    "unavailableReason": None,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    elif usage_output and args.mode == "invalid-usage":
+        Path(usage_output).write_text("{}\n", encoding="utf-8")
     print("synthetic adapter completed")
     return 0
 

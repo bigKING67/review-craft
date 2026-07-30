@@ -221,6 +221,16 @@ fails closed on other `skills/` or `plugins/`; both system and extension surface
 matched provenance fields. Credentials remain external and must never be placed in
 adapter argv or run artifacts.
 
+Eval run v3 also passes an optional `REVIEW_CRAFT_EVAL_USAGE_OUTPUT` sidecar path to every
+adapter. The Codex adapter uses `codex exec --json` and deterministically extracts
+`turn.completed.usage` plus completed command, file-change, MCP, collaboration, and
+web-search items. Each case records input, cached-input, cache-write-input, output,
+reasoning-output, and total tokens together with turn and tool-call counts. `totalTokens`
+is input plus output; cached input and reasoning output are subcounts. Unsupported
+adapters, invalid JSONL, and unsupported future formats produce explicit unavailable
+reasons with `null`, not zero. Aggregate `reportedUsage` always states how many cases it
+covers.
+
 Run the same full suite with `--treatment ORDINARY_PROMPT` and identical host metadata for
 a matched baseline. Use `compare` to bind both run hashes and reject mismatched source,
 suite, host, provider, isolation, timeout, or adapter inputs.

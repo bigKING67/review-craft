@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -31,11 +32,13 @@ from eval_contracts import (
     source_metadata,
     source_stable,
     tree_sha256,
+    unavailable_usage,
     utc_now,
     validate_adjudication_result,
     validate_comparison_payload,
     validate_golden_snapshot,
     validate_run,
+    validate_usage_record,
     write_bytes,
     write_json,
 )
@@ -50,6 +53,7 @@ PROMPTS = {
 SENSITIVE_ARGUMENT = re.compile(
     r"^--?(?:api[-_]?key|password|secret|token)(?:=|$)", re.IGNORECASE
 )
+USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 
 
 def _validate_adapter_command(command: list[str]) -> None:
@@ -108,15 +112,18 @@ def _case_record(
     stdout_relative = f"{prefix}/stdout.txt"
     stderr_relative = f"{prefix}/stderr.txt"
     output_relative = f"{prefix}/output.json"
+    usage_relative = f"{prefix}/usage.json"
     prompt_path = run_dir / prompt_relative
     stdout_path = run_dir / stdout_relative
     stderr_path = run_dir / stderr_relative
     output_path = run_dir / output_relative
+    usage_path = run_dir / usage_relative
     write_bytes(prompt_path, prompt)
 
     workspace = stage_root / f"case-{ordinal:03d}"
     staged_fixture = workspace / "target"
     staged_skill = workspace / "skill"
+    adapter_usage_path = workspace / "adapter-usage.json"
     shutil.copytree(fixture_artifact, staged_fixture)
     shutil.copytree(skill_root, staged_skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
@@ -147,6 +154,7 @@ def _case_record(
             cwd=ROOT,
             capture_output=True,
             timeout=timeout_seconds,
+            env={**os.environ, USAGE_OUTPUT_ENV: str(adapter_usage_path)},
         )
         exit_code = completed.returncode
         stdout = completed.stdout
@@ -190,6 +198,20 @@ def _case_record(
     duration_ms = max(0, round((time.monotonic() - started) * 1000))
     write_bytes(stdout_path, stdout)
     write_bytes(stderr_path, stderr)
+    usage = unavailable_usage("ADAPTER_DID_NOT_REPORT_USAGE")
+    if adapter_usage_path.is_file():
+        try:
+            reported_usage = read_json(adapter_usage_path)
+        except (OSError, json.JSONDecodeError):
+            usage = unavailable_usage("ADAPTER_USAGE_INVALID")
+        else:
+            usage_errors = validate_usage_record(reported_usage)
+            usage = (
+                unavailable_usage("ADAPTER_USAGE_INVALID")
+                if usage_errors
+                else reported_usage
+            )
+    write_json(usage_path, usage)
     adapter_output_artifact = output_relative if output_path.is_file() else None
     adapter_output_hash = (
         file_hash(output_path) if adapter_output_artifact is not None else None
@@ -215,6 +237,9 @@ def _case_record(
         "normalizedOutputArtifact": output_artifact,
         "normalizedOutputSha256": output_hash,
         "failureReason": failure_reason,
+        "usageArtifact": usage_relative,
+        "usageSha256": file_hash(usage_path),
+        "usage": usage,
     }
 
 
@@ -305,7 +330,7 @@ def command_run(args: argparse.Namespace) -> int:
     )
     source["stableThroughoutRun"] = source_stable(source)
     payload = {
-        "schema": "review-craft.eval-run.v2",
+        "schema": "review-craft.eval-run.v3",
         "runId": run_dir.name,
         "status": overall_status(records),
         "startedAt": started_at,
@@ -628,6 +653,23 @@ def build_golden_snapshot(
         raise EvalError("Golden export semantic results do not match their bound runs")
     description = review["adapter"]["description"]
     provider = description["provider"]
+    host = {
+        "name": description["name"],
+        "version": description["version"],
+        "model": description["model"],
+        "reasoning": description["reasoning"],
+        "adapterVersion": description["adapterVersion"],
+        "evidenceKind": description["evidenceKind"],
+        "provider": {
+            "name": provider["name"],
+            "wireApi": provider["wireApi"],
+            "requiresOpenAIAuth": provider["requiresOpenAIAuth"],
+            "supportsWebsockets": provider["supportsWebsockets"],
+        },
+        "isolation": description["isolation"],
+    }
+    if "usage" in description:
+        host["usage"] = description["usage"]
     snapshot = {
         "schema": "review-craft.eval-golden-snapshot.v1",
         "source": {
@@ -643,21 +685,7 @@ def build_golden_snapshot(
             "fullSuite": review["suite"]["fullSuite"],
         },
         "skill": review["skill"],
-        "host": {
-            "name": description["name"],
-            "version": description["version"],
-            "model": description["model"],
-            "reasoning": description["reasoning"],
-            "adapterVersion": description["adapterVersion"],
-            "evidenceKind": description["evidenceKind"],
-            "provider": {
-                "name": provider["name"],
-                "wireApi": provider["wireApi"],
-                "requiresOpenAIAuth": provider["requiresOpenAIAuth"],
-                "supportsWebsockets": provider["supportsWebsockets"],
-            },
-            "isolation": description["isolation"],
-        },
+        "host": host,
         "comparison": {
             "contentSha256": comparison["contentSha256"],
             "comparativeEligible": comparison["comparativeEligible"],

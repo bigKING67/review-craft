@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 
 from tests.support import ROOT, create_run, make_target, populate_valid_run, run_cli
 
@@ -56,6 +57,13 @@ class SchemaTests(unittest.TestCase):
     def test_tracked_golden_snapshots_are_content_bound_and_sanitized(self) -> None:
         schema_path = ROOT / "evals/schemas/eval-golden-snapshot.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        registry = Registry()
+        for path in sorted((ROOT / "evals/schemas").glob("*.schema.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            registry = registry.with_resource(
+                document["$id"],
+                Resource.from_contents(document),
+            )
         snapshots = sorted((ROOT / "evals/golden-results").glob("*/snapshot.json"))
         self.assertTrue(snapshots)
         forbidden_keys = {
@@ -90,7 +98,9 @@ class SchemaTests(unittest.TestCase):
 
         for snapshot_path in snapshots:
             payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            errors = list(Draft202012Validator(schema).iter_errors(payload))
+            errors = list(
+                Draft202012Validator(schema, registry=registry).iter_errors(payload)
+            )
             self.assertEqual(errors, [], f"{snapshot_path}: {errors}")
             canonical = json.dumps(
                 {
@@ -109,7 +119,62 @@ class SchemaTests(unittest.TestCase):
 
             leaked = json.loads(json.dumps(payload))
             leaked["host"]["provider"]["baseUrl"] = "https://provider.invalid"
-            self.assertTrue(list(Draft202012Validator(schema).iter_errors(leaked)))
+            self.assertTrue(
+                list(Draft202012Validator(schema, registry=registry).iter_errors(leaked))
+            )
+
+    def test_eval_usage_schema_distinguishes_unavailable_from_zero(self) -> None:
+        schema = json.loads(
+            (ROOT / "evals/schemas/eval-usage.schema.json").read_text(encoding="utf-8")
+        )
+        validator = Draft202012Validator(schema)
+        unavailable = {
+            "schema": "review-craft.eval-usage.v1",
+            "availability": "UNAVAILABLE",
+            "collector": None,
+            "inputTokens": None,
+            "cachedInputTokens": None,
+            "cacheWriteInputTokens": None,
+            "outputTokens": None,
+            "reasoningOutputTokens": None,
+            "totalTokens": None,
+            "turnCount": None,
+            "toolCalls": None,
+            "unavailableReason": "ADAPTER_DID_NOT_REPORT_USAGE",
+        }
+        self.assertEqual(list(validator.iter_errors(unavailable)), [])
+
+        fabricated_zero = {**unavailable, "totalTokens": 0}
+        self.assertTrue(list(validator.iter_errors(fabricated_zero)))
+
+        available = {
+            **unavailable,
+            "availability": "AVAILABLE",
+            "collector": {
+                "name": "codex-cli",
+                "version": "0.3.0",
+                "format": "codex-exec-jsonl-v1",
+            },
+            "inputTokens": 10,
+            "cachedInputTokens": 2,
+            "cacheWriteInputTokens": 1,
+            "outputTokens": 5,
+            "reasoningOutputTokens": 3,
+            "totalTokens": 15,
+            "turnCount": 1,
+            "toolCalls": {
+                "total": 0,
+                "byType": {
+                    "commandExecution": 0,
+                    "fileChange": 0,
+                    "mcpToolCall": 0,
+                    "collabToolCall": 0,
+                    "webSearch": 0,
+                },
+            },
+            "unavailableReason": None,
+        }
+        self.assertEqual(list(validator.iter_errors(available)), [])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-usage.schema.json",
+  "title": "Adapter-neutral evaluation usage record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "availability",
+    "collector",
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+    "turnCount",
+    "toolCalls",
+    "unavailableReason"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "review-craft.eval-usage.v1"
+    },
+    "availability": {
+      "type": "string",
+      "enum": [
+        "AVAILABLE",
+        "UNAVAILABLE"
+      ]
+    },
+    "collector": {
+      "anyOf": [
+        {"$ref": "#/$defs/collector"},
+        {"type": "null"}
+      ]
+    },
+    "inputTokens": {"$ref": "#/$defs/nullableCount"},
+    "cachedInputTokens": {"$ref": "#/$defs/nullableCount"},
+    "cacheWriteInputTokens": {"$ref": "#/$defs/nullableCount"},
+    "outputTokens": {"$ref": "#/$defs/nullableCount"},
+    "reasoningOutputTokens": {"$ref": "#/$defs/nullableCount"},
+    "totalTokens": {"$ref": "#/$defs/nullableCount"},
+    "turnCount": {"$ref": "#/$defs/nullableCount"},
+    "toolCalls": {
+      "anyOf": [
+        {"$ref": "#/$defs/toolCalls"},
+        {"type": "null"}
+      ]
+    },
+    "unavailableReason": {
+      "anyOf": [
+        {"$ref": "#/$defs/unavailableReason"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "availability": {"const": "AVAILABLE"}
+        },
+        "required": ["availability"]
+      },
+      "then": {
+        "properties": {
+          "collector": {"$ref": "#/$defs/collector"},
+          "inputTokens": {"$ref": "#/$defs/count"},
+          "cachedInputTokens": {"$ref": "#/$defs/count"},
+          "cacheWriteInputTokens": {"$ref": "#/$defs/count"},
+          "outputTokens": {"$ref": "#/$defs/count"},
+          "reasoningOutputTokens": {"$ref": "#/$defs/count"},
+          "totalTokens": {"$ref": "#/$defs/count"},
+          "turnCount": {"type": "integer", "minimum": 1},
+          "toolCalls": {"$ref": "#/$defs/toolCalls"},
+          "unavailableReason": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "inputTokens": {"type": "null"},
+          "cachedInputTokens": {"type": "null"},
+          "cacheWriteInputTokens": {"type": "null"},
+          "outputTokens": {"type": "null"},
+          "reasoningOutputTokens": {"type": "null"},
+          "totalTokens": {"type": "null"},
+          "turnCount": {"type": "null"},
+          "toolCalls": {"type": "null"},
+          "unavailableReason": {"$ref": "#/$defs/unavailableReason"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nullableCount": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "collector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "format"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "format": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      }
+    },
+    "toolCalls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "byType"],
+      "properties": {
+        "total": {"$ref": "#/$defs/count"},
+        "byType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commandExecution",
+            "fileChange",
+            "mcpToolCall",
+            "collabToolCall",
+            "webSearch"
+          ],
+          "properties": {
+            "commandExecution": {"$ref": "#/$defs/count"},
+            "fileChange": {"$ref": "#/$defs/count"},
+            "mcpToolCall": {"$ref": "#/$defs/count"},
+            "collabToolCall": {"$ref": "#/$defs/count"},
+            "webSearch": {"$ref": "#/$defs/count"}
+          }
+        }
+      }
+    },
+    "unavailableReason": {
+      "type": "string",
+      "enum": [
+        "ADAPTER_DID_NOT_REPORT_USAGE",
+        "ADAPTER_USAGE_INVALID",
+        "HOST_OUTPUT_EMPTY",
+        "HOST_OUTPUT_INVALID",
+        "HOST_FORMAT_UNSUPPORTED",
+        "HOST_USAGE_MISSING",
+        "HOST_USAGE_INVALID"
+      ]
+    },
+    "reportedUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputTokens",
+        "cachedInputTokens",
+        "cacheWriteInputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens",
+        "turnCount",
+        "toolCalls"
+      ],
+      "properties": {
+        "inputTokens": {"$ref": "#/$defs/count"},
+        "cachedInputTokens": {"$ref": "#/$defs/count"},
+        "cacheWriteInputTokens": {"$ref": "#/$defs/count"},
+        "outputTokens": {"$ref": "#/$defs/count"},
+        "reasoningOutputTokens": {"$ref": "#/$defs/count"},
+        "totalTokens": {"$ref": "#/$defs/count"},
+        "turnCount": {"$ref": "#/$defs/count"},
+        "toolCalls": {"$ref": "#/$defs/toolCalls"}
+      }
+    },
+    "usageAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "reportedCases",
+        "unavailableCases",
+        "reportedUsage",
+        "unavailableReasons"
+      ],
+      "properties": {
+        "availability": {
+          "type": "string",
+          "enum": ["COMPLETE", "PARTIAL", "UNAVAILABLE"]
+        },
+        "reportedCases": {"$ref": "#/$defs/count"},
+        "unavailableCases": {"$ref": "#/$defs/count"},
+        "reportedUsage": {
+          "anyOf": [
+            {"$ref": "#/$defs/reportedUsage"},
+            {"type": "null"}
+          ]
+        },
+        "unavailableReasons": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/unavailableReason"},
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

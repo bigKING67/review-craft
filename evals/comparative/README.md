@@ -5,11 +5,18 @@ Codex Review only on matched repository, revision, model, reasoning, scope, and 
 constraints. Each normalized case output is limited to one primary candidate finding so
 case-level semantic adjudication remains unambiguous. Measure structural detection, raw
 false positives, location overlap, evidence presence, decision quality, rewrite restraint,
-and runtime from matched, schema-valid outputs. Token and tool-call cost are not yet part of
-the structured run contract. `candidateRecallPercent` means that a
+runtime, token usage, and completed tool calls from matched, schema-valid outputs.
+`candidateRecallPercent` means that a
 positive fixture produced a finding; it does not prove that the evidence matches the seeded
 issue. The scorer does not claim to automate semantic evidence quality, review coverage
-honesty, remediation completeness, or cost.
+honesty, remediation completeness, or the stability of a cost ratio from one run.
+
+Eval run v3 stores an adapter-neutral usage record for every case. `AVAILABLE` records keep
+input, cached-input, cache-write-input, output, reasoning-output, total token, turn, and
+completed tool-call counts. `totalTokens` is input plus output; cached input and reasoning
+output are reported subcounts and are not added again. Aggregate `reportedUsage` covers only
+`reportedCases`. `PARTIAL` and `UNAVAILABLE` results retain fixed unavailable reasons and
+use `null`, never fabricated zeroes, for unknown costs.
 
 Run `REVIEW_CRAFT` and `ORDINARY_PROMPT` as separate full-suite runs with the same host,
 version, model, reasoning profile, revision, case timeout, and case selection. Do not call

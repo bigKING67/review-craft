@@ -17,7 +17,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "review-craft.eval-adapter.v2"
+      "enum": [
+        "review-craft.eval-adapter.v2",
+        "review-craft.eval-adapter.v3"
+      ]
     },
     "name": {
       "type": "string",
@@ -87,6 +90,35 @@
           "pattern": "^[a-f0-9]{64}$"
         }
       }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "transport", "environmentVariable"],
+      "properties": {
+        "protocol": {
+          "const": "review-craft.eval-usage.v1"
+        },
+        "transport": {
+          "const": "ENV_PATH"
+        },
+        "environmentVariable": {
+          "const": "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema": {"const": "review-craft.eval-adapter.v3"}
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "required": ["usage"]
+      }
+    }
+  ]
 }

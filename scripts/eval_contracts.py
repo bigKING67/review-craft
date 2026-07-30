@@ -20,6 +20,23 @@ ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-adjudication.schema.json"
 ADJUDICATION_RESULT_SCHEMA = SCHEMA_ROOT / "eval-adjudication-result.schema.json"
 COMPARISON_SCHEMA = SCHEMA_ROOT / "eval-comparison.schema.json"
 GOLDEN_SNAPSHOT_SCHEMA = SCHEMA_ROOT / "eval-golden-snapshot.schema.json"
+USAGE_SCHEMA = SCHEMA_ROOT / "eval-usage.schema.json"
+USAGE_COUNT_FIELDS = (
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+    "turnCount",
+)
+TOOL_CALL_FIELDS = (
+    "commandExecution",
+    "fileChange",
+    "mcpToolCall",
+    "collabToolCall",
+    "webSearch",
+)
 IGNORED_TREE_PARTS = {
     ".git",
     ".pytest_cache",
@@ -200,6 +217,74 @@ def _percent(numerator: int, denominator: int) -> float | None:
     return round(numerator * 100.0 / denominator, 2)
 
 
+def unavailable_usage(
+    reason: str, *, collector: dict[str, str] | None = None
+) -> dict[str, Any]:
+    return {
+        "schema": "review-craft.eval-usage.v1",
+        "availability": "UNAVAILABLE",
+        "collector": collector,
+        "inputTokens": None,
+        "cachedInputTokens": None,
+        "cacheWriteInputTokens": None,
+        "outputTokens": None,
+        "reasoningOutputTokens": None,
+        "totalTokens": None,
+        "turnCount": None,
+        "toolCalls": None,
+        "unavailableReason": reason,
+    }
+
+
+def validate_usage_record(payload: dict[str, Any]) -> list[str]:
+    errors = schema_errors(payload, USAGE_SCHEMA)
+    if errors or payload["availability"] != "AVAILABLE":
+        return errors
+    if payload["totalTokens"] != payload["inputTokens"] + payload["outputTokens"]:
+        errors.append("totalTokens must equal inputTokens plus outputTokens")
+    tool_calls = payload["toolCalls"]
+    if tool_calls["total"] != sum(tool_calls["byType"].values()):
+        errors.append("toolCalls.total must equal the byType sum")
+    return errors
+
+
+def aggregate_usage(records: list[dict[str, Any]]) -> dict[str, Any]:
+    usages = [record["usage"] for record in records]
+    reported = [usage for usage in usages if usage["availability"] == "AVAILABLE"]
+    unavailable = [usage for usage in usages if usage["availability"] == "UNAVAILABLE"]
+    reasons: dict[str, int] = {}
+    for usage in unavailable:
+        reason = usage["unavailableReason"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+    reported_usage = None
+    if reported:
+        tool_by_type = {
+            field: sum(usage["toolCalls"]["byType"][field] for usage in reported)
+            for field in TOOL_CALL_FIELDS
+        }
+        reported_usage = {
+            field: sum(usage[field] for usage in reported)
+            for field in USAGE_COUNT_FIELDS
+        }
+        reported_usage["toolCalls"] = {
+            "total": sum(tool_by_type.values()),
+            "byType": tool_by_type,
+        }
+    return {
+        "availability": (
+            "COMPLETE"
+            if not unavailable
+            else "PARTIAL"
+            if reported
+            else "UNAVAILABLE"
+        ),
+        "reportedCases": len(reported),
+        "unavailableCases": len(unavailable),
+        "reportedUsage": reported_usage,
+        "unavailableReasons": reasons,
+    }
+
+
 def source_stable(source: dict[str, Any]) -> bool:
     return bool(
         source.get("revision") == source.get("completedRevision")
@@ -266,7 +351,7 @@ def score_cases(
             restrained_rewrites += 1
 
     total = len(records)
-    return {
+    metrics = {
         "totalCases": total,
         "completedCases": len(completed),
         "failedCases": len(failed),
@@ -282,6 +367,9 @@ def score_cases(
         "rewriteRestraintPercent": _percent(restrained_rewrites, len(rewrite_traps)),
         "semanticEvidenceValidation": "NOT_AUTOMATED",
     }
+    if records and all("usage" in record for record in records):
+        metrics["usage"] = aggregate_usage(records)
+    return metrics
 
 
 def overall_status(records: list[dict[str, Any]]) -> str:
@@ -344,6 +432,36 @@ def validate_run(run_dir: Path) -> list[str]:
         check_artifact(record["promptArtifact"], record["promptSha256"], f"case {case_id} prompt")
         check_artifact(record["stdoutArtifact"], record["stdoutSha256"], f"case {case_id} stdout")
         check_artifact(record["stderrArtifact"], record["stderrSha256"], f"case {case_id} stderr")
+        usage_artifact = record.get("usageArtifact")
+        usage_hash = record.get("usageSha256")
+        usage_record = record.get("usage")
+        usage_fields = (usage_artifact, usage_hash, usage_record)
+        if any(value is not None for value in usage_fields) and not all(
+            value is not None for value in usage_fields
+        ):
+            errors.append(f"case {case_id}: usage artifact, hash, and record must be paired")
+        if (
+            isinstance(usage_artifact, str)
+            and isinstance(usage_hash, str)
+            and isinstance(usage_record, dict)
+        ):
+            usage_path = check_artifact(
+                usage_artifact,
+                usage_hash,
+                f"case {case_id} usage",
+            )
+            if usage_path is not None:
+                try:
+                    artifact_usage = read_json(usage_path)
+                except (OSError, json.JSONDecodeError) as error:
+                    errors.append(f"case {case_id} usage: {error}")
+                else:
+                    usage_errors = validate_usage_record(artifact_usage)
+                    errors.extend(
+                        f"case {case_id} usage:{error}" for error in usage_errors
+                    )
+                    if artifact_usage != usage_record:
+                        errors.append(f"case {case_id}: usage artifact does not match result")
         try:
             fixture = safe_artifact(run_dir, record["fixtureArtifact"])
             actual_tree = tree_sha256(fixture)
