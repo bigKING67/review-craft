@@ -7,7 +7,13 @@ from typing import Any
 from .constants import ARTIFACT_PATHS
 from .contracts import ContractError
 from .jsonio import read_json, sha256_bytes, sha256_json
-from .repository import fingerprint_inventory, inspect_git, inventory, worktree_fingerprint
+from .repository import (
+    fingerprint_inventory,
+    inspect_git,
+    inventory_for_configuration,
+    source_inventory_configuration,
+    worktree_fingerprint,
+)
 from .schema_validation import validate_instance
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
@@ -56,24 +62,52 @@ def _status_fingerprint(status: str) -> str:
 
 
 def stable_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    fields = ("path", "kind", "sizeBytes", "sha256", "binary", "classification")
+    fields = (
+        "path",
+        "kind",
+        "sizeBytes",
+        "sha256",
+        "binary",
+        "classification",
+        "diffStatus",
+        "previousPath",
+        "untracked",
+    )
     return [
         {field: row[field] for field in fields if field in row}
         for row in sorted(records, key=lambda item: item["path"])
     ]
 
 
-def current_source(target: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    records, _ = inventory(target)
+def current_source(
+    target: Path,
+    configuration: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    records, _, _ = inventory_for_configuration(target, configuration)
     state = inspect_git(target)
     return records, {
         "revision": state.revision,
         "branch": state.branch,
         "remote": state.remote,
         "sourceFingerprint": fingerprint_inventory(records),
-        "worktreeFingerprint": worktree_fingerprint(target),
+        "worktreeFingerprint": worktree_fingerprint(target, records=records),
         "statusFingerprint": _status_fingerprint(state.status),
     }
+
+
+def fix_source_configuration(state: dict[str, Any]) -> dict[str, Any]:
+    configuration = state.get("sourceConfiguration")
+    if isinstance(configuration, dict):
+        return source_inventory_configuration(configuration)
+    try:
+        run_dir = Path(state["reviewRunDir"]).expanduser().resolve(strict=True)
+        manifest = read_json(session_file(run_dir, "review-manifest.json"))
+        manifest_configuration = manifest["configuration"]
+    except (KeyError, OSError, TypeError, ValueError, ContractError) as error:
+        raise ContractError([f"fix source configuration is unavailable: {error}"]) from error
+    if not isinstance(manifest_configuration, dict):
+        raise ContractError(["fix source configuration: review configuration is invalid"])
+    return source_inventory_configuration(manifest_configuration)
 
 
 def load_fix(
@@ -123,6 +157,29 @@ def load_fix(
             errors.append("fix-plan.verification.commandConfigSha256: does not match state")
         if sorted(commands) != sorted(plan["verification"]["commands"]):
             errors.append("fix-state.commands: names do not match fix plan")
+    stored_source_configuration = state.get("sourceConfiguration")
+    try:
+        resolved_source_configuration = fix_source_configuration(state)
+    except ContractError as error:
+        errors.extend(error.errors)
+    else:
+        if (
+            stored_source_configuration is not None
+            and stored_source_configuration != resolved_source_configuration
+        ):
+            errors.append("fix-state.sourceConfiguration: is not canonical")
+        source_configuration_hash = sha256_json(resolved_source_configuration)
+        stored_source_configuration_hash = state.get("sourceConfigurationSha256")
+        if (
+            stored_source_configuration_hash is not None
+            and stored_source_configuration_hash != source_configuration_hash
+        ):
+            errors.append(
+                "fix-state.sourceConfigurationSha256: does not match sourceConfiguration"
+            )
+        # Legacy v1 sessions derive this field from their sealed review manifest.
+        state["sourceConfiguration"] = resolved_source_configuration
+        state["sourceConfigurationSha256"] = source_configuration_hash
     if errors:
         raise ContractError(errors)
     return fix_dir, plan, state
@@ -144,6 +201,23 @@ def validate_review_provenance(plan: dict[str, Any], state: dict[str, Any]) -> N
         errors.append("fix review provenance: source review is not sealed and final")
     if manifest.get("runId") != plan["review"]["runId"]:
         errors.append("fix-plan.review.runId: does not match review manifest")
+    manifest_configuration = manifest.get("configuration", {})
+    if not isinstance(manifest_configuration, dict):
+        errors.append("fix review provenance: review configuration is invalid")
+    else:
+        expected_source_configuration = source_inventory_configuration(
+            manifest_configuration
+        )
+        if state.get("sourceConfiguration") != expected_source_configuration:
+            errors.append(
+                "fix-state.sourceConfiguration: does not match review provenance"
+            )
+        if state.get("sourceConfigurationSha256") != sha256_json(
+            expected_source_configuration
+        ):
+            errors.append(
+                "fix-state.sourceConfigurationSha256: review provenance mismatch"
+            )
     target = manifest.get("target") if isinstance(manifest, dict) else None
     if not isinstance(target, dict) or target.get("identity") != plan["review"]["targetIdentity"]:
         errors.append("fix-plan.review.targetIdentity: does not match review manifest")

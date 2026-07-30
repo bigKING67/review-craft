@@ -12,6 +12,7 @@ from .remediation_contract import (
     changes,
     current_source,
     file_sha256,
+    fix_source_configuration,
     load_fix,
     schema,
     session_file,
@@ -152,7 +153,7 @@ def validate_fix(
                     f"fix-verification command {command['name']}: {field} does not match receipt"
                 )
     target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
-    records, current = current_source(target)
+    records, current = current_source(target, fix_source_configuration(state))
     expected_changes = changes(state["baselineFiles"], stable_records(records))
     if current != result["current"]:
         errors.append("fix-verification.current: target source changed after verification")

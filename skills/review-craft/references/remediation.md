@@ -23,7 +23,8 @@ Use `--all-commands` only when running every configured command is proportionate
 Preparation writes a `review-craft.fix.v1` session outside the target and records:
 
 - the sealed review manifest and selected finding/decision hashes;
-- the complete pre-change source fingerprint and file hashes;
+- the complete pre-change fingerprint and file hashes for the sealed review's configured
+  source projection; excluded and out-of-scope contents remain outside that claim;
 - verification criteria and the selected command configuration;
 - `EXPLICIT_USER_REQUIRED` as the source-mutation authorization boundary.
 

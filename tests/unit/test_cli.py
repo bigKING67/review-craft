@@ -45,6 +45,75 @@ class CliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertFalse(json.loads(completed.stdout)["final"])
 
+    def test_non_git_lifecycle_reuses_sensitive_excludes_for_all_fingerprints(self) -> None:
+        temporary, target = make_target(git=False)
+        self.addCleanup(temporary.cleanup)
+        sensitive = target / "auth.json"
+        sensitive.write_text('{"token":"private-v1"}\n', encoding="utf-8")
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "exclude": ["auth.json"],
+                    "commands": {
+                        "rotate-private": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "from pathlib import Path; "
+                                    "Path('auth.json').write_text('private-v2')"
+                                ),
+                            ]
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            coverage = json.loads((run_dir / "coverage.json").read_text(encoding="utf-8"))
+            self.assertNotIn("auth.json", {row["path"] for row in coverage["files"]})
+
+            evidence = run_cli(
+                "run-evidence",
+                "--run-dir",
+                str(run_dir),
+                "--command",
+                "rotate-private",
+            )
+            self.assertEqual(evidence.returncode, 0, evidence.stderr)
+            self.assertFalse(json.loads(evidence.stdout)["repositoryMutationDetected"])
+
+            validated = run_cli(
+                "validate",
+                "--run-dir",
+                str(run_dir),
+                "--allow-draft",
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+            (target / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+            invalidated = run_cli(
+                "validate",
+                "--run-dir",
+                str(run_dir),
+                "--allow-draft",
+            )
+            self.assertEqual(invalidated.returncode, 2)
+            self.assertIn("source fingerprint changed", invalidated.stderr)
+
     def test_focus_preflight_records_dimensions_and_detected_profile(self) -> None:
         temporary, target = make_target()
         self.addCleanup(temporary.cleanup)

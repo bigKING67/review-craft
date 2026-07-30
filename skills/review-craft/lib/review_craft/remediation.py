@@ -15,6 +15,7 @@ from .remediation_contract import (
     changes,
     current_source,
     file_sha256,
+    fix_source_configuration,
     load_fix,
     session_file,
     stable_records,
@@ -25,7 +26,7 @@ from .remediation_contract import (
     verification_status,
 )
 from .remediation_validation import validate_fix
-from .repository import inspect_git
+from .repository import inspect_git, source_inventory_configuration
 
 FIX_VERIFICATION_LOCK = ".fix-verification.lock"
 
@@ -109,7 +110,8 @@ def prepare_fix(
     )
     run_state = data["runState"]
     target = Path(run_state["targetRoot"]).expanduser().resolve(strict=True)
-    baseline_records, baseline = current_source(target)
+    source_configuration = source_inventory_configuration(manifest["configuration"])
+    baseline_records, baseline = current_source(target, source_configuration)
     manifest_path = session_file(run_dir, "review-manifest.json")
     created_at = created_at or utc_now()
     seed = {
@@ -171,6 +173,8 @@ def prepare_fix(
             "reviewRunDir": str(run_dir),
             "planSha256": sha256_json(plan),
             "baselineFiles": stable_records(baseline_records),
+            "sourceConfiguration": source_configuration,
+            "sourceConfigurationSha256": sha256_json(source_configuration),
             "commands": command_config,
             "commandConfigSha256": sha256_json(command_config),
         },
@@ -258,6 +262,7 @@ def _verify_fix_locked(
     current_state = inspect_git(target)
     if current_state.remote != plan["baseline"]["remote"]:
         raise ContractError(["fix target remote changed after preparation"])
+    source_configuration = fix_source_configuration(state)
 
     command_results: list[dict[str, Any]] = []
     planned_commands = plan["verification"]["commands"]
@@ -268,6 +273,7 @@ def _verify_fix_locked(
             commands=state["commands"],
             command_name=name,
             allow_repository_mutation=False,
+            source_configuration=source_configuration,
         )
         command_results.append(
             {
@@ -283,7 +289,7 @@ def _verify_fix_locked(
             break
     skipped_commands = planned_commands[len(command_results) :]
 
-    current_records, current = current_source(target)
+    current_records, current = current_source(target, source_configuration)
     source_changes = changes(state["baselineFiles"], stable_records(current_records))
     source_changed = current["sourceFingerprint"] != plan["baseline"]["sourceFingerprint"]
     validate_evidence_refs(

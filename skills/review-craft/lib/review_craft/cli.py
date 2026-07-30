@@ -244,7 +244,7 @@ def _draft_artifacts(
         run_dir / "run-state.json",
         {
             "targetRoot": str(state.root),
-            "worktreeFingerprint": worktree_fingerprint(state.root),
+            "worktreeFingerprint": worktree_fingerprint(state.root, records=records),
             "statusFingerprint": sha256_bytes(
                 state.status.encode("utf-8", errors="surrogateescape")
             ),

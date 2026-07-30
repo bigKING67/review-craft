@@ -5,7 +5,7 @@ import hashlib
 import os
 import re
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -411,6 +411,37 @@ def inventory_for_mode(
     return records, excluded, {"baseRevision": base_revision, "changes": scoped_changes}
 
 
+def source_inventory_configuration(
+    configuration: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the only configuration fields allowed to influence source identity."""
+    value = configuration or {}
+    return {
+        "mode": value.get("mode", "review"),
+        "scope": list(value.get("scope", ["."])),
+        "exclude": list(value.get("exclude", [])),
+        "generated": list(value.get("generated", [])),
+        "vendored": list(value.get("vendored", [])),
+        "diffBase": value.get("diffBase"),
+    }
+
+
+def inventory_for_configuration(
+    root: Path,
+    configuration: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], dict[str, Any] | None]:
+    value = source_inventory_configuration(configuration)
+    return inventory_for_mode(
+        root,
+        mode=value["mode"],
+        scopes=value["scope"],
+        excludes=value["exclude"],
+        generated=value["generated"],
+        vendored=value["vendored"],
+        diff_base=value["diffBase"],
+    )
+
+
 def fingerprint_inventory(records: list[dict[str, Any]]) -> str:
     stable = []
     for row in sorted(records, key=lambda item: item["path"]):
@@ -427,24 +458,19 @@ def fingerprint_inventory(records: list[dict[str, Any]]) -> str:
     return sha256_bytes(canonical_compact(stable).encode("utf-8"))
 
 
-def worktree_fingerprint(root: Path) -> str:
+def worktree_fingerprint(
+    root: Path,
+    *,
+    records: Iterable[dict[str, Any]] | None = None,
+    configuration: Mapping[str, Any] | None = None,
+) -> str:
+    """Hash the canonical source projection without reopening excluded content."""
     root = root.resolve(strict=True)
-    if not inspect_git(root).is_repository:
-        records, _ = inventory(root)
-        return fingerprint_inventory(records)
-    records: list[dict[str, Any]] = []
-    for relative in _git_paths(root):
-        try:
-            record = _file_record(root, relative)
-        except OSError as error:
-            record = {
-                "path": relative,
-                "kind": "unreadable",
-                "sha256": sha256_bytes(str(error).encode("utf-8")),
-            }
-        record["classification"] = "source"
-        records.append(record)
-    return fingerprint_inventory(records)
+    if records is not None and configuration is not None:
+        raise ValueError("worktree fingerprint accepts records or configuration, not both")
+    if records is None:
+        records, _, _ = inventory_for_configuration(root, configuration)
+    return fingerprint_inventory(list(records))
 
 
 def repository_identity(state: GitState, records: list[dict[str, Any]]) -> str:

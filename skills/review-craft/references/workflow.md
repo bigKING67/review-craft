@@ -81,6 +81,12 @@ Use the preflight inventory as the only file worklist. Do not replace it with a
 handwritten sample. Tracked files remain in scope even when ignored. Do not follow
 symlinks outside the repository root.
 
+Apply configured scope and exclude patterns before opening or hashing file contents.
+Reuse that exact canonical source projection for run-state fingerprints, evidence
+mutation checks, validation, and remediation baselines. Excluded paths are accounted as
+an explicit boundary, not secretly re-read by a second full-worktree fingerprint. This
+also means source receipts make no unchanged-content claim about excluded paths.
+
 Assign every file exactly one outcome in `coverage.json`:
 
 ```text

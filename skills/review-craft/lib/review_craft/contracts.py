@@ -755,7 +755,7 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
                 diff_base=manifest_configuration["diffBase"],
             )
             current_source = fingerprint_inventory(records)
-            current_worktree = worktree_fingerprint(target_root)
+            current_worktree = worktree_fingerprint(target_root, records=records)
             current_status = inspect_git(target_root).status
         except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
             errors.append(f"run-state.targetRoot: source verification failed: {error}")

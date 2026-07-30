@@ -67,6 +67,7 @@ def run_evidence_command(
         allow_repository_mutation=manifest["configuration"]["policy"].get(
             "allowRepositoryMutation", False
         ),
+        source_configuration=manifest["configuration"],
         started_at=started_at,
     )
 
@@ -78,6 +79,7 @@ def run_configured_command(
     commands: dict[str, Any],
     command_name: str,
     allow_repository_mutation: bool,
+    source_configuration: dict[str, Any] | None = None,
     started_at: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Run one already-validated command into a content-bound receipt stream."""
@@ -107,6 +109,7 @@ def run_configured_command(
             timeout=timeout,
             started_at=started_at or _utc_now(),
             allow_repository_mutation=allow_repository_mutation,
+            source_configuration=source_configuration,
         )
 
 
@@ -125,9 +128,10 @@ def _run_evidence_command_locked(
     timeout: int,
     started_at: str,
     allow_repository_mutation: bool,
+    source_configuration: dict[str, Any] | None,
 ) -> tuple[int, dict[str, Any]]:
     before_status = inspect_git(target).status
-    before_worktree = worktree_fingerprint(target)
+    before_worktree = worktree_fingerprint(target, configuration=source_configuration)
     start = time.monotonic()
     timed_out = False
     try:
@@ -148,7 +152,7 @@ def _run_evidence_command_locked(
         stderr = error.stderr or b""
     duration_ms = round((time.monotonic() - start) * 1000)
     after_state = inspect_git(target)
-    after_worktree = worktree_fingerprint(target)
+    after_worktree = worktree_fingerprint(target, configuration=source_configuration)
     mutation = before_worktree != after_worktree or before_status != after_state.status
     commands_path = run_dir / ARTIFACT_PATHS["commands"]
     rows = read_jsonl(commands_path)

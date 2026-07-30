@@ -268,6 +268,11 @@ the Python runtime records them but does not enforce network or installation iso
 `allowRepositoryMutation` controls the runner response after before/after fingerprints
 detect a change; it does not prevent a configured command from writing. Only
 `outputOutsideRepository` is directly enforced during preflight path resolution.
+The configured `scope` and `exclude` define the canonical source projection reused by
+preflight, evidence mutation fingerprints, draft/final validation, and fix baselines.
+Excluded and out-of-scope file contents are not opened or hashed by these projections.
+Consequently, a Review Craft receipt does not prove that excluded paths remained
+unchanged; command isolation and host policy still own that boundary.
 Evidence commands targeting the same run are serialized with an OS-managed file lock.
 This preserves receipt sequence and mutation attribution across concurrent callers; it
 does not make configured commands run in parallel. Fix verification adds a separate

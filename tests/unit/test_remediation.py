@@ -26,10 +26,14 @@ class RemediationTests(unittest.TestCase):
         self.target_tmp, self.target = make_target(commit=True)
         self.output_tmp = tempfile.TemporaryDirectory(prefix="review-craft-runs-")
         self.fix_tmp = tempfile.TemporaryDirectory(prefix="review-craft-fixes-")
+        (self.target / "auth.json").write_text(
+            '{"token":"private-v1"}\n', encoding="utf-8"
+        )
         config = self.target / ".review-craft.json"
         config.write_text(
             json.dumps(
                 {
+                    "exclude": ["auth.json"],
                     "commands": {
                         "check": {
                             "argv": [
@@ -144,13 +148,43 @@ class RemediationTests(unittest.TestCase):
         self.assertEqual(
             [row["findingId"] for row in plan["selections"]], ["RC-FINDING-001"]
         )
+        state = read_json(fix_dir / "fix-state.json")
+        self.assertEqual(state["sourceConfiguration"]["exclude"], ["auth.json"])
+        self.assertNotIn("auth.json", {row["path"] for row in state["baselineFiles"]})
         validated = run_cli("validate-fix", "--fix-dir", str(fix_dir), "--allow-prepared")
         self.assertEqual(validated.returncode, 0, validated.stderr)
         self.assertEqual(json.loads(validated.stdout)["status"], "PREPARED")
 
+    def test_legacy_fix_state_derives_source_scope_from_sealed_review(self) -> None:
+        fix_dir = self._prepare()
+        state = read_json(fix_dir / "fix-state.json")
+        state.pop("sourceConfiguration")
+        state.pop("sourceConfigurationSha256")
+        write_json(fix_dir / "fix-state.json", state)
+
+        validated = run_cli("validate-fix", "--fix-dir", str(fix_dir), "--allow-prepared")
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        self.assertEqual(json.loads(validated.stdout)["status"], "PREPARED")
+
+    def test_fix_source_scope_is_bound_to_review_provenance(self) -> None:
+        fix_dir = self._prepare()
+        state = read_json(fix_dir / "fix-state.json")
+        state["sourceConfiguration"]["exclude"] = []
+        state["sourceConfigurationSha256"] = sha256_json(
+            state["sourceConfiguration"]
+        )
+        write_json(fix_dir / "fix-state.json", state)
+
+        validated = run_cli("validate-fix", "--fix-dir", str(fix_dir), "--allow-prepared")
+        self.assertEqual(validated.returncode, 2)
+        self.assertIn("does not match review provenance", validated.stderr)
+
     def test_verify_binds_changes_commands_and_assessment(self) -> None:
         fix_dir = self._prepare()
         (self.target / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+        (self.target / "auth.json").write_text(
+            '{"token":"private-v2"}\n', encoding="utf-8"
+        )
         assessment = self._assessment(
             status="RESOLVED",
             evidence=["change:app.py", "command:check"],
@@ -165,7 +199,7 @@ class RemediationTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr)
         result = json.loads(verified.stdout)
         self.assertEqual(result["status"], "VERIFIED")
-        self.assertEqual(result["changes"][0]["path"], "app.py")
+        self.assertEqual([row["path"] for row in result["changes"]], ["app.py"])
         self.assertEqual(result["commands"][0]["exitCode"], 0)
         self.assertEqual(result["findingResults"][0]["locationPathsChanged"], ["app.py"])
         schema_root = ROOT / "skills/review-craft/schemas"

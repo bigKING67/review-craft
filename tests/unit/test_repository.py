@@ -5,12 +5,19 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from tests.support import RUNTIME_LIB
+from tests.support import RUNTIME_LIB, git_init
 
 sys.path.insert(0, str(RUNTIME_LIB))
 
-from review_craft.repository import fingerprint_inventory, inventory, safe_remote
+import review_craft.repository as repository
+from review_craft.repository import (
+    fingerprint_inventory,
+    inventory,
+    safe_remote,
+    worktree_fingerprint,
+)
 from review_craft.repository_analysis import (
     build_dependency_map,
     build_module_map,
@@ -85,6 +92,49 @@ class RepositoryTests(unittest.TestCase):
             {"path": "a", "kind": "file", "sha256": "a" * 64, "classification": "source"},
         ]
         self.assertEqual(fingerprint_inventory(rows), fingerprint_inventory(list(reversed(rows))))
+
+    def test_worktree_fingerprint_never_opens_out_of_scope_or_excluded_content(self) -> None:
+        for is_git in (False, True):
+            with self.subTest(is_git=is_git), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "src").mkdir()
+                included = root / "src/app.py"
+                excluded = root / "src/private.json"
+                out_of_scope = root / "auth.json"
+                included.write_text("VALUE = 1\n", encoding="utf-8")
+                excluded.write_text('{"token":"private-v1"}\n', encoding="utf-8")
+                out_of_scope.write_text('{"token":"outside-v1"}\n', encoding="utf-8")
+                if is_git:
+                    git_init(root)
+                    repository.run_git(root, "add", "--", ".", check=True)
+                    repository.run_git(root, "commit", "-m", "fixture", check=True)
+                configuration = {
+                    "mode": "review",
+                    "scope": ["src"],
+                    "exclude": ["src/private.json"],
+                    "generated": [],
+                    "vendored": [],
+                    "diffBase": None,
+                }
+
+                with mock.patch.object(
+                    repository, "_file_record", wraps=repository._file_record
+                ) as reader:
+                    before = worktree_fingerprint(root, configuration=configuration)
+                self.assertEqual([call.args[1] for call in reader.call_args_list], ["src/app.py"])
+
+                excluded.write_text('{"token":"private-v2-longer"}\n', encoding="utf-8")
+                out_of_scope.write_text('{"token":"outside-v2-longer"}\n', encoding="utf-8")
+                self.assertEqual(
+                    worktree_fingerprint(root, configuration=configuration),
+                    before,
+                )
+
+                included.write_text("VALUE = 2\n", encoding="utf-8")
+                self.assertNotEqual(
+                    worktree_fingerprint(root, configuration=configuration),
+                    before,
+                )
 
     def test_repository_maps_capture_local_python_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
