@@ -14,7 +14,7 @@ from tests.support import RUNTIME_LIB, create_run, make_target, run_cli
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.evidence import run_evidence_command
-from review_craft.jsonio import read_jsonl
+from review_craft.jsonio import read_jsonl, sha256_json, write_jsonl
 
 
 class CliTests(unittest.TestCase):
@@ -466,6 +466,67 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(validated.returncode, 2)
             self.assertIn("stdoutSha256 does not match", validated.stderr)
+
+    def test_evidence_receipt_must_match_configured_command(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "stable": {
+                            "argv": [sys.executable, "-c", "print('configured')"],
+                            "cwd": ".",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            executed = run_cli(
+                "run-evidence", "--run-dir", str(run_dir), "--command", "stable"
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+
+            receipts = read_jsonl(run_dir / "evidence/commands.jsonl")
+            receipt = receipts[0]
+            old_id = receipt["id"]
+            receipt["cwd"] = "never-used-subdirectory"
+            new_id = sha256_json(
+                {
+                    "name": receipt["name"],
+                    "argv": receipt["argv"],
+                    "startedAt": receipt["startedAt"],
+                    "cwd": receipt["cwd"],
+                    "sequence": receipt["sequence"],
+                }
+            )[:16]
+            receipt["id"] = new_id
+            for suffix, field in (("stdout", "stdoutArtifact"), ("stderr", "stderrArtifact")):
+                old_path = run_dir / f"evidence/commands/{old_id}.{suffix}"
+                new_path = run_dir / f"evidence/commands/{new_id}.{suffix}"
+                old_path.rename(new_path)
+                receipt[field] = f"evidence/commands/{new_id}.{suffix}"
+            write_jsonl(run_dir / "evidence/commands.jsonl", receipts)
+
+            validated = run_cli(
+                "validate", "--run-dir", str(run_dir), "--allow-draft"
+            )
+            self.assertEqual(validated.returncode, 2)
+            self.assertIn("cwd does not match configured command", validated.stderr)
 
     def test_concurrent_evidence_is_serialized_with_a_preexisting_lock_file(self) -> None:
         temporary, target = make_target(commit=True)

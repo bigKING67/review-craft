@@ -91,6 +91,61 @@ class ContractTests(unittest.TestCase):
             validate_run(self.run_dir)
         self.assertIn("scores >=95 require evidence level E3", str(captured.exception))
 
+    def test_e2_requires_successful_canonical_command_evidence(self) -> None:
+        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
+        scorecard["evidenceLevel"] = "E2"
+        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
+        self.assertEqual(read_jsonl(self.run_dir / ARTIFACT_PATHS["commands"]), [])
+
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn(
+            "E2+ requires a successful canonical command receipt", str(captured.exception)
+        )
+
+    def test_final_score_rejects_deferred_review_gaps(self) -> None:
+        coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
+        for row in coverage["files"]:
+            row["disposition"] = "DEFERRED"
+            row["reason"] = "Deliberately deferred by the regression fixture."
+        coverage["summary"]["reviewed"] = 0
+        coverage["summary"]["deferred"] = len(coverage["files"])
+        write_json(self.run_dir / ARTIFACT_PATHS["coverage"], coverage)
+
+        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
+        scorecard["coveragePercent"] = 0.0
+        scorecard["accountedPercent"] = 100.0
+        scorecard["reviewedPercent"] = 0.0
+        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
+
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn(
+            "final requires no pending, deferred, unreadable, or out-of-scope review gaps",
+            str(captured.exception),
+        )
+
+    def test_report_distinguishes_accounted_and_reviewed_coverage(self) -> None:
+        coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
+        for row in coverage["files"]:
+            row["disposition"] = "DEFERRED"
+            row["reason"] = "Deliberately deferred by the report fixture."
+        coverage["summary"]["reviewed"] = 0
+        coverage["summary"]["deferred"] = len(coverage["files"])
+        write_json(self.run_dir / ARTIFACT_PATHS["coverage"], coverage)
+
+        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
+        scorecard["status"] = "provisional"
+        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
+
+        finalized = run_cli("finalize", "--run-dir", str(self.run_dir))
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        report = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("Coverage accounted: `100.0%`", report)
+        self.assertIn("Coverage reviewed: `0.0%`", report)
+        self.assertIn("Score status: `provisional`", report)
+        self.assertIn("DEFERRED: `1`", report)
+
     def test_coverage_total_must_match_rows(self) -> None:
         coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
         coverage["summary"]["total"] += 1

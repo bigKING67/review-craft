@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
+from review_craft.jsonio import read_json, read_jsonl, sha256_json, write_json, write_jsonl
 
 from tests.support import ROOT, make_target, populate_valid_run, run_cli
 
@@ -205,6 +206,53 @@ class RemediationTests(unittest.TestCase):
         validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
         self.assertEqual(validated.returncode, 2)
         self.assertIn("stdoutSha256 mismatch", validated.stderr)
+
+    def test_tampered_command_argv_breaks_fix_validation(self) -> None:
+        fix_dir = self._prepare()
+        (self.target / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+        assessment = self._assessment(
+            status="RESOLVED",
+            evidence=["change:app.py", "command:check"],
+        )
+        verified = run_cli(
+            "verify-fix",
+            "--fix-dir",
+            str(fix_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+        receipts = read_jsonl(fix_dir / "evidence/commands.jsonl")
+        receipt = receipts[0]
+        old_id = receipt["id"]
+        receipt["argv"] = [sys.executable, "-c", "print('never executed')"]
+        new_id = sha256_json(
+            {
+                "name": receipt["name"],
+                "argv": receipt["argv"],
+                "startedAt": receipt["startedAt"],
+                "cwd": receipt["cwd"],
+                "sequence": receipt["sequence"],
+            }
+        )[:16]
+        receipt["id"] = new_id
+        for suffix, field in (("stdout", "stdoutArtifact"), ("stderr", "stderrArtifact")):
+            old_path = fix_dir / f"evidence/commands/{old_id}.{suffix}"
+            new_path = fix_dir / f"evidence/commands/{new_id}.{suffix}"
+            old_path.rename(new_path)
+            receipt[field] = f"evidence/commands/{new_id}.{suffix}"
+        write_jsonl(fix_dir / "evidence/commands.jsonl", receipts)
+
+        result_path = fix_dir / "fix-verification.json"
+        result = read_json(result_path)
+        result["commands"][0]["receiptId"] = new_id
+        result["commands"][0]["receiptSha256"] = sha256_json(receipt)
+        write_json(result_path, result)
+
+        validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
+        self.assertEqual(validated.returncode, 2)
+        self.assertIn("argv does not match configured command", validated.stderr)
 
     def test_failed_verification_command_cannot_produce_verified_status(self) -> None:
         fix_dir = self._prepare()

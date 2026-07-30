@@ -5,6 +5,7 @@ from typing import Any
 
 from .constants import ARTIFACT_PATHS
 from .contracts import ContractError
+from .evidence import receipt_configuration_errors
 from .jsonio import read_json, read_jsonl, sha256_json
 from .remediation import (
     _assessment_rows,
@@ -23,7 +24,9 @@ from .remediation import (
 from .schema_validation import validate_instance
 
 
-def _validate_receipts(fix_dir: Path) -> dict[str, dict[str, Any]]:
+def _validate_receipts(
+    fix_dir: Path, commands: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
     rows = read_jsonl(_session_file(fix_dir, ARTIFACT_PATHS["commands"]))
     errors: list[str] = []
     receipts: dict[str, dict[str, Any]] = {}
@@ -39,6 +42,13 @@ def _validate_receipts(fix_dir: Path) -> dict[str, dict[str, Any]]:
             errors.append(f"fix command receipt {index}: id must be unique")
             continue
         receipts[identifier] = row
+        errors.extend(
+            receipt_configuration_errors(
+                row,
+                commands,
+                prefix=f"fix command receipt {identifier}",
+            )
+        )
         sequence = row.get("sequence")
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence in sequences:
             errors.append(f"fix command receipt {identifier}: sequence must be unique")
@@ -90,7 +100,7 @@ def validate_fix(
 ) -> dict[str, Any]:
     fix_dir, plan, state = _load_fix(fix_dir_value)
     _validate_review_provenance(plan, state)
-    receipts = _validate_receipts(fix_dir)
+    receipts = _validate_receipts(fix_dir, state["commands"])
     result_path = fix_dir / "fix-verification.json"
     assessment_path = fix_dir / "fix-assessment.json"
     if not require_verification and not result_path.exists() and not assessment_path.exists():

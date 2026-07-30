@@ -32,6 +32,22 @@ LOCK_NAME = ".evidence-command.lock"
 LOCK_POLL_SECONDS = 0.05
 
 
+def receipt_configuration_errors(
+    receipt: dict[str, Any], commands: dict[str, Any], *, prefix: str
+) -> list[str]:
+    """Bind a self-consistent receipt back to its canonical command configuration."""
+    name = receipt.get("name")
+    command = commands.get(name) if isinstance(name, str) else None
+    if not isinstance(command, dict):
+        return [f"{prefix}: name does not identify a configured command"]
+    errors: list[str] = []
+    if receipt.get("argv") != command.get("argv"):
+        errors.append(f"{prefix}: argv does not match configured command {name}")
+    if receipt.get("cwd") != command.get("cwd", "."):
+        errors.append(f"{prefix}: cwd does not match configured command {name}")
+    return errors
+
+
 def _try_lock(handle: BinaryIO) -> bool:
     try:
         if fcntl is not None:

@@ -12,6 +12,8 @@
     "evidenceLevel": {"enum": ["E0", "E1", "E2", "E3", "E4"]},
     "confidence": {"enum": ["LOW", "MEDIUM", "MEDIUM_HIGH", "HIGH"]},
     "coveragePercent": {"type": "number", "minimum": 0, "maximum": 100},
+    "accountedPercent": {"type": "number", "minimum": 0, "maximum": 100},
+    "reviewedPercent": {"type": "number", "minimum": 0, "maximum": 100},
     "unresolvedCandidates": {"type": "integer", "minimum": 0},
     "dimensions": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/dimension"}},
     "total": {"type": "integer", "minimum": 0, "maximum": 100}

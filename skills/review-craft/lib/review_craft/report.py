@@ -70,6 +70,11 @@ def render_report(data: dict[str, Any]) -> str:
     delete_subjects = [row["subject"] for row in decisions if row["decision"] == "DELETE"]
     keep_subjects = [row["subject"] for row in decisions if row["decision"] == "KEEP"]
     decision_by_id = {row["id"]: row["decision"] for row in decisions}
+    accounted_percent = scorecard.get("accountedPercent", scorecard["coveragePercent"])
+    reviewed_percent = scorecard.get("reviewedPercent", scorecard["coveragePercent"])
+    coverage_counts: dict[str, int] = defaultdict(int)
+    for row in coverage["files"]:
+        coverage_counts[row["disposition"]] += 1
 
     identity_lines = [
         "# Review Craft 工程审查报告",
@@ -97,7 +102,9 @@ def render_report(data: dict[str, Any]) -> str:
         [
             f"- Source fingerprint: `{manifest['target']['sourceFingerprint']}`",
             f"- Evidence level: `{scorecard['evidenceLevel']}`",
-            f"- Coverage: `{scorecard['coveragePercent']}%`",
+            f"- Coverage accounted: `{accounted_percent}%`",
+            f"- Coverage reviewed: `{reviewed_percent}%`",
+            f"- Score status: `{scorecard['status']}`",
             f"- Confidence: `{scorecard['confidence']}`",
             f"- Modules: `{len(module_map['modules'])}`",
             f"- Static dependency edges: `{len(dependency_map['edges'])}`",
@@ -239,6 +246,20 @@ def render_report(data: dict[str, Any]) -> str:
             f"- 项目 Profile：{review_scope['profile']['resolved']}",
             f"- 模块数：{len(module_map['modules'])}",
             f"- 静态依赖边数：{len(dependency_map['edges'])}",
+            "- Coverage dispositions:",
+            *[
+                f"  - {disposition}: `{coverage_counts.get(disposition, 0)}`"
+                for disposition in (
+                    "REVIEWED",
+                    "COVERED_BY_PARENT",
+                    "GENERATED",
+                    "VENDORED",
+                    "BINARY",
+                    "OUT_OF_SCOPE",
+                    "UNREADABLE",
+                    "DEFERRED",
+                )
+            ],
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -251,9 +272,18 @@ def finalize_run(run_dir: Path, *, sealed_at: str) -> Path:
     scorecard = read_json(scorecard_path)
     total = sum(row["awarded"] for row in scorecard["dimensions"])
     files = coverage["files"]
-    resolved = sum(1 for row in files if row.get("disposition") != "PENDING")
+    accounted = sum(1 for row in files if row.get("disposition") != "PENDING")
+    reviewed = sum(
+        row.get("disposition") in {"REVIEWED", "COVERED_BY_PARENT"} for row in files
+    )
     scorecard["total"] = total
-    scorecard["coveragePercent"] = round(100 * resolved / len(files), 2) if files else 100.0
+    scorecard["accountedPercent"] = (
+        round(100 * accounted / len(files), 2) if files else 100.0
+    )
+    scorecard["reviewedPercent"] = (
+        round(100 * reviewed / len(files), 2) if files else 100.0
+    )
+    scorecard["coveragePercent"] = scorecard["reviewedPercent"]
     candidates = read_jsonl(run_dir / ARTIFACT_PATHS["candidateLedger"])
     scorecard["unresolvedCandidates"] = sum(
         1

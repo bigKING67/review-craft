@@ -20,6 +20,7 @@ from .constants import (
     SEVERITIES,
     VALIDATION_STATUSES,
 )
+from .evidence import receipt_configuration_errors
 from .jsonio import read_json, read_jsonl, sha256_bytes, sha256_json
 from .repository import (
     fingerprint_inventory,
@@ -511,6 +512,7 @@ def _validate_scorecard(
     findings: dict[str, dict[str, Any]],
     candidates: list[dict[str, Any]],
     coverage: dict[str, Any],
+    commands: list[dict[str, Any]],
     errors: list[str],
     final: bool,
 ) -> None:
@@ -570,15 +572,62 @@ def _validate_scorecard(
     if scorecard.get("unresolvedCandidates") != unresolved:
         errors.append(f"scorecard.unresolvedCandidates: expected {unresolved}")
     files = coverage.get("files", [])
-    resolved = sum(1 for row in files if row.get("disposition") in FINAL_COVERAGE_DISPOSITIONS)
-    coverage_percent = round(100 * resolved / len(files), 2) if files else 100.0
-    if scorecard.get("coveragePercent") != coverage_percent:
-        errors.append(f"scorecard.coveragePercent: expected {coverage_percent}")
+    accounted = sum(
+        1 for row in files if row.get("disposition") in FINAL_COVERAGE_DISPOSITIONS
+    )
+    reviewed = sum(
+        1
+        for row in files
+        if row.get("disposition") in {"REVIEWED", "COVERED_BY_PARENT"}
+    )
+    accounted_percent = round(100 * accounted / len(files), 2) if files else 100.0
+    reviewed_percent = round(100 * reviewed / len(files), 2) if files else 100.0
+    has_explicit_coverage_metrics = (
+        "accountedPercent" in scorecard or "reviewedPercent" in scorecard
+    )
+    if has_explicit_coverage_metrics:
+        if scorecard.get("accountedPercent") != accounted_percent:
+            errors.append(f"scorecard.accountedPercent: expected {accounted_percent}")
+        if scorecard.get("reviewedPercent") != reviewed_percent:
+            errors.append(f"scorecard.reviewedPercent: expected {reviewed_percent}")
+        if scorecard.get("coveragePercent") != reviewed_percent:
+            errors.append(f"scorecard.coveragePercent: expected {reviewed_percent}")
+    elif scorecard.get("coveragePercent") != accounted_percent:
+        # Historical run.v3 artifacts used coveragePercent for accounting closure.
+        errors.append(f"scorecard.coveragePercent: expected {accounted_percent}")
+    successful_receipts = [
+        row
+        for row in commands
+        if isinstance(row, dict)
+        and row.get("exitCode") == 0
+        and row.get("timedOut") is False
+        and row.get("repositoryMutationDetected") is False
+    ]
+    if EVIDENCE_LEVELS[level] >= EVIDENCE_LEVELS["E2"] and not successful_receipts:
+        errors.append(
+            "scorecard.evidenceLevel: E2+ requires a successful canonical command receipt"
+        )
     if final:
         if EVIDENCE_LEVELS[level] < 1:
             errors.append("scorecard.evidenceLevel: E1 is required for a numeric final score")
-        if scorecard.get("status") == "final" and (coverage_percent != 100.0 or unresolved):
+        review_gaps = sum(
+            row.get("disposition") in {"PENDING", "DEFERRED", "UNREADABLE", "OUT_OF_SCOPE"}
+            for row in files
+            if isinstance(row, dict)
+        )
+        if scorecard.get("status") == "final" and (
+            accounted_percent != 100.0 or unresolved
+        ):
             errors.append("scorecard.status: final requires closed coverage and candidates")
+        if (
+            has_explicit_coverage_metrics
+            and scorecard.get("status") == "final"
+            and review_gaps
+        ):
+            errors.append(
+                "scorecard.status: final requires no pending, deferred, unreadable, "
+                "or out-of-scope review gaps"
+            )
         if scorecard.get("status") == "final" and any(
             row.get("priority") in {"P0", "P1"}
             and row.get("validationStatus") != "CONFIRMED"
@@ -742,6 +791,13 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             continue
         command_id = receipt.get("id")
         prefix = f"command receipt {command_id if isinstance(command_id, str) else index}"
+        errors.extend(
+            receipt_configuration_errors(
+                receipt,
+                manifest_configuration["commands"],
+                prefix=prefix,
+            )
+        )
         if isinstance(command_id, str):
             if command_id in receipt_ids:
                 errors.append(f"{prefix}: duplicate id")
@@ -807,7 +863,13 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     )
     _validate_decisions(data["decisions"], findings, errors)
     _validate_scorecard(
-        data["scorecard"], findings, data["candidates"], data["coverage"], errors, final
+        data["scorecard"],
+        findings,
+        data["candidates"],
+        data["coverage"],
+        data["commands"],
+        errors,
+        final,
     )
     _validate_remediation(data["remediationPlan"], errors, final)
     if errors:

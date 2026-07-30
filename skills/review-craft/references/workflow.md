@@ -101,7 +101,17 @@ patterns or reliable build/package facts; size and unfamiliarity are insufficien
 `COVERED_BY_PARENT` is for tightly coupled files reviewed through one parent
 artifact. Record the parent and evidence. It is not a shortcut for skipping a
 directory. Keep unreadable and deferred files explicit, and never alter inventory
-hashes to hide drift. Incomplete coverage keeps the score provisional.
+hashes to hide drift.
+
+Track two percentages separately:
+
+- `accountedPercent`: files with any final disposition;
+- `reviewedPercent`: only `REVIEWED` and `COVERED_BY_PARENT` files.
+
+`coveragePercent` in newly finalized run.v3 artifacts is the reviewed percentage.
+Generated, vendored, and binary files may be fully accounted without pretending they
+were reviewed. A final score still requires complete accounting and no `PENDING`,
+`DEFERRED`, `UNREADABLE`, or `OUT_OF_SCOPE` review gaps; otherwise keep it provisional.
 
 ## 4. Evidence collection
 
@@ -119,6 +129,9 @@ python3 <skill-root>/scripts/review_craft.py \
 
 The runner uses argv without a shell and records duration, exit code, output, and
 before/after repository state. It captures evidence but is not a security sandbox.
+Each receipt is validated against the configured command's canonical name, argv, and
+cwd. Editing a receipt, recomputing its ID, or renaming its output files cannot turn a
+different command into valid evidence.
 If a command mutates tracked or untracked target source, stop automatic execution,
 report the mutation, and do not revert user work.
 
@@ -193,12 +206,14 @@ Evidence gates:
 
 - E0: no formal score;
 - E1: source and configuration review;
-- E2: relevant tests, type checks, builds, or static tools executed;
+- E2: at least one relevant configured check, test, build, or static tool completed
+  successfully without timeout or repository mutation;
 - E3: critical runtime behavior, benchmark, profile, or trace observed;
 - E4: clean and deployment-representative reproduction.
 
-Scores of 95+ require E3. Scores of 98-100 require E4. Incomplete coverage or
-unresolved candidates keep scoring provisional.
+E2-E4 require a successful canonical command receipt. Scores of 95+ require E3.
+Scores of 98-100 require E4. Review gaps or unresolved candidates keep scoring
+provisional.
 
 ## 9. Target design and remediation
 

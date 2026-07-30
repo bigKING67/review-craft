@@ -34,20 +34,26 @@ Only the canonical finalizer may produce the numeric total. When the runtime or
 finalizer is unavailable, report the evidence level and qualitative gaps without
 a numeric table, approximate total, or alternate weighting model.
 
-Use a provisional score when coverage or candidates remain open. Do not deduct for
-an explicit non-goal. Do not inflate a score merely because source files, schemas,
-or tests exist.
+Use a provisional score when coverage or candidates remain open. Accounted coverage
+means every file has a final disposition; reviewed coverage counts only `REVIEWED`
+and `COVERED_BY_PARENT`. Generated, vendored, and binary dispositions are accounted
+but never presented as reviewed. `PENDING`, `DEFERRED`, `UNREADABLE`, and
+`OUT_OF_SCOPE` review gaps prevent a final score. Do not deduct for an explicit
+non-goal. Do not inflate a score merely because source files, schemas, or tests exist.
 
 ## Evidence levels
 
 - E0: description or documentation only; no formal score.
 - E1: current source and configuration reviewed.
-- E2: relevant checks, tests, or builds executed.
+- E2: at least one relevant configured check, test, or build completed successfully
+  without timeout or repository mutation.
 - E3: critical runtime, benchmark, profile, or trace evidence captured.
 - E4: clean and deployment-representative reproduction.
 
-Scores of 95 or more require E3. Scores of 98-100 require E4. These gates prevent
-source completeness or self-evaluation from masquerading as operational proof.
+E2-E4 require a command receipt whose name, argv, and cwd match the canonical command
+configuration. Scores of 95 or more require E3. Scores of 98-100 require E4. These
+gates prevent source completeness, self-consistent receipt tampering, or
+self-evaluation from masquerading as operational proof.
 
 ## Confidence
 
@@ -59,5 +65,11 @@ when critical paths, environments, or scale cannot be reproduced.
 
 The report is a deterministic view of canonical JSON. It contains the executive
 summary, eight scores, full findings, dispositions, target design, Phase 0-4 plan,
-and final five answers. Edit JSON and rerun finalization instead of patching the
-Markdown.
+final five answers, score status, accounted coverage, reviewed coverage, and coverage
+disposition counts. Edit JSON and rerun finalization instead of patching the Markdown.
+
+New run.v3 scorecards write `accountedPercent` and `reviewedPercent`, with
+`coveragePercent` retaining the reviewed value. For compatibility, a historical
+run.v3 scorecard without the two explicit fields is validated using its original
+`coveragePercent` accounting semantics; restart unfinished historical runs with the
+current preflight rather than silently changing their meaning.

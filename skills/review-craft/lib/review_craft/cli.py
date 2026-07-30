@@ -134,6 +134,17 @@ def _draft_artifacts(
         "unknowns": [],
     }
     coverage_files = [_coverage_row(row) for row in records]
+    accounted = sum(
+        row["disposition"]
+        in {"GENERATED", "VENDORED", "BINARY", "OUT_OF_SCOPE", "UNREADABLE", "DEFERRED"}
+        for row in coverage_files
+    )
+    reviewed = sum(
+        row["disposition"] in {"REVIEWED", "COVERED_BY_PARENT"}
+        for row in coverage_files
+    )
+    accounted_percent = round(100 * accounted / len(coverage_files), 2) if coverage_files else 100.0
+    reviewed_percent = round(100 * reviewed / len(coverage_files), 2) if coverage_files else 100.0
     coverage = {
         "documentType": "review-craft.coverage",
         "schemaVersion": SCHEMA_VERSION,
@@ -166,7 +177,9 @@ def _draft_artifacts(
         "status": "provisional",
         "evidenceLevel": "E0",
         "confidence": "LOW",
-        "coveragePercent": 0.0,
+        "coveragePercent": reviewed_percent,
+        "accountedPercent": accounted_percent,
+        "reviewedPercent": reviewed_percent,
         "unresolvedCandidates": 0,
         "dimensions": [
             {

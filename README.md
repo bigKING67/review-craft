@@ -45,6 +45,7 @@ Review Craft requires:
 
 - a Project Quality Model grounded in real project goals and non-goals;
 - deterministic per-file coverage accounting;
+- distinct accounted and actually reviewed coverage metrics;
 - a candidate ledger separate from validated findings;
 - independent severity and remediation priority;
 - explicit `KEEP`, `CLEAN_UP`, `MERGE`, `REPLACE`, `REWRITE`, `DELETE`, `DEFER`,
@@ -152,6 +153,10 @@ python3 skills/review-craft/scripts/review_craft.py \
   run-evidence --run-dir <run-dir> --all
 ```
 
+Command evidence is configuration-bound: receipt name, argv, and cwd must match the
+canonical configured command. E2-E4 require at least one receipt that passed without
+timeout or repository mutation.
+
 Validate and finalize canonical artifacts:
 
 ```bash
@@ -210,7 +215,10 @@ Version 0.4 continues to create backward-compatible `review-craft.run.v3` review
 artifacts and adds separate `review-craft.fix.v1` remediation artifacts. Finalized
 v0.1/v0.2/v0.3 reports remain historical outputs; finalize an unfinished old run with
 its matching runtime or restart it with v0.4 preflight. Review Craft never mutates an
-old run in place.
+old run in place. New run.v3 scorecards report both accounted and reviewed coverage;
+`coveragePercent` now carries the reviewed value. Historical run.v3 scorecards without
+the new optional fields retain their original accounting interpretation during
+validation.
 
 ## Validate this repository
 

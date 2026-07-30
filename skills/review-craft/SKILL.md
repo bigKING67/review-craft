@@ -52,6 +52,9 @@ cannot be resolved from this file and the target's scoped controls.
   target is allowed; source changes require an explicit implementation request and a
   prepared selection of validated findings.
 - Do not claim a full-repository review without per-file coverage accounting.
+- Distinguish accounted coverage from reviewed coverage. `GENERATED`, `VENDORED`,
+  and `BINARY` files may be accounted without being reviewed; `PENDING`, `DEFERRED`,
+  `UNREADABLE`, and `OUT_OF_SCOPE` review gaps cannot support a final score.
 - Do not promote a candidate into a finding without a validation disposition.
 - Do not turn style preference, modernity preference, or aesthetic discomfort
   into a finding without a violated invariant or measurable cost.
@@ -68,6 +71,9 @@ cannot be resolved from this file and the target's scoped controls.
 - Do not hand-edit `report.md`; generate it from canonical artifacts.
 - Never estimate, approximate, or manually total a numeric score. A numeric
   score is valid only when read from the finalized canonical scorecard/report.
+- Treat command receipts as evidence only when their name, argv, and cwd match the
+  canonical configuration. E2-E4 require at least one successful, non-mutating,
+  non-timeout configured command receipt.
 - Respect a user-limited claim or dimension. Do not broaden a focused question
   into unrelated findings unless a directly observed P0/P1 issue must be surfaced.
 
@@ -154,7 +160,8 @@ findings. Read [remediation.md](references/remediation.md) before editing.
 4. Apply only the selected changes with the host's normal editing tools. The bundled
    runtime must never mutate target source.
 5. Record a HUMAN, AGENT_ASSISTED, or AUTOMATED assessment with post-change evidence.
-6. Run `verify-fix`, then `validate-fix`; distinguish artifact validity from a
+6. Run `verify-fix`, then `validate-fix`; every verification receipt must remain
+   bound to its selected canonical name, argv, and cwd. Distinguish artifact validity from a
    `VERIFIED`, `PARTIAL`, `FAILED`, or `NO_CHANGES` remediation outcome.
 7. Treat later source drift as invalidating the verification and rerun it after edits.
 

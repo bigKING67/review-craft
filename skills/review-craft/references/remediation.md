@@ -101,6 +101,11 @@ input errors exit `2`. `validate-fix` validates artifact integrity, not remediat
 success; a content-valid `FAILED` result therefore validates successfully while still
 remaining a failed remediation.
 
+Every fix command receipt is also bound to the selected command configuration stored
+by `prepare-fix`. Its name, argv, and cwd must match exactly. Recomputing receipt IDs,
+output filenames, or hashes after changing argv/cwd is tampering and makes
+`validate-fix` fail with exit `2`.
+
 If a verification command mutates source, Review Craft stops before later commands,
 records them in `skippedCommands`, and returns `FAILED`. It does not revert the mutation.
 
