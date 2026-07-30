@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+# tests.support adds the canonical runtime library to sys.path before product imports.
+# ruff: noqa: I001
+
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
-from review_craft.jsonio import read_json, read_jsonl, sha256_json, write_json, write_jsonl
 
-from tests.support import ROOT, make_target, populate_valid_run, run_cli
+from tests.support import ROOT, RUNTIME_SCRIPT, make_target, populate_valid_run, run_cli
+
+from review_craft.evidence import run_configured_command
+from review_craft.jsonio import read_json, read_jsonl, sha256_json, write_json, write_jsonl
+from review_craft.repository import inventory
+from review_craft.repository_analysis import build_dependency_map
 
 
 class RemediationTests(unittest.TestCase):
@@ -44,6 +53,17 @@ class RemediationTests(unittest.TestCase):
                         },
                         "after": {
                             "argv": [sys.executable, "-c", "print('must be skipped')"]
+                        },
+                        "slow-check": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import time; from pathlib import Path; "
+                                    "time.sleep(0.5); "
+                                    "assert 'return 42' in Path('app.py').read_text()"
+                                ),
+                            ]
                         }
                     }
                 }
@@ -349,6 +369,147 @@ class RemediationTests(unittest.TestCase):
         self.assertTrue(result["commands"][0]["repositoryMutationDetected"])
         validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
         self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_concurrent_verify_allows_one_terminal_result(self) -> None:
+        prepared = run_cli(
+            "prepare-fix",
+            "--run-dir",
+            str(self.run_dir),
+            "--finding",
+            "RC-FINDING-001",
+            "--command",
+            "slow-check",
+            "--output-root",
+            self.fix_tmp.name,
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        fix_dir = Path(json.loads(prepared.stdout)["fixDir"])
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        assessment = self._assessment(
+            status="RESOLVED",
+            evidence=["change:app.py", "command:slow-check"],
+        )
+        environment = dict(os.environ)
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        argv = [
+            sys.executable,
+            str(RUNTIME_SCRIPT),
+            "verify-fix",
+            "--fix-dir",
+            str(fix_dir),
+            "--assessment",
+            str(assessment),
+        ]
+        processes = [
+            subprocess.Popen(
+                argv,
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(2)
+        ]
+        results = []
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            results.append((process.returncode, stdout, stderr))
+
+        self.assertEqual(sorted(row[0] for row in results), [0, 2], results)
+        success = next(row for row in results if row[0] == 0)
+        rejected = next(row for row in results if row[0] == 2)
+        self.assertEqual(json.loads(success[1])["status"], "VERIFIED")
+        self.assertIn("fix session is already completed", rejected[2])
+        receipts = read_jsonl(fix_dir / "evidence/commands.jsonl")
+        verification = read_json(fix_dir / "fix-verification.json")
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            [row["receiptId"] for row in verification["commands"]],
+            [receipts[0]["id"]],
+        )
+        validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_incomplete_attempt_receipt_requires_new_fix_session(self) -> None:
+        fix_dir = self._prepare()
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        state = read_json(fix_dir / "fix-state.json")
+        run_configured_command(
+            session_dir=fix_dir,
+            target=self.target,
+            commands=state["commands"],
+            command_name="check",
+            allow_repository_mutation=False,
+        )
+        invalid_prepared = run_cli(
+            "validate-fix", "--fix-dir", str(fix_dir), "--allow-prepared"
+        )
+        self.assertEqual(invalid_prepared.returncode, 2)
+        self.assertIn(
+            "prepared/incomplete fix session must not contain command receipts",
+            invalid_prepared.stderr,
+        )
+        assessment = self._assessment(
+            status="RESOLVED",
+            evidence=["change:app.py", "command:check"],
+        )
+        verified = run_cli(
+            "verify-fix",
+            "--fix-dir",
+            str(fix_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(verified.returncode, 2)
+        self.assertIn("contains prior command receipts", verified.stderr)
+        self.assertEqual(len(read_jsonl(fix_dir / "evidence/commands.jsonl")), 1)
+
+    def test_orphan_receipt_breaks_completed_fix_validation(self) -> None:
+        fix_dir = self._prepare()
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        assessment = self._assessment(
+            status="RESOLVED",
+            evidence=["change:app.py", "command:check"],
+        )
+        verified = run_cli(
+            "verify-fix",
+            "--fix-dir",
+            str(fix_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        state = read_json(fix_dir / "fix-state.json")
+        run_configured_command(
+            session_dir=fix_dir,
+            target=self.target,
+            commands=state["commands"],
+            command_name="check",
+            allow_repository_mutation=False,
+        )
+
+        validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
+        self.assertEqual(validated.returncode, 2)
+        self.assertIn("receipt ledger must exactly match", validated.stderr)
+
+    def test_remediation_contract_dependencies_are_one_way(self) -> None:
+        records, _ = inventory(ROOT)
+        dependency_map = build_dependency_map(ROOT, records)
+        edges = {(row["from"], row["to"]) for row in dependency_map["edges"]}
+        runtime = "skills/review-craft/lib/review_craft"
+        remediation = f"{runtime}/remediation.py"
+        validation = f"{runtime}/remediation_validation.py"
+        contract = f"{runtime}/remediation_contract.py"
+        self.assertNotIn((validation, remediation), edges)
+        self.assertIn((remediation, contract), edges)
+        self.assertIn((validation, contract), edges)
 
 
 if __name__ == "__main__":

@@ -1,22 +1,10 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO
-
-if os.name == "nt":
-    import msvcrt
-
-    fcntl = None
-else:
-    import fcntl
-
-    msvcrt = None
+from typing import Any
 
 from .constants import ARTIFACT_PATHS
 from .jsonio import (
@@ -26,10 +14,10 @@ from .jsonio import (
     sha256_bytes,
     write_jsonl,
 )
+from .locking import exclusive_file_lock
 from .repository import inspect_git, worktree_fingerprint
 
 LOCK_NAME = ".evidence-command.lock"
-LOCK_POLL_SECONDS = 0.05
 
 
 def receipt_configuration_errors(
@@ -46,48 +34,6 @@ def receipt_configuration_errors(
     if receipt.get("cwd") != command.get("cwd", "."):
         errors.append(f"{prefix}: cwd does not match configured command {name}")
     return errors
-
-
-def _try_lock(handle: BinaryIO) -> bool:
-    try:
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        else:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-    except (BlockingIOError, OSError):
-        return False
-    return True
-
-
-def _unlock(handle: BinaryIO) -> None:
-    if fcntl is not None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    else:
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-
-
-@contextmanager
-def evidence_run_lock(run_dir: Path, *, lease_seconds: int) -> Iterator[None]:
-    lock_path = run_dir / LOCK_NAME
-    wait_deadline = time.monotonic() + lease_seconds
-    lock_path.touch(mode=0o600, exist_ok=True)
-    with lock_path.open("r+b") as handle:
-        if lock_path.stat().st_size == 0:
-            handle.write(b"\0")
-            handle.flush()
-            os.fsync(handle.fileno())
-        while not _try_lock(handle):
-            if time.monotonic() >= wait_deadline:
-                raise TimeoutError(
-                    "timed out waiting for another evidence command to finish"
-                ) from None
-            time.sleep(LOCK_POLL_SECONDS)
-        try:
-            yield
-        finally:
-            _unlock(handle)
 
 
 def resolve_repository_directory(root: Path, relative: str, field: str) -> Path:
@@ -145,7 +91,12 @@ def run_configured_command(
     timeout = command.get("timeoutSeconds", 600)
     # A run owns one receipt stream. Serialize the complete command lifecycle so
     # sequence assignment and before/after mutation evidence remain attributable.
-    with evidence_run_lock(session_dir, lease_seconds=timeout + 30):
+    with exclusive_file_lock(
+        session_dir,
+        name=LOCK_NAME,
+        wait_seconds=timeout + 30,
+        timeout_message="timed out waiting for another evidence command to finish",
+    ):
         return _run_evidence_command_locked(
             run_dir=session_dir,
             target=target,

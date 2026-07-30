@@ -230,6 +230,12 @@ Preserve migration and rollback paths whenever behavior or compatibility can
 change. Do not promise a target score without a target evidence level and explicit
 acceptance conditions.
 
+When the user authorizes implementation, follow `remediation.md`. A prepared fix session
+permits one terminal verification attempt under an exclusive session lock. Completed or
+receipt-bearing incomplete sessions are not resumed; prepare a new session for an explicit
+rerun. Final validation requires exact closure between the command receipt ledger and the
+verification references.
+
 ## 10. Validation and completion
 
 Run:

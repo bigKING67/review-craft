@@ -106,9 +106,30 @@ by `prepare-fix`. Its name, argv, and cwd must match exactly. Recomputing receip
 output filenames, or hashes after changing argv/cwd is tampering and makes
 `validate-fix` fail with exit `2`.
 
+`verify-fix` owns an exclusive session lock from the pre-attempt freshness check through
+command execution, assessment binding, terminal artifact creation, and validation. Exactly
+one concurrent caller can produce the terminal result; another caller waits for the lock
+and then exits `2` because the session is already completed. Sequential repeat calls are
+rejected for the same reason.
+
+A fix session is deliberately single-attempt and fail-closed:
+
+- both `fix-assessment.json` and `fix-verification.json` make the session completed and
+  read-only;
+- only one terminal artifact means the session is incomplete and cannot be resumed;
+- command receipts without both terminal artifacts mean an interrupted attempt and cannot
+  be reused;
+- the receipt ledger must contain exactly the receipts referenced by the terminal
+  verification; any orphan or missing receipt makes `validate-fix` fail.
+
+There is no automatic resume or attempt-history protocol in `review-craft.fix.v1`. To rerun
+after a crash, rejected attempt, or further source edit, explicitly run `prepare-fix` again
+and use the newly created fix session. Preserve the old session as failure evidence or
+remove it only under the host's normal artifact-retention policy.
+
 If a verification command mutates source, Review Craft stops before later commands,
 records them in `skippedCommands`, and returns `FAILED`. It does not revert the mutation.
 
-Any source change after verification invalidates the result. Start a new verification
+Any source change after verification invalidates the result. Prepare a new fix session
 after further edits. Keep rollback instructions from the canonical decision available;
 the runtime records evidence but does not perform rollback.

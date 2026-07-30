@@ -7,19 +7,19 @@ from .constants import ARTIFACT_PATHS
 from .contracts import ContractError
 from .evidence import receipt_configuration_errors
 from .jsonio import read_json, read_jsonl, sha256_json
-from .remediation import (
-    _assessment_rows,
-    _changes,
-    _current_source,
-    _file_sha256,
-    _load_fix,
-    _schema,
-    _session_file,
-    _stable_records,
-    _validate_evidence_refs,
-    _validate_review_provenance,
-    _validate_schema,
-    _verification_status,
+from .remediation_contract import (
+    assessment_rows,
+    changes,
+    current_source,
+    file_sha256,
+    load_fix,
+    schema,
+    session_file,
+    stable_records,
+    validate_evidence_refs,
+    validate_review_provenance,
+    validate_schema,
+    verification_status,
 )
 from .schema_validation import validate_instance
 
@@ -27,7 +27,7 @@ from .schema_validation import validate_instance
 def _validate_receipts(
     fix_dir: Path, commands: dict[str, Any]
 ) -> dict[str, dict[str, Any]]:
-    rows = read_jsonl(_session_file(fix_dir, ARTIFACT_PATHS["commands"]))
+    rows = read_jsonl(session_file(fix_dir, ARTIFACT_PATHS["commands"]))
     errors: list[str] = []
     receipts: dict[str, dict[str, Any]] = {}
     sequences: set[int] = set()
@@ -35,7 +35,7 @@ def _validate_receipts(
     for index, row in enumerate(rows):
         errors.extend(
             f"command-receipt.schema.json[{index}]: {message}"
-            for message in validate_instance(row, _schema("command-receipt.schema.json"))
+            for message in validate_instance(row, schema("command-receipt.schema.json"))
         )
         identifier = row.get("id")
         if not isinstance(identifier, str) or identifier in receipts:
@@ -82,11 +82,11 @@ def _validate_receipts(
                 errors.append(f"fix command receipt {identifier}: duplicate artifact {relative}")
             artifacts.add(relative)
             try:
-                artifact = _session_file(fix_dir, relative)
+                artifact = session_file(fix_dir, relative)
             except ContractError as error:
                 errors.extend(error.errors)
                 continue
-            if _file_sha256(artifact) != row.get(hash_field):
+            if file_sha256(artifact) != row.get(hash_field):
                 errors.append(f"fix command receipt {identifier}: {hash_field} mismatch")
     if sequences != set(range(len(rows))):
         errors.append("fix command receipts: sequence values must be contiguous from zero")
@@ -98,19 +98,23 @@ def _validate_receipts(
 def validate_fix(
     fix_dir_value: str | Path, *, require_verification: bool = True
 ) -> dict[str, Any]:
-    fix_dir, plan, state = _load_fix(fix_dir_value)
-    _validate_review_provenance(plan, state)
+    fix_dir, plan, state = load_fix(fix_dir_value)
+    validate_review_provenance(plan, state)
     receipts = _validate_receipts(fix_dir, state["commands"])
     result_path = fix_dir / "fix-verification.json"
     assessment_path = fix_dir / "fix-assessment.json"
     if not require_verification and not result_path.exists() and not assessment_path.exists():
+        if receipts:
+            raise ContractError(
+                ["prepared/incomplete fix session must not contain command receipts"]
+            )
         return {"plan": plan, "verification": None}
     if not result_path.exists() or not assessment_path.exists():
         raise ContractError(["fix verification and assessment artifacts must both exist"])
-    result = read_json(_session_file(fix_dir, "fix-verification.json"))
-    assessment = read_json(_session_file(fix_dir, "fix-assessment.json"))
-    _validate_schema(result, "fix-verification.schema.json")
-    _assessment_rows(assessment, plan)
+    result = read_json(session_file(fix_dir, "fix-verification.json"))
+    assessment = read_json(session_file(fix_dir, "fix-assessment.json"))
+    validate_schema(result, "fix-verification.schema.json")
+    assessment_rows(assessment, plan)
     errors: list[str] = []
     if result["fixId"] != plan["fixId"]:
         errors.append("fix-verification.fixId: does not match fix plan")
@@ -127,6 +131,14 @@ def validate_fix(
         errors.append(
             "fix-verification commands and skippedCommands: must match the planned order"
         )
+    referenced_receipt_ids = [row["receiptId"] for row in result["commands"]]
+    if (
+        len(referenced_receipt_ids) != len(receipts)
+        or set(referenced_receipt_ids) != set(receipts)
+    ):
+        errors.append(
+            "fix command receipt ledger must exactly match verification references"
+        )
     for command in result["commands"]:
         receipt = receipts.get(command["receiptId"])
         if receipt is None or sha256_json(receipt) != command["receiptSha256"]:
@@ -140,8 +152,8 @@ def validate_fix(
                     f"fix-verification command {command['name']}: {field} does not match receipt"
                 )
     target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
-    records, current = _current_source(target)
-    expected_changes = _changes(state["baselineFiles"], _stable_records(records))
+    records, current = current_source(target)
+    expected_changes = changes(state["baselineFiles"], stable_records(records))
     if current != result["current"]:
         errors.append("fix-verification.current: target source changed after verification")
     if expected_changes != result["changes"]:
@@ -173,7 +185,7 @@ def validate_fix(
                 errors.append(
                     f"fix-verification finding {finding_id}: changed locations do not match source"
                 )
-    expected_status = _verification_status(
+    expected_status = verification_status(
         source_changed=expected_source_changed,
         command_results=result["commands"],
         skipped_commands=result["skippedCommands"],
@@ -182,7 +194,7 @@ def validate_fix(
     if result["status"] != expected_status:
         errors.append("fix-verification.status: does not match evidence and assessment")
     try:
-        _validate_evidence_refs(
+        validate_evidence_refs(
             assessment=assessment,
             changes=expected_changes,
             command_results=result["commands"],

@@ -161,9 +161,12 @@ findings. Read [remediation.md](references/remediation.md) before editing.
    runtime must never mutate target source.
 5. Record a HUMAN, AGENT_ASSISTED, or AUTOMATED assessment with post-change evidence.
 6. Run `verify-fix`, then `validate-fix`; every verification receipt must remain
-   bound to its selected canonical name, argv, and cwd. Distinguish artifact validity from a
-   `VERIFIED`, `PARTIAL`, `FAILED`, or `NO_CHANGES` remediation outcome.
-7. Treat later source drift as invalidating the verification and rerun it after edits.
+   bound to its selected canonical name, argv, and cwd, and the receipt ledger must match
+   final verification references exactly. Distinguish artifact validity from a `VERIFIED`,
+   `PARTIAL`, `FAILED`, or `NO_CHANGES` remediation outcome.
+7. Treat each fix session as a single terminal attempt. Concurrent and sequential repeats
+   are rejected; a completed, partial, or receipt-bearing incomplete session is never
+   resumed. After a crash or further edit, run `prepare-fix` again for an explicit rerun.
 
 Do not infer implementation authorization from `DELETE`, `REWRITE`, or any other report
 decision. Do not claim a finding is resolved from a diff alone when its criteria require
