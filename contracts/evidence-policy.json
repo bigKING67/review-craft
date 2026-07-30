@@ -13,5 +13,7 @@
     "minimumFor98": "E4"
   },
   "targetSourceReadOnly": true,
+  "fixRuntimeMutatesTargetSource": false,
+  "fixSourceMutationAuthorization": "EXPLICIT_USER_REQUIRED",
   "runArtifactsOutsideTargetByDefault": true
 }

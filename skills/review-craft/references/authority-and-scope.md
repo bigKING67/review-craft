@@ -58,6 +58,11 @@ enforces `outputOutsideRepository` when resolving the run directory.
 Evidence commands targeting the same run are serialized with an OS-managed file lock so
 receipt sequence and before/after mutation evidence remain attributable.
 
+The remediation runtime has a stricter boundary: `prepare-fix` never edits source, and
+`verify-fix` treats any mutation caused by a verification command as failure regardless
+of the review configuration. The host may edit selected findings only after explicit
+user authorization; see `remediation.md` for the content-bound handoff.
+
 ## Evidence conflicts
 
 Resolve conflicts in this order:

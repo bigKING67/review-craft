@@ -1,14 +1,16 @@
 ---
 name: review-craft
-description: "Use for evidence-driven engineering reviews of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, build and release systems, dependencies, basic security posture, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, and a phased remediation plan. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
+description: "Use for evidence-driven engineering reviews and explicitly authorized remediation verification of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, delivery, dependencies, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, proportional KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, and content-bound fix verification. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
 ---
 
 # Review Craft
 
-Perform a read-only engineering review whose conclusions are traceable to source,
-runtime evidence, or an explicit evidence gap. Do not reward issue count. Reward
-correct project understanding, honest coverage, validated findings, proportional
-remediation, and justified preservation of already-appropriate code.
+Perform evidence-driven engineering reviews whose conclusions are traceable to source,
+runtime evidence, or an explicit evidence gap. Keep review workflows read-only. Enter
+the remediation workflow only after the user explicitly authorizes selected findings.
+Do not reward issue count. Reward correct project understanding, honest coverage,
+validated findings, proportional remediation, and justified preservation of
+already-appropriate code.
 
 ## Product boundary
 
@@ -20,8 +22,10 @@ remediation, and justified preservation of already-appropriate code.
   attack paths, PoCs, and security remediation validation.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
-- Version 0.3 supports read-only `review`, `diff`, and `focus` workflows. Do not
-  claim support for deep, plan, fix, verify, compare, or historical modes.
+- Version 0.4 supports read-only `review`, `diff`, and `focus` workflows plus an
+  explicitly authorized, content-bound `fix` and `verify` workflow. The runtime
+  prepares and validates fix evidence but never edits target source. Do not claim
+  support for deep multi-pass or historical comparison modes.
 
 ## Authority and trust
 
@@ -44,8 +48,9 @@ cannot be resolved from this file and the target's scoped controls.
 
 ## Non-negotiable rules
 
-- Keep the target source read-only. Writing run artifacts outside the target is
-  allowed; source changes require a separate explicit implementation request.
+- Keep the target source read-only during review. Writing run artifacts outside the
+  target is allowed; source changes require an explicit implementation request and a
+  prepared selection of validated findings.
 - Do not claim a full-repository review without per-file coverage accounting.
 - Do not promote a candidate into a finding without a validation disposition.
 - Do not turn style preference, modernity preference, or aesthetic discomfort
@@ -137,6 +142,26 @@ Keep all run artifacts outside the target source. Read `quality-model.md`,
 stages. If the runtime is unavailable, label the result manual E0/E1 and omit all
 numeric scores rather than fabricating artifacts or receipts.
 
+## Remediation workflow
+
+Use this workflow only when the user explicitly asks to implement one or more validated
+findings. Read [remediation.md](references/remediation.md) before editing.
+
+1. Require a sealed canonical review whose target still matches its source baseline.
+2. Run `prepare-fix` with explicit finding IDs and proportionate verification commands.
+3. Confirm the prepared plan says `EXPLICIT_USER_REQUIRED`; preparation itself must be
+   read-only.
+4. Apply only the selected changes with the host's normal editing tools. The bundled
+   runtime must never mutate target source.
+5. Record a HUMAN, AGENT_ASSISTED, or AUTOMATED assessment with post-change evidence.
+6. Run `verify-fix`, then `validate-fix`; distinguish artifact validity from a
+   `VERIFIED`, `PARTIAL`, `FAILED`, or `NO_CHANGES` remediation outcome.
+7. Treat later source drift as invalidating the verification and rerun it after edits.
+
+Do not infer implementation authorization from `DELETE`, `REWRITE`, or any other report
+decision. Do not claim a finding is resolved from a diff alone when its criteria require
+runtime evidence.
+
 ## Delivery
 
 Return a concise human summary plus the report path. State:
@@ -160,3 +185,4 @@ Do not claim superiority over Codex Review or Codex Security from a self-score.
 - Scoring, evidence levels, and report contract: [scoring-and-report.md](references/scoring-and-report.md)
 - Design Craft and Codex Security boundaries: [integrations.md](references/integrations.md)
 - Review modes and project profiles: [modes-and-profiles.md](references/modes-and-profiles.md)
+- Explicit remediation and fix verification: [remediation.md](references/remediation.md)

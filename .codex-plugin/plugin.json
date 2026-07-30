@@ -1,6 +1,6 @@
 {
   "name": "review-craft",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Evidence-driven engineering review, validation, remediation planning, and quality governance for real codebases.",
   "author": {
     "name": "bigKING67",
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Review Craft",
     "shortDescription": "Evidence-driven repository engineering review",
-    "longDescription": "Review Craft accounts for repository coverage, validates engineering findings, separates severity from priority, and produces proportional remediation decisions and deterministic reports.",
+    "longDescription": "Review Craft accounts for repository coverage, validates engineering findings, separates severity from priority, and content-binds explicitly authorized remediation verification.",
     "developerName": "bigKING67",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read"],
@@ -29,7 +29,8 @@
     "defaultPrompt": [
       "Run an evidence-driven engineering review of this repository.",
       "Review this codebase and produce validated remediation decisions.",
-      "Identify what to fix, delete, measure, defer, or keep."
+      "Identify what to fix, delete, measure, defer, or keep.",
+      "Verify the explicitly selected Review Craft findings after remediation."
     ],
     "brandColor": "#1F2937"
   }

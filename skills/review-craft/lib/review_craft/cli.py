@@ -30,6 +30,8 @@ from .jsonio import (
     write_json,
     write_jsonl,
 )
+from .remediation import prepare_fix, verify_fix
+from .remediation_validation import validate_fix
 from .report import finalize_run
 from .repository import (
     fingerprint_inventory,
@@ -409,6 +411,54 @@ def command_finalize(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_prepare_fix(args: argparse.Namespace) -> int:
+    fix_dir, plan = prepare_fix(
+        args.run_dir,
+        finding_ids=args.finding or [],
+        all_actionable=args.all_actionable,
+        command_names=args.command or [],
+        all_commands=args.all_commands,
+        output_root=args.output_root,
+    )
+    print(
+        json.dumps(
+            {
+                "fixId": plan["fixId"],
+                "fixDir": str(fix_dir),
+                "findings": [row["findingId"] for row in plan["selections"]],
+                "commands": plan["verification"]["commands"],
+                "sourceMutation": plan["authorization"]["sourceMutation"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_verify_fix(args: argparse.Namespace) -> int:
+    result = verify_fix(args.fix_dir, assessment_path=args.assessment)
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return {"VERIFIED": 0, "PARTIAL": 3, "FAILED": 4, "NO_CHANGES": 5}[result["status"]]
+
+
+def command_validate_fix(args: argparse.Namespace) -> int:
+    data = validate_fix(args.fix_dir, require_verification=not args.allow_prepared)
+    verification = data["verification"]
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "fixId": data["plan"]["fixId"],
+                "status": verification["status"] if verification is not None else "PREPARED",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Review Craft deterministic runtime")
     parser.add_argument("--version", action="version", version=__version__)
@@ -446,6 +496,33 @@ def build_parser() -> argparse.ArgumentParser:
     finalize = subparsers.add_parser("finalize", help="Generate report.md")
     finalize.add_argument("--run-dir", required=True)
     finalize.set_defaults(handler=command_finalize)
+
+    prepare = subparsers.add_parser(
+        "prepare-fix", help="Bind selected findings before an explicitly authorized fix"
+    )
+    prepare.add_argument("--run-dir", required=True)
+    prepare.add_argument("--output-root")
+    selection = prepare.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--finding", action="append")
+    selection.add_argument("--all-actionable", action="store_true")
+    verification_commands = prepare.add_mutually_exclusive_group()
+    verification_commands.add_argument("--command", action="append")
+    verification_commands.add_argument("--all-commands", action="store_true")
+    prepare.set_defaults(handler=command_prepare_fix)
+
+    verify = subparsers.add_parser(
+        "verify-fix", help="Capture post-fix changes, command evidence, and assessment"
+    )
+    verify.add_argument("--fix-dir", required=True)
+    verify.add_argument("--assessment", required=True)
+    verify.set_defaults(handler=command_verify_fix)
+
+    validate_remediation = subparsers.add_parser(
+        "validate-fix", help="Validate a prepared or completed fix session"
+    )
+    validate_remediation.add_argument("--fix-dir", required=True)
+    validate_remediation.add_argument("--allow-prepared", action="store_true")
+    validate_remediation.set_defaults(handler=command_validate_fix)
     return parser
 
 

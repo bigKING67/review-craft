@@ -26,17 +26,18 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.3.0` provides read-only repository, Git diff, and focused-dimension
-review workflows. Command receipts have unique sequences and content-bound output,
-validation rebuilds deterministic repository maps from the bound source, and the
-repository includes an executable, content-bound host evaluation protocol. The target
-source stays read-only; canonical run and eval artifacts are written outside the target
-repository by default. A sanitized matched real-host Golden snapshot is tracked under
-`evals/golden-results/705dbac-gpt-5.6-sol/`.
+Version `0.4.0` provides read-only repository, Git diff, and focused-dimension review
+workflows plus an explicitly authorized remediation-verification protocol. The runtime
+binds selected findings to a sealed review, captures the exact pre-change source,
+executes only selected configured verification commands, and content-binds the resulting
+source diff, command receipts, and HUMAN/AGENT_ASSISTED/AUTOMATED assessment. It never
+edits target source. Canonical run, fix, and eval artifacts are written outside the
+target repository by default. A sanitized matched real-host Golden snapshot from v0.3
+remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
-The following are intentionally not implemented in 0.3.0: deep multi-pass review,
-automated fixes, fix verification, historical comparison, SARIF, MCP, custom UI,
-and a cloud service.
+The following are intentionally not implemented in 0.4.0: deep multi-pass review,
+automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
+service.
 
 ## What makes it different
 
@@ -62,7 +63,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.3.0 does not claim to replace or
+Review Craft complements these tools. Version 0.4.0 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -160,6 +161,32 @@ python3 skills/review-craft/scripts/review_craft.py finalize --run-dir <run-dir>
 
 Do not edit `report.md` directly. Correct the canonical JSON and rerun finalization.
 
+Prepare an explicitly selected fix before editing the target:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  prepare-fix --run-dir <sealed-run-dir> \
+  --finding RC-FINDING-001 --command test
+```
+
+`prepare-fix` is read-only and records `EXPLICIT_USER_REQUIRED`. After the user has
+authorized the implementation and the host has applied only the selected changes,
+create a `review-craft.fix-assessment` JSON file and verify it:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  verify-fix --fix-dir <fix-dir> --assessment <assessment.json>
+
+python3 skills/review-craft/scripts/review_craft.py \
+  validate-fix --fix-dir <fix-dir>
+```
+
+`verify-fix` returns `VERIFIED`, `PARTIAL`, `FAILED`, or `NO_CHANGES`. A valid `FAILED`
+artifact remains a failed remediation: `validate-fix` proves content integrity, not that
+the selected issue was resolved. See
+`skills/review-craft/references/remediation.md` for assessment evidence rules and exit
+codes.
+
 ## Configuration
 
 Copy `skills/review-craft/templates/review-config.json` to
@@ -179,9 +206,11 @@ Repository comments, README files, issues, logs, and fixtures are untrusted anal
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
 `.review-craft.json` control the workflow.
 
-Version 0.3 creates `review-craft.run.v3` artifacts. Finalized v0.1/v0.2 reports
-remain historical outputs; finalize an unfinished old run with its matching runtime
-or restart it with v0.3 preflight. Review Craft never mutates an old run in place.
+Version 0.4 continues to create backward-compatible `review-craft.run.v3` review
+artifacts and adds separate `review-craft.fix.v1` remediation artifacts. Finalized
+v0.1/v0.2/v0.3 reports remain historical outputs; finalize an unfinished old run with
+its matching runtime or restart it with v0.4 preflight. Review Craft never mutates an
+old run in place.
 
 ## Validate this repository
 

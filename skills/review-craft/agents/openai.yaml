@@ -1,4 +1,4 @@
 interface:
   display_name: "Review Craft"
-  short_description: "Evidence-driven repository engineering review"
-  default_prompt: "Use $review-craft to perform an evidence-driven engineering review of this repository."
+  short_description: "Evidence-driven review and fix verification"
+  default_prompt: "Use $review-craft to review this repository or verify explicitly selected remediation."

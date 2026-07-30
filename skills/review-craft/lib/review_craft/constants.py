@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 SCHEMA_VERSION = "review-craft.run.v3"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
+FIX_SCHEMA_VERSION = "review-craft.fix.v1"
 
 ARTIFACT_PATHS = {
     "reviewScope": "review-scope.json",
@@ -65,6 +66,15 @@ DECISIONS = {
     "DELETE",
     "DEFER",
     "MEASURE",
+    "DOCUMENT",
+}
+
+ACTIONABLE_DECISIONS = {
+    "CLEAN_UP",
+    "MERGE",
+    "REPLACE",
+    "REWRITE",
+    "DELETE",
     "DOCUMENT",
 }
 

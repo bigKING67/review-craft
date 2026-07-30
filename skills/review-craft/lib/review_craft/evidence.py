@@ -97,7 +97,31 @@ def run_evidence_command(
     manifest = read_json(run_dir / "review-manifest.json")
     state = read_json(run_dir / "run-state.json")
     target = Path(state["targetRoot"]).resolve(strict=True)
-    command = manifest["configuration"]["commands"].get(command_name)
+    return run_configured_command(
+        session_dir=run_dir,
+        target=target,
+        commands=manifest["configuration"]["commands"],
+        command_name=command_name,
+        allow_repository_mutation=manifest["configuration"]["policy"].get(
+            "allowRepositoryMutation", False
+        ),
+        started_at=started_at,
+    )
+
+
+def run_configured_command(
+    *,
+    session_dir: Path,
+    target: Path,
+    commands: dict[str, Any],
+    command_name: str,
+    allow_repository_mutation: bool,
+    started_at: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Run one already-validated command into a content-bound receipt stream."""
+    session_dir = session_dir.expanduser().resolve(strict=True)
+    target = target.expanduser().resolve(strict=True)
+    command = commands.get(command_name)
     if not isinstance(command, dict):
         raise ValueError(f"unknown configured command: {command_name}")
     cwd = resolve_repository_directory(target, command.get("cwd", "."), "command.cwd")
@@ -105,9 +129,9 @@ def run_evidence_command(
     timeout = command.get("timeoutSeconds", 600)
     # A run owns one receipt stream. Serialize the complete command lifecycle so
     # sequence assignment and before/after mutation evidence remain attributable.
-    with evidence_run_lock(run_dir, lease_seconds=timeout + 30):
+    with evidence_run_lock(session_dir, lease_seconds=timeout + 30):
         return _run_evidence_command_locked(
-            run_dir=run_dir,
+            run_dir=session_dir,
             target=target,
             command_name=command_name,
             command=command,
@@ -115,9 +139,7 @@ def run_evidence_command(
             argv=argv,
             timeout=timeout,
             started_at=started_at or _utc_now(),
-            allow_repository_mutation=manifest["configuration"]["policy"].get(
-                "allowRepositoryMutation", False
-            ),
+            allow_repository_mutation=allow_repository_mutation,
         )
 
 

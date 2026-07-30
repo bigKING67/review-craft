@@ -79,6 +79,19 @@ class EvalContractTests(unittest.TestCase):
             skill,
         )
 
+    def test_skill_keeps_fix_authorization_and_verification_outcomes_explicit(self) -> None:
+        skill = (ROOT / "skills/review-craft/SKILL.md").read_text(encoding="utf-8")
+        remediation = skill.split("## Remediation workflow", 1)[1].split(
+            "## Delivery", 1
+        )[0]
+
+        self.assertIn("user explicitly asks to implement", remediation)
+        self.assertIn("runtime must never mutate target source", remediation)
+        self.assertIn("[remediation.md](references/remediation.md)", remediation)
+        for status in ("`VERIFIED`", "`PARTIAL`", "`FAILED`", "`NO_CHANGES`"):
+            self.assertIn(status, remediation)
+        self.assertIn("Do not infer implementation authorization", remediation)
+
     def test_host_output_literals_have_explicit_types_for_structured_output(self) -> None:
         schema = json.loads(
             (ROOT / "evals/schemas/eval-host-output.schema.json").read_text(
