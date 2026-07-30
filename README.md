@@ -26,7 +26,7 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.4.0` provides read-only repository, Git diff, and focused-dimension review
+Version `0.4.1` provides read-only repository, Git diff, and focused-dimension review
 workflows plus an explicitly authorized remediation-verification protocol. The runtime
 binds selected findings to a sealed review, captures the exact pre-change source,
 executes only selected configured verification commands, and content-binds the resulting
@@ -35,7 +35,7 @@ edits target source. Canonical run, fix, and eval artifacts are written outside 
 target repository by default. A sanitized matched real-host Golden snapshot from v0.3
 remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
-The following are intentionally not implemented in 0.4.0: deep multi-pass review,
+The following are intentionally not implemented in 0.4.1: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
 service.
 
@@ -64,7 +64,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.4.0 does not claim to replace or
+Review Craft complements these tools. Version 0.4.1 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -103,7 +103,7 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 python3 "$CODEX_HOME/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo bigKING67/review-craft \
   --path skills/review-craft \
-  --ref v0.4.0 \
+  --ref v0.4.1 \
   --dest "$HOME/.agents/skills"
 ```
 
@@ -136,7 +136,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   doctor --json
 ```
 
-The result should report `"ready": true` and `"version": "0.4.0"`.
+The result should report `"ready": true` and `"version": "0.4.1"`.
 If you selected the Codex-only root, replace `$HOME/.agents/skills` in the
 verification path with `$CODEX_HOME/skills`.
 
