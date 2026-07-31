@@ -26,22 +26,20 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.4.1` provides read-only repository, Git diff, and focused-dimension review
-workflows plus an explicitly authorized remediation-verification protocol. The runtime
-binds selected findings to a sealed review, captures the exact pre-change source,
-executes only selected configured verification commands, and content-binds the resulting
-source diff, command receipts, and HUMAN/AGENT_ASSISTED/AUTOMATED assessment. It never
-edits target source. Canonical run, fix, and eval artifacts are written outside the
-target repository by default. A sanitized matched real-host Golden snapshot from v0.3
-remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
+Version `0.5.0` provides read-only repository, Git diff, and focused-dimension review
+workflows, an explicitly authorized remediation-verification protocol, and independent
+post-commit delivery attestations. The runtime binds selected findings to a sealed review,
+captures the exact pre-change source, executes only selected configured verification
+commands, and content-binds the resulting source diff, command receipts, and
+HUMAN/AGENT_ASSISTED/AUTOMATED assessment. After the host commits a `VERIFIED` fix,
+`verify-delivery` creates a separate immutable `review-craft.delivery.v1` artifact for the
+clean commit and matching source fingerprint. Push and GitHub Actions proof require
+explicit options and fixed read-only commands. The runtime never edits target source,
+commits, pushes, or publishes. Canonical run, fix, delivery, and eval artifacts are written
+outside the target repository by default. A sanitized matched real-host Golden snapshot
+from v0.3 remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
-The current development source additionally implements `review-craft.delivery.v1`.
-After the host commits a `VERIFIED` fix, `verify-delivery` creates a separate immutable
-attestation for the clean commit and matching source fingerprint. Push and GitHub Actions
-proof require explicit options and fixed read-only commands; the runtime still never
-commits, pushes, or publishes.
-
-The following are intentionally not implemented in 0.4.1: deep multi-pass review,
+The following are intentionally not implemented in 0.5.0: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
 service. Delivery v1 also does not verify GitHub Releases or npm registry publication.
 
@@ -73,7 +71,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.4.1 does not claim to replace or
+Review Craft complements these tools. Version 0.5.0 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -112,7 +110,7 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 python3 "$CODEX_HOME/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo bigKING67/review-craft \
   --path skills/review-craft \
-  --ref v0.4.1 \
+  --ref v0.5.0 \
   --dest "$HOME/.agents/skills"
 ```
 
@@ -145,7 +143,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   doctor --json
 ```
 
-The result should report `"ready": true` and `"version": "0.4.1"`.
+The result should report `"ready": true` and `"version": "0.5.0"`.
 If you selected the Codex-only root, replace `$HOME/.agents/skills` in the
 verification path with `$CODEX_HOME/skills`.
 
@@ -388,10 +386,11 @@ Repository comments, README files, issues, logs, and fixtures are untrusted anal
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
 `.review-craft.json` control the workflow.
 
-Version 0.4 continues to create backward-compatible `review-craft.run.v3` review
-artifacts and adds separate `review-craft.fix.v1` remediation artifacts. Finalized
+Version 0.5 continues to create backward-compatible `review-craft.run.v3` review
+artifacts and separate `review-craft.fix.v1` remediation artifacts, and adds independent
+`review-craft.delivery.v1` attestations. Finalized
 v0.1/v0.2/v0.3 reports remain historical outputs; finalize an unfinished old run with
-its matching runtime or restart it with v0.4 preflight. Review Craft never mutates an
+its matching runtime or restart it with v0.5 preflight. Review Craft never mutates an
 old run in place. New run.v3 scorecards report both accounted and reviewed coverage;
 `coveragePercent` now carries the reviewed value. Historical run.v3 scorecards without
 the new optional fields retain their original accounting interpretation during

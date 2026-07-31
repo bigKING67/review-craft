@@ -75,9 +75,9 @@ through `.review-craft.json` rather than editing generated artifacts.
 
 ## Run schema compatibility
 
-Version 0.4 continues to create `review-craft.run.v3` artifacts with content-bound
+Version 0.5 continues to create `review-craft.run.v3` artifacts with content-bound
 command receipts plus source-revalidated `module-map.json` and `dependency-map.json`.
 It adds separate `review-craft.fix.v1` artifacts without mutating the sealed review.
 Finalized v0.1/v0.2/v0.3 reports remain valid historical outputs, but an unfinished
-old run must be finalized with its matching runtime or restarted with v0.4 preflight.
+old run must be finalized with its matching runtime or restarted with v0.5 preflight.
 Review Craft never mutates an old run in place.

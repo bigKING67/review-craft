@@ -5,7 +5,7 @@
 - `skills/review-craft/` is the only installable runtime product.
 - Keep repository governance under `scripts/`, `contracts/`, `tests/`, and `evals/`.
 - Do not duplicate inventory, validation, scoring, or report generation outside the canonical runtime.
-- Version 0.4 supports read-only `review`, `diff`, and `focus` modes plus explicitly
+- Version 0.5 supports read-only `review`, `diff`, and `focus` modes plus explicitly
   authorized fix preparation and verification. The runtime records and validates fix
   evidence but never edits target source. The current source also supports independent
   post-commit delivery attestations; remote push and GitHub Actions proof require explicit

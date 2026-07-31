@@ -22,9 +22,9 @@ already-appropriate code.
   attack paths, PoCs, and security remediation validation.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
-- Version 0.4 supports read-only `review`, `diff`, and `focus` workflows plus an
+- Version 0.5 supports read-only `review`, `diff`, and `focus` workflows plus an
   explicitly authorized, content-bound `fix` and `verify` workflow. The current
-  source can also create an independent delivery attestation after the host commits
+  release can also create an independent delivery attestation after the host commits
   changes, with push and GitHub Actions proof only when explicitly requested. The
   runtime prepares and validates evidence but never edits target source, commits,
   pushes, or publishes. Do not claim support for deep multi-pass or historical
