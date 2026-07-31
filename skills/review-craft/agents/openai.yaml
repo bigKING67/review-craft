@@ -1,4 +1,4 @@
 interface:
   display_name: "Review Craft"
-  short_description: "Evidence-driven review and fix verification"
-  default_prompt: "Use $review-craft to review this repository or verify explicitly selected remediation."
+  short_description: "Evidence-driven review, fix, and delivery verification"
+  default_prompt: "Use $review-craft to review this repository, verify selected remediation, or attest an explicitly authorized post-commit delivery."

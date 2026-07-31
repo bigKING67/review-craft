@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for evidence-driven engineering reviews and explicitly authorized remediation verification of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, delivery, dependencies, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, proportional KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, and content-bound fix verification. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
+description: "Use for evidence-driven engineering reviews and explicitly authorized remediation verification of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, delivery, dependencies, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, proportional KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, content-bound fix verification, and optional post-commit/push/CI delivery attestations. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
 ---
 
 # Review Craft
@@ -23,9 +23,12 @@ already-appropriate code.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
 - Version 0.4 supports read-only `review`, `diff`, and `focus` workflows plus an
-  explicitly authorized, content-bound `fix` and `verify` workflow. The runtime
-  prepares and validates fix evidence but never edits target source. Do not claim
-  support for deep multi-pass or historical comparison modes.
+  explicitly authorized, content-bound `fix` and `verify` workflow. The current
+  source can also create an independent delivery attestation after the host commits
+  changes, with push and GitHub Actions proof only when explicitly requested. The
+  runtime prepares and validates evidence but never edits target source, commits,
+  pushes, or publishes. Do not claim support for deep multi-pass or historical
+  comparison modes.
 
 ## Authority and trust
 
@@ -176,10 +179,32 @@ findings. Read [remediation.md](references/remediation.md) before editing.
 7. Treat each fix session as a single terminal attempt. Concurrent and sequential repeats
    are rejected; a completed, partial, or receipt-bearing incomplete session is never
    resumed. After a crash or further edit, run `prepare-fix` again for an explicit rerun.
+8. After a verified fix is committed by the host, optionally run `verify-delivery`.
+   Local source proof is always read-only. `--verify-push` and `--github-run` are the
+   only v1 options that authorize network-backed proof. Then run `validate-delivery`.
 
 Do not infer implementation authorization from `DELETE`, `REWRITE`, or any other report
 decision. Do not claim a finding is resolved from a diff alone when its criteria require
 runtime evidence.
+
+## Post-delivery attestation
+
+`review-craft.delivery.v1` is a new immutable artifact; it never edits the sealed review,
+`fix-plan.json`, `fix-assessment.json`, or `fix-verification.json`. It copies and hashes the
+three canonical fix artifacts plus the source inventory configuration, then binds the
+current clean commit and source fingerprint. Each invocation creates a separate delivery
+directory outside the target.
+
+- Local-only proof is `PARTIAL` because remote push state is unknown.
+- `--verify-push` runs fixed-argv `git ls-remote` and requires the remote branch SHA to
+  equal local `HEAD` before the delivery can be `VERIFIED`.
+- `--github-run <id>` runs fixed-argv `gh run view`; head SHA, terminal status, successful
+  conclusion, and terminal jobs must match. Requested failed, incomplete, missing, or
+  mismatched proof makes the delivery `FAILED`.
+- GitHub Release and npm registry proof are not implemented in v1 and remain
+  `NOT_VERIFIED`; do not upgrade them from user-authored text.
+- `validate-delivery` validates the copied snapshot and content-bound delivery ID without
+  requiring the original fix directory or live target repository.
 
 ## Delivery
 

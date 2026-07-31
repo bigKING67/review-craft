@@ -21,6 +21,8 @@ from .constants import (
     SCORE_DIMENSIONS,
 )
 from .contracts import ContractError, validate_run
+from .delivery import verify_delivery
+from .delivery_validation import validate_delivery
 from .evidence import run_evidence_command
 from .jsonio import (
     canonical_compact,
@@ -472,6 +474,49 @@ def command_validate_fix(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_verify_delivery(args: argparse.Namespace) -> int:
+    delivery_dir, attestation = verify_delivery(
+        args.fix_dir,
+        verify_push=args.verify_push,
+        github_run=args.github_run,
+        output_root=args.output_root,
+    )
+    print(
+        json.dumps(
+            {
+                "deliveryId": attestation["deliveryId"],
+                "deliveryDir": str(delivery_dir),
+                "status": attestation["status"],
+                "commit": attestation["localSource"]["revision"],
+                "push": attestation["push"]["status"],
+                "githubActions": attestation["githubActions"]["status"],
+                "githubRelease": attestation["githubRelease"]["status"],
+                "npmPackage": attestation["npmPackage"]["status"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return {"VERIFIED": 0, "PARTIAL": 3, "FAILED": 4}[attestation["status"]]
+
+
+def command_validate_delivery(args: argparse.Namespace) -> int:
+    attestation = validate_delivery(args.delivery_dir)["attestation"]
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "deliveryId": attestation["deliveryId"],
+                "status": attestation["status"],
+                "fixId": attestation["fix"]["fixId"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Review Craft deterministic runtime")
     parser.add_argument("--version", action="version", version=__version__)
@@ -536,6 +581,31 @@ def build_parser() -> argparse.ArgumentParser:
     validate_remediation.add_argument("--fix-dir", required=True)
     validate_remediation.add_argument("--allow-prepared", action="store_true")
     validate_remediation.set_defaults(handler=command_validate_fix)
+
+    delivery = subparsers.add_parser(
+        "verify-delivery",
+        help="Create a content-bound post-commit, push, and CI delivery attestation",
+    )
+    delivery.add_argument("--fix-dir", required=True)
+    delivery.add_argument("--output-root")
+    delivery.add_argument(
+        "--verify-push",
+        action="store_true",
+        help="Run read-only git ls-remote verification for the current branch",
+    )
+    delivery.add_argument(
+        "--github-run",
+        type=int,
+        help="Run read-only gh verification for a GitHub Actions run id",
+    )
+    delivery.set_defaults(handler=command_verify_delivery)
+
+    validate_delivery_parser = subparsers.add_parser(
+        "validate-delivery",
+        help="Validate a portable delivery attestation without the original fix directory",
+    )
+    validate_delivery_parser.add_argument("--delivery-dir", required=True)
+    validate_delivery_parser.set_defaults(handler=command_validate_delivery)
     return parser
 
 

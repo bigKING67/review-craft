@@ -35,9 +35,15 @@ edits target source. Canonical run, fix, and eval artifacts are written outside 
 target repository by default. A sanitized matched real-host Golden snapshot from v0.3
 remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
+The current development source additionally implements `review-craft.delivery.v1`.
+After the host commits a `VERIFIED` fix, `verify-delivery` creates a separate immutable
+attestation for the clean commit and matching source fingerprint. Push and GitHub Actions
+proof require explicit options and fixed read-only commands; the runtime still never
+commits, pushes, or publishes.
+
 The following are intentionally not implemented in 0.4.1: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
-service.
+service. Delivery v1 also does not verify GitHub Releases or npm registry publication.
 
 ## What makes it different
 
@@ -312,6 +318,47 @@ sequential callers cannot create competing results. A completed session is read-
 If a crash leaves command receipts or only one terminal artifact, the session fails closed;
 run `prepare-fix` again to create a new session for an explicit rerun. `validate-fix`
 requires the receipt ledger to match the final verification references exactly.
+
+### Post-delivery attestation
+
+Do not update `fix-verification.json` after commit, push, or CI. Create an independent
+delivery artifact instead:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  verify-delivery --fix-dir <fix-dir>
+
+python3 skills/review-craft/scripts/review_craft.py \
+  validate-delivery --delivery-dir <delivery-dir>
+```
+
+Local-only delivery proof is `PARTIAL`: the checkout must be clean, current `HEAD` is
+recorded, and the current source fingerprint must equal the fix verification fingerprint.
+No network command runs by default.
+
+When explicitly authorized, bind remote push and GitHub Actions state:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  verify-delivery \
+  --fix-dir <fix-dir> \
+  --verify-push \
+  --github-run <run-id>
+```
+
+`--verify-push` runs fixed-argv `git ls-remote` and requires the remote branch SHA to equal
+local `HEAD`. `--github-run` runs fixed-argv `gh run view` and requires matching `headSha`,
+completed run/jobs, and a successful conclusion. Requested missing, failed, incomplete, or
+mismatched proof produces `FAILED`; it is recorded rather than discarded. Exit codes are
+`0` for `VERIFIED`, `3` for `PARTIAL`, `4` for `FAILED`, and `2` for invalid input or an
+invalid contract.
+
+Each invocation writes a new `review-craft.delivery.v1` directory outside the target. It
+copies and hashes `fix-plan.json`, `fix-assessment.json`, `fix-verification.json`, and the
+source inventory configuration. `validate-delivery` is portable: it does not read the
+original fix directory or target checkout. Raw command stdout/stderr are not stored; only
+normalized fields, byte counts, and hashes are retained. GitHub Release and npm registry
+stages remain explicit `NOT_VERIFIED` values in v1.
 
 ## Configuration
 

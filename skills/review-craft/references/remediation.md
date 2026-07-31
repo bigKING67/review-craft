@@ -138,3 +138,60 @@ records them in `skippedCommands`, and returns `FAILED`. It does not revert the 
 Any source change after verification invalidates the result. Prepare a new fix session
 after further edits. Keep rollback instructions from the canonical decision available;
 the runtime records evidence but does not perform rollback.
+
+## Post-delivery attestation
+
+Fix verification intentionally stops before Git delivery. Do not rewrite an old
+`fix-verification.json` after commit, push, CI, or release state changes. After the host has
+committed a `VERIFIED` fix, create a separate delivery artifact:
+
+```bash
+python3 <skill-root>/scripts/review_craft.py verify-delivery \
+  --fix-dir <fix-dir>
+
+python3 <skill-root>/scripts/review_craft.py validate-delivery \
+  --delivery-dir <delivery-dir>
+```
+
+The local-only result is `PARTIAL`: it proves that the target is a clean Git checkout and
+that its current source fingerprint still matches the captured fix verification, while
+leaving remote delivery unknown. It does not run a network command.
+
+Use explicit network-backed proof only when the user authorizes it:
+
+```bash
+python3 <skill-root>/scripts/review_craft.py verify-delivery \
+  --fix-dir <fix-dir> \
+  --verify-push \
+  --github-run <github-actions-run-id>
+```
+
+`--verify-push` runs `git ls-remote` without a shell and verifies that the configured
+remote branch SHA equals local `HEAD`. `--github-run` runs `gh run view` without a shell
+and binds the run ID, workflow, head SHA, status, conclusion, URL, and normalized job list.
+Failed, incomplete, unreadable, or mismatched requested proof produces a valid `FAILED`
+attestation. `verify-delivery` exits `0`, `3`, or `4` for `VERIFIED`, `PARTIAL`, or `FAILED`;
+contract and input errors exit `2`.
+
+Every attempt creates a new content-bound directory under the system temporary directory
+or `--output-root`:
+
+```text
+<delivery-dir>/
+├── delivery-attestation.json
+├── delivery-state.json
+├── source/
+│   ├── fix-plan.json
+│   ├── fix-assessment.json
+│   ├── fix-verification.json
+│   └── source-configuration.json
+└── evidence/
+    ├── git-remote.json             # only when executed
+    └── github-actions-run.json     # only when executed
+```
+
+Raw stdout and stderr are not stored. Command argv, duration, exit state, byte counts, and
+output hashes remain in normalized evidence. GitHub Release and npm registry adapters are
+not implemented in `delivery.v1`; both stages remain `NOT_VERIFIED`. `validate-delivery`
+uses only copied artifacts and therefore continues to work after the original fix directory
+or target checkout is unavailable.

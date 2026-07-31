@@ -103,9 +103,10 @@ def _validate_receipts(
     return receipts
 
 
-def validate_fix(
+def validate_fix_snapshot(
     fix_dir_value: str | Path, *, require_verification: bool = True
 ) -> dict[str, Any]:
+    """Validate immutable fix artifacts without comparing them to the live target."""
     fix_dir, plan, state = load_fix(fix_dir_value)
     validate_review_provenance(plan, state)
     receipts = _validate_receipts(fix_dir, state["commands"])
@@ -164,18 +165,12 @@ def validate_fix(
                 f"fix-verification command {command['name']}: "
                 "semanticEvidenceValid does not match receipt"
             )
-    target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
-    records, current = current_source(target, fix_source_configuration(state))
-    expected_changes = changes(state["baselineFiles"], stable_records(records))
-    if current != result["current"]:
-        errors.append("fix-verification.current: target source changed after verification")
-    if expected_changes != result["changes"]:
-        errors.append("fix-verification.changes: target changes no longer match verification")
+    expected_changes = result["changes"]
     expected_source_changed = (
-        current["sourceFingerprint"] != plan["baseline"]["sourceFingerprint"]
+        result["current"]["sourceFingerprint"] != plan["baseline"]["sourceFingerprint"]
     )
     if result["sourceChanged"] != expected_source_changed:
-        errors.append("fix-verification.sourceChanged: does not match current source")
+        errors.append("fix-verification.sourceChanged: does not match captured source")
     changed_paths = {row["path"] for row in expected_changes}
     assessment_by_id = {row["findingId"]: row for row in assessment["findings"]}
     selection_by_id = {row["findingId"]: row for row in plan["selections"]}
@@ -216,4 +211,29 @@ def validate_fix(
         errors.extend(error.errors)
     if errors:
         raise ContractError(errors)
-    return {"plan": plan, "verification": result}
+    return {"plan": plan, "state": state, "verification": result}
+
+
+def validate_fix(
+    fix_dir_value: str | Path, *, require_verification: bool = True
+) -> dict[str, Any]:
+    data = validate_fix_snapshot(
+        fix_dir_value,
+        require_verification=require_verification,
+    )
+    result = data["verification"]
+    if result is None:
+        return {"plan": data["plan"], "verification": None}
+
+    state = data["state"]
+    target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
+    records, current = current_source(target, fix_source_configuration(state))
+    expected_changes = changes(state["baselineFiles"], stable_records(records))
+    errors: list[str] = []
+    if current != result["current"]:
+        errors.append("fix-verification.current: target source changed after verification")
+    if expected_changes != result["changes"]:
+        errors.append("fix-verification.changes: target changes no longer match verification")
+    if errors:
+        raise ContractError(errors)
+    return {"plan": data["plan"], "verification": result}

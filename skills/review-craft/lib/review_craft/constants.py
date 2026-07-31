@@ -3,6 +3,7 @@ from __future__ import annotations
 SCHEMA_VERSION = "review-craft.run.v3"
 VERSION = "0.4.1"
 FIX_SCHEMA_VERSION = "review-craft.fix.v1"
+DELIVERY_SCHEMA_VERSION = "review-craft.delivery.v1"
 
 ARTIFACT_PATHS = {
     "reviewScope": "review-scope.json",

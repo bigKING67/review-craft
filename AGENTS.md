@@ -7,8 +7,10 @@
 - Do not duplicate inventory, validation, scoring, or report generation outside the canonical runtime.
 - Version 0.4 supports read-only `review`, `diff`, and `focus` modes plus explicitly
   authorized fix preparation and verification. The runtime records and validates fix
-  evidence but never edits target source. Do not document deep multi-pass, historical
-  comparison, SARIF, MCP, or automatic source mutation as implemented.
+  evidence but never edits target source. The current source also supports independent
+  post-commit delivery attestations; remote push and GitHub Actions proof require explicit
+  CLI options. Do not document deep multi-pass, historical comparison, SARIF, MCP, or
+  automatic source mutation as implemented.
 
 ## Safety and evidence
 
