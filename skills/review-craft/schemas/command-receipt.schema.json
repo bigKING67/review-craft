@@ -21,6 +21,42 @@
     "stderrSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "beforeStatusSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "afterStatusSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "repositoryMutationDetected": {"type": "boolean"}
+    "repositoryMutationDetected": {"type": "boolean"},
+    "semanticEvidenceValid": {"type": "boolean"},
+    "evidenceClaims": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/evidenceClaimResult"}
+    },
+    "evidenceArtifacts": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/evidenceArtifactResult"}
+    }
+  },
+  "$defs": {
+    "evidenceClaimResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "status"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "kind": {"enum": ["check", "test", "build", "package", "isolated-install", "runtime", "benchmark", "profile", "trace", "clean-deployment-reproduction"]},
+        "status": {"enum": ["VERIFIED", "UNVERIFIED"]}
+      }
+    },
+    "evidenceArtifactResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "sourcePath", "storedArtifact", "sha256", "sizeBytes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "status": {"enum": ["VERIFIED", "INVALID_OUTPUT", "MISSING", "REJECTED", "TOO_LARGE", "MISMATCH"]},
+        "sourcePath": {"type": ["string", "null"]},
+        "storedArtifact": {"type": ["string", "null"]},
+        "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "sizeBytes": {"type": ["integer", "null"], "minimum": 0}
+      }
+    }
   }
 }

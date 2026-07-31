@@ -44,6 +44,34 @@ def _finding_sort(row: dict[str, Any]) -> tuple[int, int, str]:
     )
 
 
+def _score_copy(mode: str) -> tuple[str, str, str, str | None]:
+    if mode == "focus":
+        return (
+            "当前 focused review 评分",
+            "Focused scope 评分",
+            "当前 focused scope 评分",
+            "该分数只适用于本次 focused scope，不代表完整仓库综合评分。",
+        )
+    if mode == "diff":
+        return (
+            "当前 diff review 评分",
+            "Diff scope 评分",
+            "当前 diff scope 评分",
+            "该分数只覆盖本次指定 diff，不代表完整仓库综合评分。",
+        )
+    return "当前项目综合评分", "综合评分", "当前项目综合评分", None
+
+
+def _evidence_gaps(scorecard: dict[str, Any]) -> list[tuple[str, str]]:
+    gaps: dict[str, str] = {}
+    for dimension in scorecard["dimensions"]:
+        for deduction in dimension["deductions"]:
+            for reference in deduction["evidenceRefs"]:
+                if reference.startswith("evidence-gap:"):
+                    gaps.setdefault(reference, deduction["reason"])
+    return list(gaps.items())
+
+
 def _locations(row: dict[str, Any]) -> str:
     rendered: list[str] = []
     for location in row.get("locations", []):
@@ -57,6 +85,7 @@ def _locations(row: dict[str, Any]) -> str:
 def render_report(data: dict[str, Any]) -> str:
     manifest = data["manifest"]
     review_scope = data["reviewScope"]
+    quality_model = data["qualityModel"]
     coverage = data["coverage"]
     module_map = data["moduleMap"]
     dependency_map = data["dependencyMap"]
@@ -65,8 +94,26 @@ def render_report(data: dict[str, Any]) -> str:
     decisions = data["decisions"]["decisions"]
     scorecard = data["scorecard"]
     remediation = data["remediationPlan"]
+    commands = data["commands"]
     total = scorecard["total"]
     top_findings = findings[:5]
+    evidence_gaps = _evidence_gaps(scorecard)
+    remaining_risks = quality_model["unknowns"]
+    verified_claims = [
+        f"`command:{receipt['name']}#{claim['id']}`（{claim['kind']}）"
+        for receipt in commands
+        for claim in receipt.get("evidenceClaims", [])
+        if claim.get("status") == "VERIFIED"
+    ]
+    captured_artifacts = [
+        (
+            f"`command:{receipt['name']}#{artifact['id']}`："
+            f"`{artifact['sha256']}`，{artifact['sizeBytes']} bytes"
+        )
+        for receipt in commands
+        for artifact in receipt.get("evidenceArtifacts", [])
+        if artifact.get("status") == "VERIFIED"
+    ]
     delete_subjects = [row["subject"] for row in decisions if row["decision"] == "DELETE"]
     keep_subjects = [row["subject"] for row in decisions if row["decision"] == "KEEP"]
     decision_by_id = {row["id"]: row["decision"] for row in decisions}
@@ -75,6 +122,9 @@ def render_report(data: dict[str, Any]) -> str:
     coverage_counts: dict[str, int] = defaultdict(int)
     for row in coverage["files"]:
         coverage_counts[row["disposition"]] += 1
+    summary_score, score_label, conclusion_score, score_limitation = _score_copy(
+        review_scope["mode"]
+    )
 
     identity_lines = [
         "# Review Craft 工程审查报告",
@@ -115,9 +165,14 @@ def render_report(data: dict[str, Any]) -> str:
         *identity_lines,
         "# 第一部分：执行摘要",
         "",
-        f"当前综合评分为 **{total}/100**。{_score_level(total)}。",
+        f"{summary_score}为 **{total}/100**。{_score_level(total)}。",
         "",
-        "主要问题：",
+        f"- 已确认问题（Confirmed Findings）：`{len(findings)}`",
+        f"- 证据缺口（Evidence Gaps）：`{len(evidence_gaps)}`",
+        f"- 剩余风险（Remaining Risks）：`{len(remaining_risks)}`",
+        "",
+        *([score_limitation, ""] if score_limitation is not None else []),
+        "最主要的已确认问题：",
         *_bullets([f"{row['id']}：{row['title']}" for row in top_findings]),
         "",
         f"建议调整等级：`{remediation['changeClass']}`。",
@@ -137,13 +192,23 @@ def render_report(data: dict[str, Any]) -> str:
             f"-{item['points']}：{item['reason']}" for item in row["deductions"]
         ) or "无扣分"
         lines.append(f"| {label} | {row['awarded']}/{maximum} | {reasons} |")
-    lines.extend(["", f"**综合评分：{total}/100**", "", "# 第三部分：问题清单", ""])
+    lines.extend(
+        [
+            "",
+            f"**{score_label}：{total}/100**",
+            "",
+            "# 第三部分：问题清单",
+            "",
+            "## 已确认问题（Confirmed Findings）",
+            "",
+        ]
+    )
     if not findings:
         lines.append("没有通过验证门禁的正式问题。")
     for row in findings:
         lines.extend(
             [
-                f"## {row['id']} · {row['priority']} / {row['severity']} · {row['title']}",
+                f"### {row['id']} · {row['priority']} / {row['severity']} · {row['title']}",
                 "",
                 f"- **位置：** {_locations(row)}",
                 f"- **问题证据：** {', '.join(f'`{item}`' for item in row['evidenceRefs'])}",
@@ -160,6 +225,13 @@ def render_report(data: dict[str, Any]) -> str:
                 "",
             ]
         )
+    lines.extend(["## 证据缺口（Evidence Gaps）", ""])
+    lines.extend(
+        _bullets([f"`{reference}`：{reason}" for reference, reason in evidence_gaps])
+    )
+    lines.extend(["", "## 剩余风险（Remaining Risks）", ""])
+    lines.extend(_bullets(remaining_risks))
+    lines.append("")
     lines.extend(["# 第四部分：代码与模块处置建议", ""])
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in decisions:
@@ -223,7 +295,7 @@ def render_report(data: dict[str, Any]) -> str:
         [
             "# 最终结论",
             "",
-            f"1. **当前项目综合评分：** {total}/100。",
+            f"1. **{conclusion_score}：** {total}/100。",
             "2. **最值得优先处理的五个问题：**",
             *_bullets([f"{row['id']}：{row['title']}" for row in top_findings]),
             "3. **没有继续保留价值的旧实现：**",
@@ -242,6 +314,8 @@ def render_report(data: dict[str, Any]) -> str:
             f"- 未决候选：{scorecard['unresolvedCandidates']}",
             f"- Candidate 总数：{len(candidates)}",
             f"- Finding 总数：{len(findings)}",
+            f"- 已验证语义声明：{len(verified_claims)}",
+            f"- 已捕获证据产物：{len(captured_artifacts)}",
             f"- 审查模式：{review_scope['mode']}",
             f"- 项目 Profile：{review_scope['profile']['resolved']}",
             f"- 模块数：{len(module_map['modules'])}",
@@ -260,8 +334,17 @@ def render_report(data: dict[str, Any]) -> str:
                     "DEFERRED",
                 )
             ],
+            "",
+            "### 已验证语义声明",
+            *_bullets(verified_claims),
+            "",
+            "### 已捕获证据产物",
+            *_bullets(captured_artifacts),
         ]
     )
+    if score_limitation is not None:
+        conclusion_index = lines.index(f"1. **{conclusion_score}：** {total}/100。")
+        lines.insert(conclusion_index + 1, f"   {score_limitation}")
     return "\n".join(lines).rstrip() + "\n"
 
 

@@ -69,11 +69,20 @@ cannot be resolved from this file and the target's scoped controls.
 - Treat `allowNetwork` and `allowInstall` as declarative host/agent policy. The
   bundled runner records them but does not provide network or installation isolation.
 - Do not hand-edit `report.md`; generate it from canonical artifacts.
+- For `reportLanguage: zh-CN`, author human-facing canonical rationale, target design, and
+  remediation text in Chinese. Preserve code identifiers and enums. The finalizer does not
+  translate free text.
 - Never estimate, approximate, or manually total a numeric score. A numeric
   score is valid only when read from the finalized canonical scorecard/report.
 - Treat command receipts as evidence only when their name, argv, and cwd match the
   canonical configuration. E2-E4 require at least one successful, non-mutating,
   non-timeout configured command receipt.
+- When one command claims several material stages, require configured semantic assertions
+  against one structured JSON stdout document. Configuration alone is not evidence. A
+  declared artifact must be copied into the run and bound by SHA-256 and byte size.
+- If semantic receipts are present, E3/E4 require a verified claim whose canonical kind
+  supports that level. A zero exit code with an unverified claim or artifact is not a
+  successful semantic receipt.
 - Respect a user-limited claim or dimension. Do not broaden a focused question
   into unrelated findings unless a directly observed P0/P1 issue must be surfaced.
 
@@ -178,6 +187,7 @@ Return a concise human summary plus the report path. State:
 
 - repository identity, revision, and dirty state;
 - evidence level, coverage, score status, and confidence;
+- whether the score covers the full repository, a focused scope, or a Git diff;
 - top five validated findings;
 - explicit KEEP/DELETE/MERGE/REPLACE/REWRITE outcomes;
 - commands actually run and their results;

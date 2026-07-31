@@ -19,6 +19,7 @@ from review_craft.evidence import run_configured_command
 from review_craft.jsonio import read_json, read_jsonl, sha256_json, write_json, write_jsonl
 from review_craft.repository import inventory
 from review_craft.repository_analysis import build_dependency_map
+from review_craft.semantic_evidence import receipt_identity_payload
 
 
 class RemediationTests(unittest.TestCase):
@@ -40,10 +41,19 @@ class RemediationTests(unittest.TestCase):
                                 sys.executable,
                                 "-c",
                                 (
-                                    "from pathlib import Path; "
-                                    "assert 'return 42' in Path('app.py').read_text()"
+                                    "import json; from pathlib import Path; "
+                                    "assert 'return 42' in Path('app.py').read_text(); "
+                                    "print(json.dumps({'checks': {'fixed': True}}))"
                                 ),
-                            ]
+                            ],
+                            "evidenceClaims": [
+                                {
+                                    "id": "fixed-behavior-check",
+                                    "kind": "test",
+                                    "jsonPointer": "/checks/fixed",
+                                    "equals": True,
+                                }
+                            ],
                         },
                         "mutate": {
                             "argv": [
@@ -54,6 +64,25 @@ class RemediationTests(unittest.TestCase):
                                     "Path('app.py').write_text('def answer():\\n    return 99\\n')"
                                 ),
                             ]
+                        },
+                        "semantic-fail": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import json; from pathlib import Path; "
+                                    "assert 'return 42' in Path('app.py').read_text(); "
+                                    "print(json.dumps({'checks': {'fixed': False}}))"
+                                ),
+                            ],
+                            "evidenceClaims": [
+                                {
+                                    "id": "fixed-behavior-check",
+                                    "kind": "test",
+                                    "jsonPointer": "/checks/fixed",
+                                    "equals": True,
+                                }
+                            ],
                         },
                         "after": {
                             "argv": [sys.executable, "-c", "print('must be skipped')"]
@@ -96,7 +125,7 @@ class RemediationTests(unittest.TestCase):
         self.output_tmp.cleanup()
         self.target_tmp.cleanup()
 
-    def _prepare(self) -> Path:
+    def _prepare(self, command: str = "check") -> Path:
         prepared = run_cli(
             "prepare-fix",
             "--run-dir",
@@ -104,7 +133,7 @@ class RemediationTests(unittest.TestCase):
             "--finding",
             "RC-FINDING-001",
             "--command",
-            "check",
+            command,
             "--output-root",
             self.fix_tmp.name,
         )
@@ -201,6 +230,7 @@ class RemediationTests(unittest.TestCase):
         self.assertEqual(result["status"], "VERIFIED")
         self.assertEqual([row["path"] for row in result["changes"]], ["app.py"])
         self.assertEqual(result["commands"][0]["exitCode"], 0)
+        self.assertTrue(result["commands"][0]["semanticEvidenceValid"])
         self.assertEqual(result["findingResults"][0]["locationPathsChanged"], ["app.py"])
         schema_root = ROOT / "skills/review-craft/schemas"
         for artifact, schema_name in (
@@ -281,15 +311,7 @@ class RemediationTests(unittest.TestCase):
         receipt = receipts[0]
         old_id = receipt["id"]
         receipt["argv"] = [sys.executable, "-c", "print('never executed')"]
-        new_id = sha256_json(
-            {
-                "name": receipt["name"],
-                "argv": receipt["argv"],
-                "startedAt": receipt["startedAt"],
-                "cwd": receipt["cwd"],
-                "sequence": receipt["sequence"],
-            }
-        )[:16]
+        new_id = sha256_json(receipt_identity_payload(receipt))[:16]
         receipt["id"] = new_id
         for suffix, field in (("stdout", "stdoutArtifact"), ("stderr", "stderrArtifact")):
             old_path = fix_dir / f"evidence/commands/{old_id}.{suffix}"
@@ -326,6 +348,28 @@ class RemediationTests(unittest.TestCase):
         result = json.loads(verified.stdout)
         self.assertEqual(result["status"], "FAILED")
         self.assertNotEqual(result["commands"][0]["exitCode"], 0)
+        validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_failed_semantic_assertion_cannot_produce_verified_status(self) -> None:
+        fix_dir = self._prepare("semantic-fail")
+        (self.target / "app.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+        assessment = self._assessment(
+            status="RESOLVED",
+            evidence=["change:app.py", "command:semantic-fail"],
+        )
+        verified = run_cli(
+            "verify-fix",
+            "--fix-dir",
+            str(fix_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(verified.returncode, 4, verified.stderr)
+        result = json.loads(verified.stdout)
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["commands"][0]["exitCode"], 0)
+        self.assertFalse(result["commands"][0]["semanticEvidenceValid"])
         validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
         self.assertEqual(validated.returncode, 0, validated.stderr)
         self.assertEqual(json.loads(validated.stdout)["status"], "FAILED")

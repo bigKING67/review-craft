@@ -83,7 +83,7 @@ def _deductions(maximum: int, awarded: int, evidence: str) -> list[dict[str, Any
     return [
         {
             "points": maximum - awarded,
-            "reason": "Validated fixture deduction",
+            "reason": "已验证的夹具扣分项",
             "evidenceRefs": [evidence],
         }
     ]
@@ -93,16 +93,16 @@ def populate_valid_run(run_dir: Path) -> None:
     quality_model = read_json(run_dir / ARTIFACT_PATHS["qualityModel"])
     quality_model.update(
         {
-            "purpose": "Provide a deterministic fixture application.",
-            "audience": "Review Craft contract tests.",
-            "criticalPaths": ["Call answer and receive the expected integer."],
-            "invariants": ["answer remains deterministic."],
-            "nonGoals": ["No network or multi-user behavior."],
-            "compatibility": ["Python 3.10 or later."],
-            "performanceBudgets": ["No material runtime budget for this fixture."],
-            "reliabilityRequirements": ["The function must not raise."],
-            "authoritySources": ["app.py and the fixture tests."],
-            "assumptions": ["The fixture represents a small library."],
+            "purpose": "提供一个确定性的夹具应用。",
+            "audience": "Review Craft 契约测试。",
+            "criticalPaths": ["调用 answer 并获得预期整数。"],
+            "invariants": ["answer 始终保持确定性。"],
+            "nonGoals": ["不包含网络或多用户行为。"],
+            "compatibility": ["兼容 Python 3.10 及以上版本。"],
+            "performanceBudgets": ["该夹具没有实质性的运行时预算。"],
+            "reliabilityRequirements": ["函数不得抛出异常。"],
+            "authoritySources": ["app.py 与夹具测试。"],
+            "assumptions": ["该夹具代表一个小型库。"],
             "unknowns": [],
         }
     )
@@ -111,7 +111,7 @@ def populate_valid_run(run_dir: Path) -> None:
     coverage = read_json(run_dir / ARTIFACT_PATHS["coverage"])
     for row in coverage["files"]:
         row["disposition"] = "REVIEWED"
-        row["reason"] = "Reviewed by the valid-run fixture."
+        row["reason"] = "已由有效运行夹具完成审查。"
         row["evidenceRefs"] = [f"source:{row['path']}"]
     coverage["summary"]["reviewed"] = len(coverage["files"])
     coverage["summary"]["deferred"] = 0
@@ -122,20 +122,20 @@ def populate_valid_run(run_dir: Path) -> None:
         "id": "RC-CORR-001",
         "category": "correctness",
         "type": "incorrect_result",
-        "title": "Fixture returns an outdated answer",
+        "title": "夹具返回了过期结果",
         "locations": [location],
         "evidence": [
             {
                 "kind": "source_trace",
                 "ref": "source:app.py:1-2",
-                "summary": "The function returns 41 instead of the fixture contract value.",
+                "summary": "函数返回 41，而不是夹具契约要求的值。",
             }
         ],
-        "claimedImpact": ["incorrect result"],
+        "claimedImpact": ["返回结果错误"],
         "confidence": "HIGH",
         "validation": {
             "status": "CONFIRMED",
-            "method": "Direct source trace and fixture assertion.",
+            "method": "直接源码追踪与夹具断言。",
             "evidenceRefs": ["source:app.py:1-2"],
             "remainingUncertainty": "",
         },
@@ -145,22 +145,22 @@ def populate_valid_run(run_dir: Path) -> None:
     finding = {
         "id": "RC-FINDING-001",
         "candidateId": "RC-CORR-001",
-        "title": "Fixture returns an outdated answer",
+        "title": "夹具返回了过期结果",
         "category": "correctness",
         "locations": [location],
         "evidenceRefs": ["source:app.py:1-2"],
-        "rootCause": "The fixture constant was not updated with its behavioral contract.",
-        "currentImpact": "The returned value is wrong for the documented fixture behavior.",
-        "longTermRisk": "Dependent tests and examples can encode the wrong result.",
+        "rootCause": "夹具常量没有随行为契约一起更新。",
+        "currentImpact": "返回值不符合夹具记录的行为。",
+        "longTermRisk": "依赖它的测试和示例可能继续固化错误结果。",
         "validationStatus": "CONFIRMED",
         "confidence": "HIGH",
         "severity": "MEDIUM",
         "priority": "P1",
-        "recommendation": "Update the constant and add a focused regression assertion.",
+        "recommendation": "更新常量，并补充聚焦的回归断言。",
         "decisionId": "RC-DECISION-001",
         "modificationCost": "LOW",
         "modificationRisk": "LOW",
-        "verification": ["Call answer and assert the corrected value."],
+        "verification": ["调用 answer 并断言修正后的值。"],
     }
     write_json(
         run_dir / ARTIFACT_PATHS["findings"],
@@ -172,27 +172,27 @@ def populate_valid_run(run_dir: Path) -> None:
     )
     decision = {
         "id": "RC-DECISION-001",
-        "subject": "app.answer constant",
+        "subject": "app.answer 常量",
         "findingRefs": ["RC-FINDING-001"],
         "decision": "CLEAN_UP",
-        "rationale": "A local correction is sufficient; no boundary change is justified.",
-        "alternatives": ["A rewrite was rejected because the function is already minimal."],
+        "rationale": "局部修正已经足够，没有理由改变模块边界。",
+        "alternatives": ["该函数已经足够精简，因此不采用重写。"],
         "migration": "",
         "compatibilityRisks": [],
         "rollback": "",
-        "verification": ["Run the focused fixture assertion."],
+        "verification": ["运行聚焦的夹具断言。"],
     }
     keep = {
         "id": "RC-DECISION-KEEP-001",
-        "subject": "single-function module boundary",
+        "subject": "单函数模块边界",
         "findingRefs": [],
         "decision": "KEEP",
-        "rationale": "The small module has one stable responsibility and needs no abstraction.",
+        "rationale": "该小模块只有一个稳定职责，不需要增加抽象。",
         "alternatives": [],
         "migration": "",
         "compatibilityRisks": [],
         "rollback": "",
-        "verification": ["Confirm the module retains one public behavior."],
+        "verification": ["确认模块继续只保留一个公开行为。"],
     }
     write_json(
         run_dir / ARTIFACT_PATHS["decisions"],
@@ -243,14 +243,14 @@ def populate_valid_run(run_dir: Path) -> None:
     )
 
     target_architecture = {
-        "overview": "Keep the fixture as a minimal single-module library.",
-        "moduleBoundaries": ["Keep answer in the domain module."],
-        "dependencyDirection": ["Tests depend on the public function only."],
-        "coreDataFlow": ["Caller -> answer -> integer result."],
-        "stateAndErrors": ["The function remains stateless and deterministic."],
-        "directoryStructure": ["Keep implementation and tests directly discoverable."],
-        "testingStructure": ["Use a focused behavioral assertion."],
-        "deliveryFlow": ["Run tests before packaging."],
+        "overview": "将夹具保留为最小单模块库。",
+        "moduleBoundaries": ["answer 继续归属领域模块。"],
+        "dependencyDirection": ["测试只依赖公开函数。"],
+        "coreDataFlow": ["调用方 -> answer -> 整数结果。"],
+        "stateAndErrors": ["函数保持无状态和确定性。"],
+        "directoryStructure": ["让实现和测试保持可直接发现。"],
+        "testingStructure": ["使用聚焦的行为断言。"],
+        "deliveryFlow": ["打包前运行测试。"],
     }
     phases = []
     for identifier, title in REMEDIATION_PHASES:
@@ -258,11 +258,11 @@ def populate_valid_run(run_dir: Path) -> None:
             {
                 "id": identifier,
                 "title": title,
-                "modificationScope": ["The fixture module and its focused test."],
-                "prerequisites": ["Preserve the current source fingerprint as a baseline."],
-                "expectedBenefits": ["Keep behavior explicit and regression protected."],
-                "risks": ["A consumer may have encoded the outdated value."],
-                "acceptanceCriteria": ["The focused assertion passes without source drift."],
+                "modificationScope": ["夹具模块及其聚焦测试。"],
+                "prerequisites": ["保留当前源码指纹作为基线。"],
+                "expectedBenefits": ["让行为保持明确并获得回归保护。"],
+                "risks": ["某个调用方可能已经固化过期值。"],
+                "acceptanceCriteria": ["聚焦断言通过，且源码没有发生额外漂移。"],
             }
         )
     write_json(

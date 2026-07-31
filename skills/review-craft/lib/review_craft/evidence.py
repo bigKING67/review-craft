@@ -16,6 +16,12 @@ from .jsonio import (
 )
 from .locking import exclusive_file_lock
 from .repository import inspect_git, worktree_fingerprint
+from .semantic_evidence import (
+    capture_semantic_evidence,
+    receipt_identity_payload,
+    semantic_evidence_declared,
+    store_captured_artifacts,
+)
 
 LOCK_NAME = ".evidence-command.lock"
 
@@ -130,6 +136,15 @@ def _run_evidence_command_locked(
     allow_repository_mutation: bool,
     source_configuration: dict[str, Any] | None,
 ) -> tuple[int, dict[str, Any]]:
+    commands_path = run_dir / ARTIFACT_PATHS["commands"]
+    rows = read_jsonl(commands_path)
+    existing_sequences = [
+        value
+        for index, row in enumerate(rows)
+        for value in [row.get("sequence", index)]
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    ]
+    sequence = max(existing_sequences, default=-1) + 1
     before_status = inspect_git(target).status
     before_worktree = worktree_fingerprint(target, configuration=source_configuration)
     start = time.monotonic()
@@ -154,25 +169,30 @@ def _run_evidence_command_locked(
     after_state = inspect_git(target)
     after_worktree = worktree_fingerprint(target, configuration=source_configuration)
     mutation = before_worktree != after_worktree or before_status != after_state.status
-    commands_path = run_dir / ARTIFACT_PATHS["commands"]
-    rows = read_jsonl(commands_path)
-    existing_sequences = [
-        value
-        for index, row in enumerate(rows)
-        for value in [row.get("sequence", index)]
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-    ]
-    sequence = max(existing_sequences, default=-1) + 1
-    command_id = sha256_bytes(
-        canonical_compact(
+    claim_results, captured_artifacts, semantic_valid = capture_semantic_evidence(
+        command=command,
+        stdout=stdout,
+        session_dir=run_dir,
+        target=target,
+    )
+    semantic_declared = semantic_evidence_declared(command)
+    identity = {
+        "name": command_name,
+        "argv": argv,
+        "startedAt": started_at,
+        "cwd": command.get("cwd", "."),
+        "sequence": sequence,
+    }
+    if semantic_declared:
+        identity.update(
             {
-                "name": command_name,
-                "argv": argv,
-                "startedAt": started_at,
-                "cwd": command.get("cwd", "."),
-                "sequence": sequence,
+                "semanticEvidenceValid": semantic_valid,
+                "evidenceClaims": claim_results,
+                "evidenceArtifacts": [row for row, _ in captured_artifacts],
             }
-        ).encode("utf-8")
+        )
+    command_id = sha256_bytes(
+        canonical_compact(receipt_identity_payload(identity)).encode("utf-8")
     )[:16]
     evidence_dir = run_dir / "evidence" / "commands"
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -180,7 +200,7 @@ def _run_evidence_command_locked(
     stderr_path = evidence_dir / f"{command_id}.stderr"
     stdout_path.write_bytes(stdout)
     stderr_path.write_bytes(stderr)
-    receipt = {
+    receipt: dict[str, Any] = {
         "id": command_id,
         "sequence": sequence,
         "name": command_name,
@@ -202,8 +222,20 @@ def _run_evidence_command_locked(
         ),
         "repositoryMutationDetected": mutation,
     }
+    if semantic_declared:
+        receipt["semanticEvidenceValid"] = semantic_valid
+        receipt["evidenceClaims"] = claim_results
+        receipt["evidenceArtifacts"] = [row for row, _ in captured_artifacts]
+        store_captured_artifacts(
+            captured=captured_artifacts,
+            evidence_dir=evidence_dir,
+            command_id=command_id,
+            session_dir=run_dir,
+        )
     rows.append(receipt)
     write_jsonl(commands_path, rows)
     if mutation and not allow_repository_mutation:
         return 3, receipt
+    if semantic_declared and not semantic_valid and exit_code == 0:
+        return 4, receipt
     return exit_code, receipt

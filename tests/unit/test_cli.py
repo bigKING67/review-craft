@@ -14,7 +14,8 @@ from tests.support import RUNTIME_LIB, create_run, make_target, run_cli
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.evidence import run_evidence_command
-from review_craft.jsonio import read_jsonl, sha256_json, write_jsonl
+from review_craft.jsonio import read_json, read_jsonl, sha256_json, write_json, write_jsonl
+from review_craft.semantic_evidence import receipt_identity_payload
 
 
 class CliTests(unittest.TestCase):
@@ -484,6 +485,345 @@ class CliTests(unittest.TestCase):
             receipts = json.loads(evidence.stdout)["commands"]
             self.assertEqual([row["name"] for row in receipts], ["first", "second"])
 
+    def test_preflight_accepts_structured_semantic_evidence_contracts(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "cli-check": {
+                            "argv": [sys.executable, "-c", "print('{}')"],
+                            "evidenceClaims": [
+                                {
+                                    "id": "installed-cli-smoke",
+                                    "kind": "runtime",
+                                    "jsonPointer": "/checks/installedCli",
+                                    "equals": True,
+                                }
+                            ],
+                            "artifacts": [
+                                {
+                                    "id": "installed-runtime-result",
+                                    "pathJsonPointer": "/artifact/path",
+                                    "sha256JsonPointer": "/artifact/sha256",
+                                    "sizeBytesJsonPointer": "/artifact/sizeBytes",
+                                    "maxBytes": 4096,
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            manifest = read_json(run_dir / "review-manifest.json")
+            command = manifest["configuration"]["commands"]["cli-check"]
+            self.assertEqual(command["evidenceClaims"][0]["kind"], "runtime")
+            self.assertEqual(command["artifacts"][0]["maxBytes"], 4096)
+
+    def test_preflight_rejects_duplicate_semantic_claim_ids(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        claim = {
+            "id": "installed-cli-smoke",
+            "kind": "runtime",
+            "jsonPointer": "/checks/installedCli",
+            "equals": True,
+        }
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "cli-check": {
+                            "argv": [sys.executable, "-c", "print('{}')"],
+                            "evidenceClaims": [claim, claim],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+        self.assertEqual(created.returncode, 2)
+        self.assertIn("evidenceClaims: duplicate id", created.stderr)
+
+    def test_semantic_claim_requires_matching_structured_stdout(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "cli-check": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import json; print(json.dumps({'checks': {'installed': False}}))",
+                            ],
+                            "evidenceClaims": [
+                                {
+                                    "id": "isolated-install",
+                                    "kind": "isolated-install",
+                                    "jsonPointer": "/checks/installed",
+                                    "equals": True,
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            evidence = run_cli(
+                "run-evidence", "--run-dir", str(run_dir), "--command", "cli-check"
+            )
+            self.assertEqual(evidence.returncode, 4, evidence.stderr)
+            receipt = json.loads(evidence.stdout)
+            self.assertFalse(receipt["semanticEvidenceValid"])
+            self.assertEqual(receipt["evidenceClaims"][0]["status"], "UNVERIFIED")
+            validated = run_cli(
+                "validate", "--run-dir", str(run_dir), "--allow-draft"
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            scorecard_path = run_dir / "scorecard.json"
+            scorecard = read_json(scorecard_path)
+            scorecard["evidenceLevel"] = "E2"
+            write_json(scorecard_path, scorecard)
+            inflated = run_cli(
+                "validate", "--run-dir", str(run_dir), "--allow-draft"
+            )
+            self.assertEqual(inflated.returncode, 2)
+            self.assertIn("E2+ requires a successful canonical command receipt", inflated.stderr)
+
+    def test_command_artifact_is_copied_and_content_bound(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        artifact_tmp = tempfile.TemporaryDirectory(prefix="review-craft-command-artifact-")
+        self.addCleanup(artifact_tmp.cleanup)
+        source = Path(artifact_tmp.name) / "result.json"
+        payload = b'{"installed":true}\n'
+        digest = hashlib.sha256(payload).hexdigest()
+        script = (
+            "import json; from pathlib import Path; "
+            f"p=Path({str(source)!r}); data={payload!r}; p.write_bytes(data); "
+            "print(json.dumps({'checks': {'installed': True}, 'artifact': {"
+            f"'path': str(p), 'sha256': {digest!r}, 'sizeBytes': len(data)"
+            "}}))"
+        )
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "cli-check": {
+                            "argv": [sys.executable, "-c", script],
+                            "evidenceClaims": [
+                                {
+                                    "id": "installed-cli-smoke",
+                                    "kind": "runtime",
+                                    "jsonPointer": "/checks/installed",
+                                    "equals": True,
+                                }
+                            ],
+                            "artifacts": [
+                                {
+                                    "id": "installed-runtime-result",
+                                    "pathJsonPointer": "/artifact/path",
+                                    "sha256JsonPointer": "/artifact/sha256",
+                                    "sizeBytesJsonPointer": "/artifact/sizeBytes",
+                                    "maxBytes": 4096,
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            evidence = run_cli(
+                "run-evidence", "--run-dir", str(run_dir), "--command", "cli-check"
+            )
+            self.assertEqual(evidence.returncode, 0, evidence.stderr)
+            receipt = json.loads(evidence.stdout)
+            self.assertTrue(receipt["semanticEvidenceValid"])
+            artifact = receipt["evidenceArtifacts"][0]
+            self.assertEqual(artifact["status"], "VERIFIED")
+            self.assertEqual(artifact["sha256"], digest)
+            self.assertEqual(artifact["sizeBytes"], len(payload))
+            copied = run_dir / artifact["storedArtifact"]
+            self.assertEqual(copied.read_bytes(), payload)
+            source.unlink()
+
+            scorecard_path = run_dir / "scorecard.json"
+            scorecard = read_json(scorecard_path)
+            scorecard["evidenceLevel"] = "E3"
+            write_json(scorecard_path, scorecard)
+            e3 = run_cli("validate", "--run-dir", str(run_dir), "--allow-draft")
+            self.assertEqual(e3.returncode, 0, e3.stderr)
+            scorecard["evidenceLevel"] = "E4"
+            write_json(scorecard_path, scorecard)
+            e4 = run_cli("validate", "--run-dir", str(run_dir), "--allow-draft")
+            self.assertEqual(e4.returncode, 2)
+            self.assertIn("E4 requires a matching verified semantic claim", e4.stderr)
+            scorecard["evidenceLevel"] = "E3"
+            write_json(scorecard_path, scorecard)
+
+            copied.write_bytes(b"tampered\n")
+            validated = run_cli(
+                "validate", "--run-dir", str(run_dir), "--allow-draft"
+            )
+            self.assertEqual(validated.returncode, 2)
+            self.assertIn("evidence artifact sha256 does not match", validated.stderr)
+
+    def test_command_artifact_rejects_target_repository_paths(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        script = (
+            "import json; from pathlib import Path; "
+            "p=Path('app.py').resolve(); "
+            "print(json.dumps({'artifact': {'path': str(p)}}))"
+        )
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "capture": {
+                            "argv": [sys.executable, "-c", script],
+                            "artifacts": [
+                                {
+                                    "id": "runtime-result",
+                                    "pathJsonPointer": "/artifact/path",
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            evidence = run_cli(
+                "run-evidence", "--run-dir", str(run_dir), "--command", "capture"
+            )
+            self.assertEqual(evidence.returncode, 4, evidence.stderr)
+            receipt = json.loads(evidence.stdout)
+            self.assertFalse(receipt["semanticEvidenceValid"])
+            self.assertEqual(receipt["evidenceArtifacts"][0]["status"], "REJECTED")
+            self.assertIsNone(receipt["evidenceArtifacts"][0]["storedArtifact"])
+
+    @unittest.skipIf(sys.platform == "win32", "symlink creation is not portable on Windows CI")
+    def test_command_artifact_rejects_symlinks(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        artifact_tmp = tempfile.TemporaryDirectory(prefix="review-craft-command-artifact-")
+        self.addCleanup(artifact_tmp.cleanup)
+        real = Path(artifact_tmp.name) / "real.json"
+        link = Path(artifact_tmp.name) / "result.json"
+        script = (
+            "import json; from pathlib import Path; "
+            f"real=Path({str(real)!r}); link=Path({str(link)!r}); "
+            "real.write_text('{}'); link.symlink_to(real); "
+            "print(json.dumps({'artifact': {'path': str(link)}}))"
+        )
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "capture": {
+                            "argv": [sys.executable, "-c", script],
+                            "artifacts": [
+                                {
+                                    "id": "runtime-result",
+                                    "pathJsonPointer": "/artifact/path",
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            evidence = run_cli(
+                "run-evidence", "--run-dir", str(run_dir), "--command", "capture"
+            )
+            self.assertEqual(evidence.returncode, 4, evidence.stderr)
+            receipt = json.loads(evidence.stdout)
+            self.assertEqual(receipt["evidenceArtifacts"][0]["status"], "REJECTED")
+
     def test_repeated_evidence_is_unique_and_output_hashes_are_validated(self) -> None:
         temporary, target = make_target(commit=True)
         self.addCleanup(temporary.cleanup)
@@ -528,6 +868,11 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(receipt["stderrSha256"], hashlib.sha256(stderr).hexdigest())
             receipts = read_jsonl(run_dir / "evidence/commands.jsonl")
             self.assertEqual(len({row["id"] for row in receipts}), 2)
+            self.assertNotIn("semanticEvidenceValid", receipts[0])
+            legacy_valid = run_cli(
+                "validate", "--run-dir", str(run_dir), "--allow-draft"
+            )
+            self.assertEqual(legacy_valid.returncode, 0, legacy_valid.stderr)
 
             (run_dir / first["stdoutArtifact"]).write_text("tampered\n", encoding="utf-8")
             validated = run_cli(
@@ -574,15 +919,7 @@ class CliTests(unittest.TestCase):
             receipt = receipts[0]
             old_id = receipt["id"]
             receipt["cwd"] = "never-used-subdirectory"
-            new_id = sha256_json(
-                {
-                    "name": receipt["name"],
-                    "argv": receipt["argv"],
-                    "startedAt": receipt["startedAt"],
-                    "cwd": receipt["cwd"],
-                    "sequence": receipt["sequence"],
-                }
-            )[:16]
+            new_id = sha256_json(receipt_identity_payload(receipt))[:16]
             receipt["id"] = new_id
             for suffix, field in (("stdout", "stdoutArtifact"), ("stderr", "stderrArtifact")):
                 old_path = run_dir / f"evidence/commands/{old_id}.{suffix}"

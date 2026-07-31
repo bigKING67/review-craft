@@ -275,16 +275,17 @@ def _verify_fix_locked(
             allow_repository_mutation=False,
             source_configuration=source_configuration,
         )
-        command_results.append(
-            {
-                "name": name,
-                "receiptId": receipt["id"],
-                "receiptSha256": sha256_json(receipt),
-                "exitCode": receipt["exitCode"],
-                "timedOut": receipt["timedOut"],
-                "repositoryMutationDetected": receipt["repositoryMutationDetected"],
-            }
-        )
+        command_result = {
+            "name": name,
+            "receiptId": receipt["id"],
+            "receiptSha256": sha256_json(receipt),
+            "exitCode": receipt["exitCode"],
+            "timedOut": receipt["timedOut"],
+            "repositoryMutationDetected": receipt["repositoryMutationDetected"],
+        }
+        if "semanticEvidenceValid" in receipt:
+            command_result["semanticEvidenceValid"] = receipt["semanticEvidenceValid"]
+        command_results.append(command_result)
         if receipt["repositoryMutationDetected"]:
             break
     skipped_commands = planned_commands[len(command_results) :]

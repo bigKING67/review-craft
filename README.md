@@ -51,6 +51,9 @@ Review Craft requires:
 - explicit `KEEP`, `CLEAN_UP`, `MERGE`, `REPLACE`, `REWRITE`, `DELETE`, `DEFER`,
   `MEASURE`, and `DOCUMENT` decisions;
 - evidence-gated scoring;
+- structured command claims and content-bound command-produced evidence artifacts;
+- scope-limited score wording for `focus` and `diff` reports;
+- separate confirmed-finding, evidence-gap, and remaining-risk report sections;
 - migration, compatibility, rollback, and verification for destructive decisions;
 - a deterministic Markdown report generated from canonical JSON;
 - explicit `review`, `diff`, and `focus` scope artifacts;
@@ -213,7 +216,60 @@ python3 skills/review-craft/scripts/review_craft.py \
 
 Command evidence is configuration-bound: receipt name, argv, and cwd must match the
 canonical configured command. E2-E4 require at least one receipt that passed without
-timeout or repository mutation.
+timeout, repository mutation, or a failed declared semantic assertion.
+
+Commands that wrap several materially different checks can declare machine-readable
+semantic claims. A declaration is not evidence by itself: the command must emit one JSON
+document on stdout, and every claim is verified by an RFC 6901 pointer and exact scalar
+comparison. Claim kinds calibrate the strongest evidence they can support: check, test,
+build, and package are E2; isolated-install, runtime, benchmark, profile, and trace are E3;
+clean-deployment-reproduction is E4. Once a run uses semantic receipts, E3/E4 must have a
+matching verified claim rather than relying on an opaque exit code.
+
+```json
+{
+  "commands": {
+    "cli-check": {
+      "argv": ["node", "scripts/cli-check.mjs", "--json"],
+      "evidenceClaims": [
+        {
+          "id": "npm-pack",
+          "kind": "package",
+          "jsonPointer": "/checks/npmPack",
+          "equals": true
+        },
+        {
+          "id": "isolated-install",
+          "kind": "isolated-install",
+          "jsonPointer": "/checks/isolatedInstall",
+          "equals": true
+        },
+        {
+          "id": "installed-cli-smoke",
+          "kind": "runtime",
+          "jsonPointer": "/checks/installedCliSmoke",
+          "equals": true
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "installed-runtime-result",
+          "pathJsonPointer": "/artifact/path",
+          "sha256JsonPointer": "/artifact/sha256",
+          "sizeBytesJsonPointer": "/artifact/sizeBytes",
+          "maxBytes": 52428800
+        }
+      ]
+    }
+  }
+}
+```
+
+Declared artifact paths must resolve to regular non-symlink files under a system temporary
+root or the run directory, never inside the target repository. Review Craft copies accepted
+artifacts into the canonical run, records SHA-256 and byte size, and revalidates the copy.
+Missing, rejected, oversized, or mismatched artifacts remain auditable receipt failures;
+they cannot be upgraded to verified evidence by editing configuration.
 
 Validate and finalize canonical artifacts:
 
@@ -277,6 +333,9 @@ Evidence commands targeting the same run are serialized with an OS-managed file 
 This preserves receipt sequence and mutation attribution across concurrent callers; it
 does not make configured commands run in parallel. Fix verification adds a separate
 session-level lock around its complete one-attempt lifecycle.
+Semantic claims and copied command artifacts are part of receipt identity. Fix verification
+preserves the same identity and treats a failed semantic assertion as a failed verification
+command even when the subprocess itself exited zero.
 
 Repository comments, README files, issues, logs, and fixtures are untrusted analysis
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
@@ -290,6 +349,9 @@ old run in place. New run.v3 scorecards report both accounted and reviewed cover
 `coveragePercent` now carries the reviewed value. Historical run.v3 scorecards without
 the new optional fields retain their original accounting interpretation during
 validation.
+The deterministic report labels `focus` and `diff` scores as scope-limited rather than
+repository-wide, separates confirmed findings from evidence gaps and remaining risks, and
+lists verified command claims and captured evidence artifacts.
 
 ## Validate this repository
 

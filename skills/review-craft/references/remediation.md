@@ -106,6 +106,10 @@ Every fix command receipt is also bound to the selected command configuration st
 by `prepare-fix`. Its name, argv, and cwd must match exactly. Recomputing receipt IDs,
 output filenames, or hashes after changing argv/cwd is tampering and makes
 `validate-fix` fail with exit `2`.
+When a selected command declares semantic claims or artifacts, fix verification preserves
+those receipt fields and their content identity. An unverified claim, rejected artifact,
+or copied-artifact hash mismatch fails verification even if the subprocess exit code is
+zero.
 
 `verify-fix` owns an exclusive session lock from the pre-attempt freshness check through
 command execution, assessment binding, terminal artifact creation, and validation. Exactly

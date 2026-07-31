@@ -35,6 +35,48 @@ def sha256_json(value: Any) -> str:
     return sha256_bytes(canonical_compact(value).encode("utf-8"))
 
 
+def parse_json_bytes(value: bytes) -> Any:
+    return json.loads(value.decode("utf-8"), parse_constant=_reject_nonfinite)
+
+
+def json_pointer_tokens(pointer: str) -> list[str]:
+    if not isinstance(pointer, str) or not pointer.startswith("/"):
+        raise ValueError("JSON pointer must start with '/'")
+    tokens: list[str] = []
+    for raw in pointer[1:].split("/"):
+        index = 0
+        decoded = ""
+        while index < len(raw):
+            if raw[index] != "~":
+                decoded += raw[index]
+                index += 1
+                continue
+            if index + 1 >= len(raw) or raw[index + 1] not in {"0", "1"}:
+                raise ValueError("JSON pointer contains an invalid escape")
+            decoded += "~" if raw[index + 1] == "0" else "/"
+            index += 2
+        tokens.append(decoded)
+    return tokens
+
+
+def json_pointer_value(document: Any, pointer: str) -> tuple[bool, Any]:
+    current = document
+    for token in json_pointer_tokens(pointer):
+        if isinstance(current, dict):
+            if token not in current:
+                return False, None
+            current = current[token]
+            continue
+        if isinstance(current, list) and token.isdigit():
+            index = int(token)
+            if index >= len(current):
+                return False, None
+            current = current[index]
+            continue
+        return False, None
+    return True, current
+
+
 def read_json(path: Path) -> Any:
     with path.open(encoding="utf-8") as handle:
         return json.load(handle, parse_constant=_reject_nonfinite)

@@ -54,7 +54,8 @@
           "receiptSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
           "exitCode": {"type": "integer"},
           "timedOut": {"type": "boolean"},
-          "repositoryMutationDetected": {"type": "boolean"}
+          "repositoryMutationDetected": {"type": "boolean"},
+          "semanticEvidenceValid": {"type": "boolean"}
         }
       }
     },

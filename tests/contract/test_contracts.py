@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -11,8 +13,9 @@ from tests.support import RUNTIME_LIB, create_run, make_target, populate_valid_r
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.constants import ARTIFACT_PATHS
-from review_craft.contracts import ContractError, validate_run
+from review_craft.contracts import ContractError, load_run, validate_run
 from review_craft.jsonio import canonical_json, read_json, read_jsonl, write_json, write_jsonl
+from review_craft.report import render_report
 
 
 class ContractTests(unittest.TestCase):
@@ -48,6 +51,130 @@ class ContractTests(unittest.TestCase):
             self.assertIn(heading, text)
         self.assertIn("- Mode: `review`", text)
         self.assertIn("- Profile: `application`", text)
+
+    def test_report_score_wording_is_bound_to_review_mode(self) -> None:
+        base = load_run(self.run_dir)
+        expectations = {
+            "review": (
+                "当前项目综合评分为 **85/100**",
+                "当前项目综合评分：** 85/100",
+                None,
+            ),
+            "focus": (
+                "当前 focused review 评分为 **85/100**",
+                "当前 focused scope 评分：** 85/100",
+                "该分数只适用于本次 focused scope，不代表完整仓库综合评分。",
+            ),
+            "diff": (
+                "当前 diff review 评分为 **85/100**",
+                "当前 diff scope 评分：** 85/100",
+                "该分数只覆盖本次指定 diff，不代表完整仓库综合评分。",
+            ),
+        }
+        for mode, (summary, conclusion, limitation) in expectations.items():
+            with self.subTest(mode=mode):
+                data = copy.deepcopy(base)
+                data["reviewScope"]["mode"] = mode
+                text = render_report(data)
+                self.assertIn(summary, text)
+                self.assertIn(conclusion, text)
+                if limitation is not None:
+                    self.assertIn(limitation, text)
+
+    def test_focus_finalization_emits_scope_limited_score(self) -> None:
+        target_tmp, target = make_target()
+        self.addCleanup(target_tmp.cleanup)
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "mode": "focus",
+                    "focusDimensions": ["correctness"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory(prefix="review-craft-focus-run-") as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            populate_valid_run(run_dir)
+            finalized = run_cli("finalize", "--run-dir", str(run_dir))
+            self.assertEqual(finalized.returncode, 0, finalized.stderr)
+            text = (run_dir / "report.md").read_text(encoding="utf-8")
+            self.assertIn("当前 focused review 评分为 **85/100**", text)
+            self.assertIn(
+                "该分数只适用于本次 focused scope，不代表完整仓库综合评分。",
+                text,
+            )
+
+    def test_report_separates_findings_evidence_gaps_and_remaining_risks(self) -> None:
+        data = load_run(self.run_dir)
+        data["findings"]["findings"] = []
+        data["qualityModel"]["unknowns"] = [
+            "尚未在 Windows 主机验证安装路径。",
+            "尚未执行长期并发稳定性测试。",
+        ]
+        data["scorecard"]["dimensions"][0]["deductions"] = [
+            {
+                "points": 2,
+                "reason": "缺少隔离安装后的真实启动证据。",
+                "evidenceRefs": ["evidence-gap:isolated-install"],
+            }
+        ]
+        text = render_report(data)
+        self.assertIn("已确认问题（Confirmed Findings）：`0`", text)
+        self.assertIn("证据缺口（Evidence Gaps）：`1`", text)
+        self.assertIn("剩余风险（Remaining Risks）：`2`", text)
+        self.assertIn("`evidence-gap:isolated-install`：缺少隔离安装后的真实启动证据。", text)
+        self.assertIn("尚未在 Windows 主机验证安装路径。", text)
+
+    def test_report_projects_verified_command_semantics(self) -> None:
+        data = load_run(self.run_dir)
+        data["commands"] = [
+            {
+                "name": "cli-check",
+                "evidenceClaims": [
+                    {
+                        "id": "installed-cli-smoke",
+                        "kind": "runtime",
+                        "status": "VERIFIED",
+                    }
+                ],
+                "evidenceArtifacts": [
+                    {
+                        "id": "installed-runtime-result",
+                        "status": "VERIFIED",
+                        "sha256": "a" * 64,
+                        "sizeBytes": 1983,
+                    }
+                ],
+            }
+        ]
+        text = render_report(data)
+        self.assertIn("`command:cli-check#installed-cli-smoke`（runtime）", text)
+        self.assertIn("`command:cli-check#installed-runtime-result`", text)
+        self.assertIn("已验证语义声明：1", text)
+        self.assertIn("已捕获证据产物：1", text)
+
+    def test_zh_cn_report_projects_canonical_fixture_text_without_english_paragraphs(self) -> None:
+        finalized = run_cli("finalize", "--run-dir", str(self.run_dir))
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        text = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        for legacy_text in (
+            "A local correction is sufficient",
+            "Keep the fixture as a minimal single-module library",
+            "The fixture module and its focused test",
+        ):
+            self.assertNotIn(legacy_text, text)
 
     def test_pending_candidate_blocks_finalization(self) -> None:
         candidates = read_jsonl(self.run_dir / ARTIFACT_PATHS["candidateLedger"])

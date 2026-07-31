@@ -81,6 +81,26 @@ ACTIONABLE_DECISIONS = {
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 PRIORITIES = {"P0", "P1", "P2", "P3"}
 EVIDENCE_LEVELS = {"E0": 0, "E1": 1, "E2": 2, "E3": 3, "E4": 4}
+SEMANTIC_CLAIM_LEVELS = {
+    "check": "E2",
+    "test": "E2",
+    "build": "E2",
+    "package": "E2",
+    "isolated-install": "E3",
+    "runtime": "E3",
+    "benchmark": "E3",
+    "profile": "E3",
+    "trace": "E3",
+    "clean-deployment-reproduction": "E4",
+}
+EVIDENCE_ARTIFACT_STATUSES = {
+    "VERIFIED",
+    "INVALID_OUTPUT",
+    "MISSING",
+    "REJECTED",
+    "TOO_LARGE",
+    "MISMATCH",
+}
 PERFORMANCE_CLASSES = {
     "MEASURED_REGRESSION",
     "ALGORITHMIC_RISK",

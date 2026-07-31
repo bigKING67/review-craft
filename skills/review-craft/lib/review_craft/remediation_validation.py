@@ -6,12 +6,11 @@ from typing import Any
 from .constants import ARTIFACT_PATHS
 from .contracts import ContractError
 from .evidence import receipt_configuration_errors
-from .jsonio import read_json, read_jsonl, sha256_json
+from .jsonio import read_json, read_jsonl, sha256_bytes, sha256_json
 from .remediation_contract import (
     assessment_rows,
     changes,
     current_source,
-    file_sha256,
     fix_source_configuration,
     load_fix,
     schema,
@@ -23,6 +22,7 @@ from .remediation_contract import (
     verification_status,
 )
 from .schema_validation import validate_instance
+from .semantic_evidence import receipt_identity_payload, receipt_semantic_errors
 
 
 def _validate_receipts(
@@ -55,17 +55,10 @@ def _validate_receipts(
             errors.append(f"fix command receipt {identifier}: sequence must be unique")
         else:
             sequences.add(sequence)
-        expected_id = sha256_json(
-            {
-                "name": row.get("name"),
-                "argv": row.get("argv"),
-                "startedAt": row.get("startedAt"),
-                "cwd": row.get("cwd"),
-                "sequence": sequence,
-            }
-        )[:16]
+        expected_id = sha256_json(receipt_identity_payload(row))[:16]
         if identifier != expected_id:
             errors.append(f"fix command receipt {identifier}: id does not match identity fields")
+        stdout_bytes: bytes | None = None
         for artifact_field, hash_field, suffix in (
             ("stdoutArtifact", "stdoutSha256", "stdout"),
             ("stderrArtifact", "stderrSha256", "stderr"),
@@ -87,8 +80,22 @@ def _validate_receipts(
             except ContractError as error:
                 errors.extend(error.errors)
                 continue
-            if file_sha256(artifact) != row.get(hash_field):
+            content = artifact.read_bytes()
+            if sha256_bytes(content) != row.get(hash_field):
                 errors.append(f"fix command receipt {identifier}: {hash_field} mismatch")
+            if artifact_field == "stdoutArtifact":
+                stdout_bytes = content
+        command = commands.get(row.get("name"))
+        if stdout_bytes is not None and isinstance(command, dict):
+            errors.extend(
+                receipt_semantic_errors(
+                    row,
+                    command,
+                    stdout_bytes,
+                    fix_dir,
+                    prefix=f"fix command receipt {identifier}",
+                )
+            )
     if sequences != set(range(len(rows))):
         errors.append("fix command receipts: sequence values must be contiguous from zero")
     if errors:
@@ -152,6 +159,11 @@ def validate_fix(
                 errors.append(
                     f"fix-verification command {command['name']}: {field} does not match receipt"
                 )
+        if command.get("semanticEvidenceValid") != receipt.get("semanticEvidenceValid"):
+            errors.append(
+                f"fix-verification command {command['name']}: "
+                "semanticEvidenceValid does not match receipt"
+            )
     target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
     records, current = current_source(target, fix_source_configuration(state))
     expected_changes = changes(state["baselineFiles"], stable_records(records))

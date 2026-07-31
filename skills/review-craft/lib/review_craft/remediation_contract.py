@@ -383,7 +383,10 @@ def verification_status(
     if not source_changed:
         return "NO_CHANGES"
     if skipped_commands or any(
-        row["exitCode"] != 0 or row["timedOut"] or row["repositoryMutationDetected"]
+        row["exitCode"] != 0
+        or row["timedOut"]
+        or row["repositoryMutationDetected"]
+        or row.get("semanticEvidenceValid") is False
         for row in command_results
     ) or any(status in {"UNRESOLVED", "REGRESSED"} for status in statuses):
         return "FAILED"

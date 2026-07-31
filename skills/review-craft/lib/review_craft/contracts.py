@@ -5,6 +5,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .configuration import validate_config
 from .constants import (
     ARTIFACT_PATHS,
     DECISIONS,
@@ -17,6 +18,7 @@ from .constants import (
     REVIEW_MODES,
     SCHEMA_VERSION,
     SCORE_DIMENSIONS,
+    SEMANTIC_CLAIM_LEVELS,
     SEVERITIES,
     VALIDATION_STATUSES,
 )
@@ -30,6 +32,7 @@ from .repository import (
 )
 from .repository_analysis import build_dependency_map, build_module_map
 from .schema_validation import validate_instance
+from .semantic_evidence import receipt_identity_payload, receipt_semantic_errors
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
 DOCUMENT_SCHEMAS = {
@@ -602,11 +605,26 @@ def _validate_scorecard(
         and row.get("exitCode") == 0
         and row.get("timedOut") is False
         and row.get("repositoryMutationDetected") is False
+        and row.get("semanticEvidenceValid") is not False
     ]
     if EVIDENCE_LEVELS[level] >= EVIDENCE_LEVELS["E2"] and not successful_receipts:
         errors.append(
             "scorecard.evidenceLevel: E2+ requires a successful canonical command receipt"
         )
+    semantic_receipts_present = any(
+        isinstance(row, dict) and "semanticEvidenceValid" in row for row in commands
+    )
+    if semantic_receipts_present and EVIDENCE_LEVELS[level] >= EVIDENCE_LEVELS["E3"]:
+        verified_levels = [
+            EVIDENCE_LEVELS[SEMANTIC_CLAIM_LEVELS[claim["kind"]]]
+            for row in successful_receipts
+            for claim in row.get("evidenceClaims", [])
+            if claim.get("status") == "VERIFIED" and claim.get("kind") in SEMANTIC_CLAIM_LEVELS
+        ]
+        if not verified_levels or max(verified_levels) < EVIDENCE_LEVELS[level]:
+            errors.append(
+                f"scorecard.evidenceLevel: {level} requires a matching verified semantic claim"
+            )
     if final:
         if EVIDENCE_LEVELS[level] < 1:
             errors.append("scorecard.evidenceLevel: E1 is required for a numeric final score")
@@ -720,6 +738,10 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     )
     if not isinstance(manifest_configuration, dict):
         raise ContractError(errors)
+    try:
+        validate_config(manifest_configuration)
+    except (KeyError, TypeError, ValueError) as error:
+        errors.append(f"review-manifest.configuration: {error}")
     manifest = data["manifest"]
     target = manifest.get("target")
     if not isinstance(target, dict):
@@ -809,19 +831,12 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
                 errors.append(f"{prefix}: duplicate sequence")
             else:
                 receipt_sequences.add(sequence)
-        expected_id = sha256_json(
-            {
-                "name": receipt.get("name"),
-                "argv": receipt.get("argv"),
-                "startedAt": receipt.get("startedAt"),
-                "cwd": receipt.get("cwd"),
-                "sequence": sequence,
-            }
-        )[:16]
+        expected_id = sha256_json(receipt_identity_payload(receipt))[:16]
         if command_id != expected_id:
             errors.append(f"{prefix}: id does not match receipt identity fields")
         if not isinstance(command_id, str) or re.fullmatch(r"[a-f0-9]{16}", command_id) is None:
             continue
+        stdout_bytes: bytes | None = None
         for field, hash_field, suffix in (
             ("stdoutArtifact", "stdoutSha256", "stdout"),
             ("stderrArtifact", "stderrSha256", "stderr"),
@@ -839,9 +854,23 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             except ContractError as error:
                 errors.extend(f"{prefix}: {message}" for message in error.errors)
                 continue
-            actual_hash = sha256_bytes(artifact.read_bytes())
+            content = artifact.read_bytes()
+            actual_hash = sha256_bytes(content)
             if receipt.get(hash_field) != actual_hash:
                 errors.append(f"{prefix}: {hash_field} does not match {expected}")
+            if field == "stdoutArtifact":
+                stdout_bytes = content
+        command = manifest_configuration["commands"].get(receipt.get("name"))
+        if stdout_bytes is not None and isinstance(command, dict):
+            errors.extend(
+                receipt_semantic_errors(
+                    receipt,
+                    command,
+                    stdout_bytes,
+                    run_dir,
+                    prefix=prefix,
+                )
+            )
     expected_sequences = set(range(len(data["commands"])))
     if receipt_sequences != expected_sequences:
         errors.append("command receipts: sequence values must be contiguous from zero")

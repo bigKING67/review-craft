@@ -5,8 +5,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .constants import PROFILES, REVIEW_MODES, SCORE_DIMENSIONS
-from .jsonio import read_json
+from .constants import PROFILES, REVIEW_MODES, SCORE_DIMENSIONS, SEMANTIC_CLAIM_LEVELS
+from .jsonio import json_pointer_tokens, read_json
+
+COMMAND_FIELDS = {"argv", "cwd", "timeoutSeconds", "evidenceClaims", "artifacts"}
+EVIDENCE_ID_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+DEFAULT_ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
 
 
 def default_config() -> dict[str, Any]:
@@ -62,6 +66,12 @@ def validate_config(config: dict[str, Any]) -> None:
     for name, command in commands.items():
         if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or not isinstance(command, dict):
             raise ValueError(f"config.commands.{name}: invalid command")
+        unknown_command_fields = set(command) - COMMAND_FIELDS
+        if unknown_command_fields:
+            raise ValueError(
+                f"config.commands.{name}: unsupported fields "
+                f"{', '.join(sorted(unknown_command_fields))}"
+            )
         argv = command.get("argv")
         if not isinstance(argv, list) or not argv or not all(
             isinstance(item, str) and item and "\0" not in item for item in argv
@@ -75,6 +85,86 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(
                 f"config.commands.{name}.timeoutSeconds: expected a positive integer"
             )
+        _validate_evidence_claims(name, command.get("evidenceClaims", []))
+        _validate_evidence_artifacts(name, command.get("artifacts", []))
+
+
+def _valid_evidence_id(value: Any) -> bool:
+    return isinstance(value, str) and EVIDENCE_ID_PATTERN.fullmatch(value) is not None
+
+
+def _validate_pointer(value: Any, field: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field}: expected an RFC 6901 JSON pointer")
+    try:
+        json_pointer_tokens(value)
+    except ValueError as error:
+        raise ValueError(f"{field}: {error}") from error
+
+
+def _validate_evidence_claims(command_name: str, claims: Any) -> None:
+    prefix = f"config.commands.{command_name}.evidenceClaims"
+    if not isinstance(claims, list) or len(claims) > 32:
+        raise ValueError(f"{prefix}: expected an array with at most 32 entries")
+    identifiers: set[str] = set()
+    for index, claim in enumerate(claims):
+        field = f"{prefix}[{index}]"
+        if not isinstance(claim, dict):
+            raise ValueError(f"{field}: expected an object")
+        unknown = set(claim) - {"id", "kind", "jsonPointer", "equals"}
+        if unknown:
+            raise ValueError(f"{field}: unsupported fields {', '.join(sorted(unknown))}")
+        identifier = claim.get("id")
+        if not _valid_evidence_id(identifier):
+            raise ValueError(f"{field}.id: expected a lowercase evidence identifier")
+        if identifier in identifiers:
+            raise ValueError(f"{prefix}: duplicate id {identifier}")
+        identifiers.add(identifier)
+        if claim.get("kind") not in SEMANTIC_CLAIM_LEVELS:
+            raise ValueError(
+                f"{field}.kind: expected one of "
+                f"{', '.join(sorted(SEMANTIC_CLAIM_LEVELS))}"
+            )
+        _validate_pointer(claim.get("jsonPointer"), f"{field}.jsonPointer")
+        if "equals" not in claim or isinstance(claim["equals"], (dict, list)):
+            raise ValueError(f"{field}.equals: expected a JSON scalar")
+
+
+def _validate_evidence_artifacts(command_name: str, artifacts: Any) -> None:
+    prefix = f"config.commands.{command_name}.artifacts"
+    if not isinstance(artifacts, list) or len(artifacts) > 16:
+        raise ValueError(f"{prefix}: expected an array with at most 16 entries")
+    identifiers: set[str] = set()
+    for index, artifact in enumerate(artifacts):
+        field = f"{prefix}[{index}]"
+        if not isinstance(artifact, dict):
+            raise ValueError(f"{field}: expected an object")
+        unknown = set(artifact) - {
+            "id",
+            "pathJsonPointer",
+            "sha256JsonPointer",
+            "sizeBytesJsonPointer",
+            "maxBytes",
+        }
+        if unknown:
+            raise ValueError(f"{field}: unsupported fields {', '.join(sorted(unknown))}")
+        identifier = artifact.get("id")
+        if not _valid_evidence_id(identifier):
+            raise ValueError(f"{field}.id: expected a lowercase evidence identifier")
+        if identifier in identifiers:
+            raise ValueError(f"{prefix}: duplicate id {identifier}")
+        identifiers.add(identifier)
+        _validate_pointer(artifact.get("pathJsonPointer"), f"{field}.pathJsonPointer")
+        for pointer_field in ("sha256JsonPointer", "sizeBytesJsonPointer"):
+            if pointer_field in artifact:
+                _validate_pointer(artifact[pointer_field], f"{field}.{pointer_field}")
+        maximum = artifact.get("maxBytes", DEFAULT_ARTIFACT_MAX_BYTES)
+        if (
+            not isinstance(maximum, int)
+            or isinstance(maximum, bool)
+            or not 1 <= maximum <= 1024 * 1024 * 1024
+        ):
+            raise ValueError(f"{field}.maxBytes: expected an integer from 1 to 1073741824")
 
 
 def load_config(path: Path | None) -> dict[str, Any]:

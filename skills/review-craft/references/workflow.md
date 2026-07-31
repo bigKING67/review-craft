@@ -138,6 +138,23 @@ before/after repository state. It captures evidence but is not a security sandbo
 Each receipt is validated against the configured command's canonical name, argv, and
 cwd. Editing a receipt, recomputing its ID, or renaming its output files cannot turn a
 different command into valid evidence.
+
+For commands that aggregate packaging, isolated installation, installed-runtime smoke,
+benchmarks, profiles, traces, or deployment reproduction, configure `evidenceClaims`.
+Each claim declares an ID, canonical kind, RFC 6901 `jsonPointer`, and scalar `equals`
+value. The command must emit one JSON document on stdout. The runner evaluates the
+assertions, records VERIFIED or UNVERIFIED per claim, and binds the results into receipt
+identity. A configured claim without matching stdout is not evidence and causes the
+runner to return 4 when the subprocess otherwise exited zero.
+
+Use command `artifacts` declarations when structured stdout points to a decisive result
+file. The source must be an absolute regular non-symlink file under a system temporary
+root or the run directory and must not be inside the target repository. The runner copies
+it into `evidence/commands/<receipt-id>.artifacts/`, records content hash and byte size,
+and validates optional hash/size values from stdout. Missing, rejected, oversized, and
+mismatched artifacts remain explicit failures. The canonical copy, not the temporary
+source path, is the durable evidence.
+
 If a command mutates tracked or untracked target source, stop automatic execution,
 report the mutation, and do not revert user work.
 
@@ -214,12 +231,17 @@ Evidence gates:
 - E1: source and configuration review;
 - E2: at least one relevant configured check, test, build, or static tool completed
   successfully without timeout or repository mutation;
-- E3: critical runtime behavior, benchmark, profile, or trace observed;
+- E3: critical runtime behavior, isolated installation, benchmark, profile, or trace
+  observed;
 - E4: clean and deployment-representative reproduction.
 
 E2-E4 require a successful canonical command receipt. Scores of 95+ require E3.
 Scores of 98-100 require E4. Review gaps or unresolved candidates keep scoring
 provisional.
+When any semantic receipt exists, E3/E4 additionally require a VERIFIED claim with a
+canonical kind mapped to that evidence level. This preserves historical run.v3 validation
+while preventing a new structured receipt from using an opaque exit code to overstate its
+meaning.
 
 ## 9. Target design and remediation
 

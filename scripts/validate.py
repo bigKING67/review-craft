@@ -43,6 +43,7 @@ REQUIRED_FILES = (
     "skills/review-craft/lib/review_craft/remediation_contract.py",
     "skills/review-craft/lib/review_craft/remediation_validation.py",
     "skills/review-craft/lib/review_craft/repository_analysis.py",
+    "skills/review-craft/lib/review_craft/semantic_evidence.py",
     "skills/review-craft/references/modes-and-profiles.md",
     "skills/review-craft/references/remediation.md",
     "skills/review-craft/schemas/dependency-map.schema.json",

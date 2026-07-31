@@ -55,6 +55,13 @@ configuration. Scores of 95 or more require E3. Scores of 98-100 require E4. The
 gates prevent source completeness, self-consistent receipt tampering, or
 self-evaluation from masquerading as operational proof.
 
+An optional semantic receipt makes a multi-stage command machine-readable. Claims are
+verified from structured stdout, never from configuration alone. Canonical kinds map to
+evidence ceilings: check/test/build/package to E2; isolated-install/runtime/benchmark/
+profile/trace to E3; clean-deployment-reproduction to E4. If a run contains semantic
+receipts, E3/E4 require a matching verified claim. A declared claim or artifact failure
+also prevents that receipt from satisfying the ordinary E2 success gate.
+
 ## Confidence
 
 Confidence reflects coverage, validation quality, evidence level, and unresolved
@@ -67,6 +74,19 @@ The report is a deterministic view of canonical JSON. It contains the executive
 summary, eight scores, full findings, dispositions, target design, Phase 0-4 plan,
 final five answers, score status, accounted coverage, reviewed coverage, and coverage
 disposition counts. Edit JSON and rerun finalization instead of patching the Markdown.
+
+The score label is mode-bound: `review` is repository-wide, while `focus` and `diff`
+explicitly state that their score applies only to the selected scope. Findings, evidence
+gaps, and remaining risks are separate deterministic sections. Evidence gaps are deduped
+from scorecard deduction references beginning with `evidence-gap:`; remaining risks come
+from `quality-model.json.unknowns`. Verified semantic claims and copied evidence artifacts
+are listed from canonical command receipts.
+
+`reportLanguage: zh-CN` requires human-facing canonical text such as finding rationale,
+target architecture, phase scope, benefits, risks, and acceptance criteria to be authored
+in Chinese before finalization. Code identifiers, commands, paths, and canonical enum values
+remain unchanged. The finalizer projects text deterministically and never performs implicit
+translation.
 
 New run.v3 scorecards write `accountedPercent` and `reviewedPercent`, with
 `coveragePercent` retaining the reviewed value. For compatibility, a historical

@@ -21,6 +21,7 @@
     "package/skills/review-craft/lib/review_craft/remediation_contract.py",
     "package/skills/review-craft/lib/review_craft/remediation_validation.py",
     "package/skills/review-craft/lib/review_craft/repository_analysis.py",
+    "package/skills/review-craft/lib/review_craft/semantic_evidence.py",
     "package/skills/review-craft/references/modes-and-profiles.md",
     "package/skills/review-craft/references/remediation.md",
     "package/skills/review-craft/schemas/dependency-map.schema.json",
