@@ -818,6 +818,30 @@ class RemediationTests(unittest.TestCase):
         self.assertEqual(finalized.returncode, 2)
         self.assertIn("must not precede evidence completion", finalized.stderr)
 
+    def test_attempt_rejects_future_assessment_before_terminal_write(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir,
+            command="measure-check",
+            assessed_at="2099-01-01T00:00:00Z",
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 2)
+        self.assertIn("precedes evidence or assessment", finalized.stderr)
+        self.assertFalse((attempt_dir / "fix-assessment.json").exists())
+        self.assertFalse((attempt_dir / "attempt-verification.json").exists())
+
     def test_attempt_retry_rejects_source_or_git_status_drift(self) -> None:
         fix_dir = self._prepare("flaky-check")
         (self.target / "app.py").write_text(

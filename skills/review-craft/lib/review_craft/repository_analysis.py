@@ -44,6 +44,127 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _profile_context(
+    root: Path, paths: set[str]
+) -> tuple[dict[str, Any], set[str], str]:
+    package = _read_json(root / "package.json") if "package.json" in paths else {}
+    dependencies: dict[str, Any] = {}
+    for field in ("dependencies", "devDependencies", "peerDependencies"):
+        value = package.get(field)
+        if isinstance(value, dict):
+            dependencies.update(value)
+    pyproject_text = ""
+    if "pyproject.toml" in paths:
+        with contextlib.suppress(OSError):
+            pyproject_text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    return package, set(dependencies), pyproject_text
+
+
+def _add_profile_signal(
+    scores: Counter[str],
+    signals: dict[str, list[str]],
+    profile: str,
+    weight: int,
+    reason: str,
+) -> None:
+    scores[profile] += weight
+    signals[profile].append(reason)
+
+
+def _add_repository_shape_signals(
+    paths: set[str],
+    package: dict[str, Any],
+    scores: Counter[str],
+    signals: dict[str, list[str]],
+) -> None:
+    add = lambda profile, weight, reason: _add_profile_signal(  # noqa: E731
+        scores, signals, profile, weight, reason
+    )
+    if any(path.endswith("/SKILL.md") or path == "SKILL.md" for path in paths):
+        add("agent-project", 8, "contains an agent SKILL.md")
+    if ".codex-plugin/plugin.json" in paths:
+        add("agent-project", 6, "contains a Codex plugin manifest")
+    if isinstance(package.get("workspaces"), (list, dict)) or any(
+        path in paths for path in ("pnpm-workspace.yaml", "lerna.json", "nx.json")
+    ):
+        add("monorepo", 9, "declares a workspace or monorepo manifest")
+    if any(path.startswith("apps/") for path in paths) and any(
+        path.startswith("packages/") for path in paths
+    ):
+        add("monorepo", 5, "contains both apps/ and packages/")
+
+
+def _add_runtime_signals(
+    paths: set[str],
+    dependency_names: set[str],
+    scores: Counter[str],
+    signals: dict[str, list[str]],
+) -> None:
+    if any(path.startswith("src-tauri/") for path in paths) or "electron" in dependency_names:
+        _add_profile_signal(
+            scores, signals, "desktop-app", 9, "contains Tauri or Electron runtime signals"
+        )
+    frontend_markers = {
+        "react",
+        "react-dom",
+        "next",
+        "vue",
+        "nuxt",
+        "svelte",
+        "@angular/core",
+        "vite",
+    }
+    if dependency_names & frontend_markers or "index.html" in paths:
+        _add_profile_signal(
+            scores,
+            signals,
+            "frontend",
+            7,
+            "contains a browser frontend framework or entry HTML",
+        )
+    backend_markers = {"express", "fastify", "koa", "@nestjs/core", "hapi"}
+    if dependency_names & backend_markers or any(
+        path in paths for path in ("manage.py", "wsgi.py", "asgi.py")
+    ):
+        _add_profile_signal(
+            scores,
+            signals,
+            "backend-service",
+            7,
+            "contains a backend service framework or entrypoint",
+        )
+    if any(
+        path in paths
+        for path in ("dbt_project.yml", "airflow.cfg", "dvc.yaml", "prefect.yaml")
+    ) or any(path.startswith(("dags/", "etl/", "pipelines/")) for path in paths):
+        _add_profile_signal(
+            scores, signals, "data-pipeline", 8, "contains data-pipeline manifests or directories"
+        )
+
+
+def _add_distribution_signals(
+    paths: set[str],
+    package: dict[str, Any],
+    pyproject_text: str,
+    scores: Counter[str],
+    signals: dict[str, list[str]],
+) -> None:
+    if isinstance(package.get("bin"), (str, dict)):
+        _add_profile_signal(scores, signals, "cli", 8, "package.json declares a CLI entry")
+    if "[project.scripts]" in pyproject_text:
+        _add_profile_signal(scores, signals, "cli", 7, "pyproject.toml declares project scripts")
+    if any(PurePosixPath(path).name in {"__main__.py", "cli.py"} for path in paths):
+        _add_profile_signal(
+            scores, signals, "cli", 3, "contains a conventional CLI entry module"
+        )
+    if any(key in package for key in ("main", "module", "exports", "types")):
+        _add_profile_signal(scores, signals, "library", 5, "package.json declares library exports")
+    if "[project]" in pyproject_text and not scores["backend-service"]:
+        _add_profile_signal(
+            scores, signals, "library", 3, "pyproject.toml declares a Python project"
+        )
+
+
 def detect_profile(
     root: Path, records: list[dict[str, Any]], requested: str
 ) -> dict[str, Any]:
@@ -58,71 +179,20 @@ def detect_profile(
         }
 
     paths = {row["path"] for row in records}
-    package = _read_json(root / "package.json")
-    dependencies: dict[str, Any] = {}
-    for field in ("dependencies", "devDependencies", "peerDependencies"):
-        value = package.get(field)
-        if isinstance(value, dict):
-            dependencies.update(value)
-    dependency_names = set(dependencies)
+    package, dependency_names, pyproject_text = _profile_context(root, paths)
     scores: Counter[str] = Counter()
     signals: dict[str, list[str]] = {profile: [] for profile in PROFILES if profile != "auto"}
-
-    def add(profile: str, weight: int, reason: str) -> None:
-        scores[profile] += weight
-        signals[profile].append(reason)
-
-    if any(path.endswith("/SKILL.md") or path == "SKILL.md" for path in paths):
-        add("agent-project", 8, "contains an agent SKILL.md")
-    if ".codex-plugin/plugin.json" in paths:
-        add("agent-project", 6, "contains a Codex plugin manifest")
-    if isinstance(package.get("workspaces"), (list, dict)) or any(
-        path in paths for path in ("pnpm-workspace.yaml", "lerna.json", "nx.json")
-    ):
-        add("monorepo", 9, "declares a workspace or monorepo manifest")
-    if any(path.startswith("apps/") for path in paths) and any(
-        path.startswith("packages/") for path in paths
-    ):
-        add("monorepo", 5, "contains both apps/ and packages/")
-    if any(path.startswith("src-tauri/") for path in paths) or "electron" in dependency_names:
-        add("desktop-app", 9, "contains Tauri or Electron runtime signals")
-    frontend_markers = {
-        "react",
-        "react-dom",
-        "next",
-        "vue",
-        "nuxt",
-        "svelte",
-        "@angular/core",
-        "vite",
-    }
-    if dependency_names & frontend_markers or "index.html" in paths:
-        add("frontend", 7, "contains a browser frontend framework or entry HTML")
-    backend_markers = {"express", "fastify", "koa", "@nestjs/core", "hapi"}
-    if dependency_names & backend_markers or any(
-        path in paths for path in ("manage.py", "wsgi.py", "asgi.py")
-    ):
-        add("backend-service", 7, "contains a backend service framework or entrypoint")
-    if any(
-        path in paths
-        for path in ("dbt_project.yml", "airflow.cfg", "dvc.yaml", "prefect.yaml")
-    ) or any(path.startswith(("dags/", "etl/", "pipelines/")) for path in paths):
-        add("data-pipeline", 8, "contains data-pipeline manifests or directories")
-    if isinstance(package.get("bin"), (str, dict)):
-        add("cli", 8, "package.json declares a CLI entry")
-    pyproject_text = ""
-    with contextlib.suppress(OSError):
-        pyproject_text = (root / "pyproject.toml").read_text(encoding="utf-8")
-    if "[project.scripts]" in pyproject_text:
-        add("cli", 7, "pyproject.toml declares project scripts")
-    if any(PurePosixPath(path).name in {"__main__.py", "cli.py"} for path in paths):
-        add("cli", 3, "contains a conventional CLI entry module")
-    if any(key in package for key in ("main", "module", "exports", "types")):
-        add("library", 5, "package.json declares library exports")
-    if "[project]" in pyproject_text and not scores["backend-service"]:
-        add("library", 3, "pyproject.toml declares a Python project")
+    _add_repository_shape_signals(paths, package, scores, signals)
+    _add_runtime_signals(paths, dependency_names, scores, signals)
+    _add_distribution_signals(paths, package, pyproject_text, scores, signals)
     if not scores:
-        add("application", 1, "no stronger project profile signal was detected")
+        _add_profile_signal(
+            scores,
+            signals,
+            "application",
+            1,
+            "no stronger project profile signal was detected",
+        )
 
     order = [
         "monorepo",

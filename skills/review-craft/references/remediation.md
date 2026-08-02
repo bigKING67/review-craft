@@ -135,6 +135,9 @@ python3 <skill-root>/scripts/review_craft.py list-fix-attempts \
 ```
 
 Finalization writes `fix-assessment.json` and `attempt-verification.json` exactly once.
+Assessment/evidence/finalization timestamp ordering, evidence references, measurements, and
+schema fields are validated before either terminal file is written; rejected input leaves
+the captured attempt awaiting a corrected assessment rather than a partial terminal pair.
 Snapshot validation verifies hashes, receipts, semantic observations, measurements,
 assessment timing, finding results, and the predecessor link. Live validation additionally
 requires the target to still match captured evidence; use `--snapshot-only` for an older

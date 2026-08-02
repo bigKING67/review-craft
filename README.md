@@ -473,6 +473,12 @@ Copy `skills/review-craft/templates/review-config.json` to
 `.review-craft.json` in a target repository.
 Commands use argv arrays and execute with `shell=false`. A configured command is not
 a security sandbox and does not override host approvals, network policy, or sandboxing.
+Each command starts in an isolated POSIX session or Windows process group. On timeout,
+the runner terminates the inherited POSIX process group or uses fixed-argv `taskkill /T /F`
+on Windows, waits for the direct process, and only then captures the final repository
+fingerprint. This closes ordinary inherited-descendant late-write windows; it is not a
+hostile-code sandbox and does not prove termination of detached or externally launched
+processes.
 The `allowNetwork` and `allowInstall` values are declarative host/agent policies;
 the Python runtime records them but does not enforce network or installation isolation.
 `allowRepositoryMutation` controls the runner response after before/after fingerprints
@@ -506,8 +512,15 @@ fields retain their original `coveragePercent` interpretation during validation.
 legacy `review-craft.fix.v1` and `review-craft.delivery.v1` protocols remain available;
 no current protocol reinterprets or mutates their existing artifacts.
 The deterministic report labels `focus` and `diff` scores as scope-limited rather than
-repository-wide, separates confirmed findings from evidence gaps and remaining risks, and
-lists verified command claims and captured evidence artifacts.
+repository-wide, renders `CONFIRMED` and `LIKELY` findings in separate counts and sections,
+separates findings from evidence gaps and remaining risks, and lists verified command claims
+and captured evidence artifacts. Final run.v4 score deductions must reference an existing
+finding ID or a canonical `evidence-gap:<id>`; sealed run.v3 validation retains its published
+free-form reference semantics.
+
+This repository also keeps an active `.review-craft.json` as its dogfood control file. It
+binds the canonical unit-test, source-validation, package, complexity-budget, and 1k runtime
+benchmark commands while disabling network, install, and target-mutation authorization.
 
 ## Validate this repository
 
@@ -515,8 +528,10 @@ lists verified command claims and captured evidence artifacts.
 uv sync --locked --group dev
 PYTHONDONTWRITEBYTECODE=1 uv run --locked python -m unittest discover -s tests -p 'test_*.py'
 uv run --locked python scripts/validate.py
+uv run --locked python scripts/complexity_budget.py
 python3 scripts/package_check.py
 python3 scripts/release_gate.py
+npm pack --dry-run --json
 ```
 
 The eval runner does not invoke a model during CI. Contract tests use a synthetic adapter

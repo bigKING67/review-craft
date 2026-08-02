@@ -49,7 +49,6 @@ from .repository import (
     inspect_git,
     inventory_for_mode,
     repository_identity,
-    repository_paths,
     worktree_fingerprint,
 )
 from .repository_analysis import build_dependency_map, build_module_map, detect_profile
@@ -315,8 +314,7 @@ def command_preflight(args: argparse.Namespace) -> int:
     if diff_context is not None:
         config["diffBase"] = diff_context["baseRevision"]
     dimensions = config["focusDimensions"] or [row[0] for row in SCORE_DIMENSIONS]
-    profile_records = [{"path": path} for path in repository_paths(root)]
-    profile = detect_profile(root, profile_records, config["profile"])
+    profile = detect_profile(root, records, config["profile"])
     review_scope = {
         "documentType": "review-craft.review-scope",
         "schemaVersion": SCHEMA_VERSION,

@@ -1,0 +1,77 @@
+{
+  "schema": "review-craft.complexity-budget.v1",
+  "limits": [
+    {
+      "path": "skills/review-craft/lib/review_craft/contracts.py",
+      "function": "validate_run",
+      "maximum": 8,
+      "reason": "Run validation orchestration after schema, live-source, and receipt validation extraction."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/contracts.py",
+      "function": "_validate_run_documents",
+      "maximum": 8,
+      "reason": "Schema, document-header, and configuration validation boundary."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/contracts.py",
+      "function": "_validate_live_source",
+      "maximum": 8,
+      "reason": "Live source, Git status, and diff-scope parity boundary."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/contracts.py",
+      "function": "_validate_command_receipts",
+      "maximum": 8,
+      "reason": "Canonical command receipt orchestration after identity and artifact extraction."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/remediation_attempt_validation.py",
+      "function": "validate_fix_attempt_snapshot",
+      "maximum": 42,
+      "reason": "Immutable-attempt validator ceiling after shared terminal timestamp validation extraction."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/schema_validation.py",
+      "function": "validate_instance",
+      "maximum": 31,
+      "reason": "Current dependency-free JSON Schema validator ceiling pending keyword-handler extraction."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/report.py",
+      "function": "render_report",
+      "maximum": 14,
+      "reason": "Deterministic report projection ceiling; new report sections must use helpers."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/repository_analysis.py",
+      "function": "detect_profile",
+      "maximum": 4,
+      "reason": "Scoped profile orchestration after repository-signal extraction."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/process_lifecycle.py",
+      "function": "run_process",
+      "maximum": 2,
+      "reason": "Shared command process lifecycle orchestration."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/score_validation.py",
+      "function": "_validate_deduction",
+      "maximum": 8,
+      "reason": "run.v4 deduction and evidence-reference closure."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/score_validation.py",
+      "function": "_validate_dimensions",
+      "maximum": 8,
+      "reason": "Per-dimension score arithmetic validation."
+    },
+    {
+      "path": "skills/review-craft/lib/review_craft/score_validation.py",
+      "function": "validate_scorecard",
+      "maximum": 6,
+      "reason": "Score validator orchestration extracted from the former complexity-31 implementation."
+    }
+  ]
+}

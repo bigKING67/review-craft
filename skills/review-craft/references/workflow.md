@@ -135,7 +135,12 @@ python3 <skill-root>/scripts/review_craft.py \
 ```
 
 The runner uses argv without a shell and records duration, exit code, output, and
-before/after repository state. It captures evidence but is not a security sandbox.
+before/after repository state. It starts each command in an isolated POSIX session or a
+Windows process group. On timeout it terminates the inherited POSIX process group or runs
+fixed-argv `taskkill /PID <pid> /T /F`, reaps the direct process, and only then records the
+final repository state. This closes ordinary inherited-descendant late-write windows, but
+does not contain detached processes, external launchers, filesystem access, or network
+access. It captures evidence but is not a security sandbox.
 Each receipt is validated against the configured command's canonical name, argv, and
 cwd. Editing a receipt, recomputing its ID, or renaming its output files cannot turn a
 different command into valid evidence.

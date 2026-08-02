@@ -92,11 +92,6 @@ class EvidenceRegistryTests(unittest.TestCase):
         findings["findings"][0]["evidenceRefs"] = [reference]
         write_json(self.run_dir / ARTIFACT_PATHS["findings"], findings)
 
-        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
-        for dimension in scorecard["dimensions"]:
-            for deduction in dimension["deductions"]:
-                deduction["evidenceRefs"] = [reference]
-        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
 
     def _sealed_run(self) -> dict[str, object]:
         entry, completed = self._register()
@@ -240,7 +235,6 @@ class EvidenceRegistryTests(unittest.TestCase):
             "candidate-ledger[0].evidence[0].ref",
             "candidate-ledger[0].validation.evidenceRefs",
             "findings.findings[0].evidenceRefs",
-            "scorecard.dimensions[0].deductions[0].evidenceRefs",
         ):
             self.assertIn(prefix, message)
 

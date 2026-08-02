@@ -12,7 +12,11 @@ from tests.support import RUNTIME_LIB, create_run, make_target, populate_valid_r
 
 sys.path.insert(0, str(RUNTIME_LIB))
 
-from review_craft.constants import ARTIFACT_PATHS
+from review_craft.constants import (
+    ARTIFACT_PATHS,
+    LEGACY_ARTIFACT_PATHS,
+    LEGACY_SCHEMA_VERSION,
+)
 from review_craft.contracts import ContractError, load_run, validate_run
 from review_craft.jsonio import canonical_json, read_json, read_jsonl, write_json, write_jsonl
 from review_craft.report import render_report
@@ -137,6 +141,21 @@ class ContractTests(unittest.TestCase):
         self.assertIn("`evidence-gap:isolated-install`：缺少隔离安装后的真实启动证据。", text)
         self.assertIn("尚未在 Windows 主机验证安装路径。", text)
 
+    def test_report_separates_confirmed_and_likely_findings(self) -> None:
+        data = load_run(self.run_dir)
+        data["candidates"][0]["validation"]["status"] = "LIKELY"
+        data["findings"]["findings"][0]["validationStatus"] = "LIKELY"
+        text = render_report(data)
+
+        self.assertIn("已确认问题（Confirmed Findings）：`0`", text)
+        self.assertIn("高概率问题（Likely Findings）：`1`", text)
+        confirmed = text.split("## 已确认问题（Confirmed Findings）", 1)[1].split(
+            "## 高概率问题（Likely Findings）", 1
+        )[0]
+        likely = text.split("## 高概率问题（Likely Findings）", 1)[1]
+        self.assertNotIn("RC-FINDING-001", confirmed)
+        self.assertIn("RC-FINDING-001", likely)
+
     def test_report_projects_verified_command_semantics(self) -> None:
         data = load_run(self.run_dir)
         data["commands"] = [
@@ -217,6 +236,56 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as captured:
             validate_run(self.run_dir)
         self.assertIn("scores >=95 require evidence level E3", str(captured.exception))
+
+    def test_run_v4_score_deductions_require_closed_references(self) -> None:
+        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
+        scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
+            "bogus:not-a-finding-or-evidence-gap"
+        ]
+        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
+
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn("unknown score evidence reference", str(captured.exception))
+
+    def test_run_v4_accepts_canonical_evidence_gap_reference(self) -> None:
+        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
+        scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
+            "evidence-gap:isolated-install"
+        ]
+        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
+
+        validate_run(self.run_dir)
+
+    def test_run_v3_keeps_historical_score_reference_semantics(self) -> None:
+        manifest_path = self.run_dir / "review-manifest.json"
+        manifest = read_json(manifest_path)
+        manifest["schemaVersion"] = LEGACY_SCHEMA_VERSION
+        manifest["artifacts"] = LEGACY_ARTIFACT_PATHS
+        write_json(manifest_path, manifest)
+        for key in (
+            "reviewScope",
+            "qualityModel",
+            "coverage",
+            "moduleMap",
+            "dependencyMap",
+            "findings",
+            "decisions",
+            "scorecard",
+            "remediationPlan",
+        ):
+            path = self.run_dir / LEGACY_ARTIFACT_PATHS[key]
+            document = read_json(path)
+            document["schemaVersion"] = LEGACY_SCHEMA_VERSION
+            write_json(path, document)
+        (self.run_dir / ARTIFACT_PATHS["evidenceRegistry"]).unlink()
+        scorecard = read_json(self.run_dir / LEGACY_ARTIFACT_PATHS["scorecard"])
+        scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
+            "legacy:free-form-reference"
+        ]
+        write_json(self.run_dir / LEGACY_ARTIFACT_PATHS["scorecard"], scorecard)
+
+        validate_run(self.run_dir)
 
     def test_e2_requires_successful_canonical_command_evidence(self) -> None:
         scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])

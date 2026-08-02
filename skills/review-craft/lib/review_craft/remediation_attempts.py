@@ -12,13 +12,13 @@ from .locking import exclusive_file_lock
 from .remediation_attempt_contract import (
     attempt_assessment_rows,
     attempt_directories,
+    attempt_timestamp_errors,
     capture_failure_reasons,
     capture_status,
     claim_observations,
     command_result,
     final_failure_reasons,
     load_attempt,
-    parse_timestamp,
     recovery_classification,
     require_attempt_protocol_root,
     validate_attempt_evidence_refs,
@@ -264,14 +264,14 @@ def finalize_fix_attempt(
             errors.append("fix-attempt-assessment.attemptId: manifest mismatch")
         if assessment["evidenceSha256"] != evidence_hash:
             errors.append("fix-attempt-assessment.evidenceSha256: evidence mismatch")
-        if parse_timestamp(
-            assessment["assessedAt"], "fix-attempt-assessment.assessedAt"
-        ) < parse_timestamp(
-            evidence["completedAt"], "fix-attempt-evidence.completedAt"
-        ):
-            errors.append(
-                "fix-attempt-assessment.assessedAt: must not precede evidence completion"
+        finalized_at_value = finalized_at or utc_now()
+        errors.extend(
+            attempt_timestamp_errors(
+                evidence=evidence,
+                assessment=assessment,
+                finalized_at=finalized_at_value,
             )
+        )
         try:
             validate_attempt_evidence_refs(assessment=assessment, evidence=evidence)
             validate_measurements(
@@ -318,7 +318,7 @@ def finalize_fix_attempt(
             "toolVersion": __version__,
             "fixId": plan["fixId"],
             "attemptId": manifest["attemptId"],
-            "finalizedAt": finalized_at or utc_now(),
+            "finalizedAt": finalized_at_value,
             "planSha256": sha256_json(plan),
             "manifestSha256": sha256_json(manifest),
             "evidenceSha256": evidence_hash,

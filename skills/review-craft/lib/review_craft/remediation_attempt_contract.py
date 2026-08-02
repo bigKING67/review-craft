@@ -48,6 +48,34 @@ def parse_timestamp(value: str, field: str) -> datetime:
         raise ContractError([f"{field}: invalid date-time"]) from error
 
 
+def attempt_timestamp_errors(
+    *,
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    finalized_at: str | None = None,
+) -> list[str]:
+    completed = parse_timestamp(
+        evidence["completedAt"], "fix-attempt-evidence.completedAt"
+    )
+    assessed = parse_timestamp(
+        assessment["assessedAt"], "fix-attempt-assessment.assessedAt"
+    )
+    errors: list[str] = []
+    if assessed < completed:
+        errors.append(
+            "fix-attempt-assessment.assessedAt: must not precede evidence completion"
+        )
+    if finalized_at is not None:
+        finalized = parse_timestamp(
+            finalized_at, "fix-attempt-verification.finalizedAt"
+        )
+        if finalized < assessed or finalized < completed:
+            errors.append(
+                "fix-attempt-verification.finalizedAt: precedes evidence or assessment"
+            )
+    return errors
+
+
 def scalar_equal(actual: Any, expected: Any) -> bool:
     return actual == expected and (
         not isinstance(actual, bool) or isinstance(expected, bool)

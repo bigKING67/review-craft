@@ -69,6 +69,11 @@ agent-project
 data-pipeline
 ```
 
+Auto detection reads only the canonical selected inventory produced after `scope`,
+`exclude`, and (for `diff`) changed-file resolution. A manifest, `SKILL.md`, or source file
+outside that inventory cannot contribute a profile signal. Explicit profiles remain
+configuration authority and do not invoke auto detection.
+
 Profile detection is context, not proof. It must not overrule `ENGINEERING.md`, user
 requirements, runtime behavior, or explicit non-goals. Override an incorrect result
 through `.review-craft.json` rather than editing generated artifacts.

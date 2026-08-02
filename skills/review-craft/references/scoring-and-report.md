@@ -30,6 +30,14 @@ Start from the dimension maximum and deduct only for a validated finding or expl
 evidence gap. Cite IDs. The finalizer checks that deduction points equal maximum
 minus awarded points and computes the total.
 
+For a final `review-craft.run.v4` scorecard, every deduction reference must resolve to an
+existing finding ID or match the canonical `evidence-gap:<id>` namespace, where `<id>` is a
+lowercase ASCII identifier using letters, digits, `_`, or `-`. Bare `artifact:<id>`, paths,
+typos, and nonexistent finding IDs do not close a score deduction and fail validation.
+Draft validation may use the runtime-owned `coverage:draft` placeholder until coverage is
+closed. Sealed `review-craft.run.v3` artifacts retain their published free-form reference
+validation and are not silently upgraded to run.v4 semantics.
+
 Only the canonical finalizer may produce the numeric total. When the runtime or
 finalizer is unavailable, report the evidence level and qualitative gaps without
 a numeric table, approximate total, or alternate weighting model.
@@ -79,7 +87,9 @@ disposition counts. Edit JSON and rerun finalization instead of patching the Mar
 
 The score label is mode-bound: `review` is repository-wide, while `focus` and `diff`
 explicitly state that their score applies only to the selected scope. Findings, evidence
-gaps, and remaining risks are separate deterministic sections. Evidence gaps are deduped
+gaps, and remaining risks are separate deterministic sections. `CONFIRMED` and `LIKELY`
+findings have independent counts and sections; a `LIKELY` finding remains visible but is
+never projected as confirmed. Evidence gaps are deduped
 from scorecard deduction references beginning with `evidence-gap:`; remaining risks come
 from `quality-model.json.unknowns`. Verified semantic claims and copied command artifacts
 are listed from canonical command receipts. Current run.v4 reports also list every

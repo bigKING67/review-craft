@@ -82,6 +82,26 @@ def _locations(row: dict[str, Any]) -> str:
     return ", ".join(rendered)
 
 
+def _finding_lines(row: dict[str, Any], decision_by_id: dict[str, str]) -> list[str]:
+    return [
+        f"### {row['id']} · {row['priority']} / {row['severity']} · {row['title']}",
+        "",
+        f"- **位置：** {_locations(row)}",
+        f"- **问题证据：** {', '.join(f'`{item}`' for item in row['evidenceRefs'])}",
+        f"- **根本原因：** {row['rootCause']}",
+        f"- **当前实际影响：** {row['currentImpact']}",
+        f"- **长期风险：** {row['longTermRisk']}",
+        f"- **推荐方案：** {row['recommendation']}",
+        f"- **处置：** `{decision_by_id[row['decisionId']]}`",
+        f"- **修改成本：** {row['modificationCost']}",
+        f"- **修改风险：** {row['modificationRisk']}",
+        f"- **验证状态：** `{row['validationStatus']}` / `{row['confidence']}`",
+        "- **验证方式：**",
+        *_bullets(row["verification"]),
+        "",
+    ]
+
+
 def render_report(data: dict[str, Any]) -> str:
     manifest = data["manifest"]
     review_scope = data["reviewScope"]
@@ -91,6 +111,10 @@ def render_report(data: dict[str, Any]) -> str:
     dependency_map = data["dependencyMap"]
     candidates = data["candidates"]
     findings = sorted(data["findings"]["findings"], key=_finding_sort)
+    confirmed_findings = [
+        row for row in findings if row.get("validationStatus") == "CONFIRMED"
+    ]
+    likely_findings = [row for row in findings if row.get("validationStatus") == "LIKELY"]
     decisions = data["decisions"]["decisions"]
     scorecard = data["scorecard"]
     remediation = data["remediationPlan"]
@@ -178,13 +202,19 @@ def render_report(data: dict[str, Any]) -> str:
         "",
         f"{summary_score}为 **{total}/100**。{_score_level(total)}。",
         "",
-        f"- 已确认问题（Confirmed Findings）：`{len(findings)}`",
+        f"- 已确认问题（Confirmed Findings）：`{len(confirmed_findings)}`",
+        f"- 高概率问题（Likely Findings）：`{len(likely_findings)}`",
         f"- 证据缺口（Evidence Gaps）：`{len(evidence_gaps)}`",
         f"- 剩余风险（Remaining Risks）：`{len(remaining_risks)}`",
         "",
         *([score_limitation, ""] if score_limitation is not None else []),
-        "最主要的已确认问题：",
-        *_bullets([f"{row['id']}：{row['title']}" for row in top_findings]),
+        "最主要的已验证问题：",
+        *_bullets(
+            [
+                f"{row['id']}（{row['validationStatus']}）：{row['title']}"
+                for row in top_findings
+            ]
+        ),
         "",
         f"建议调整等级：`{remediation['changeClass']}`。",
         "",
@@ -214,28 +244,15 @@ def render_report(data: dict[str, Any]) -> str:
             "",
         ]
     )
-    if not findings:
+    if not confirmed_findings:
         lines.append("没有通过验证门禁的正式问题。")
-    for row in findings:
-        lines.extend(
-            [
-                f"### {row['id']} · {row['priority']} / {row['severity']} · {row['title']}",
-                "",
-                f"- **位置：** {_locations(row)}",
-                f"- **问题证据：** {', '.join(f'`{item}`' for item in row['evidenceRefs'])}",
-                f"- **根本原因：** {row['rootCause']}",
-                f"- **当前实际影响：** {row['currentImpact']}",
-                f"- **长期风险：** {row['longTermRisk']}",
-                f"- **推荐方案：** {row['recommendation']}",
-                f"- **处置：** `{decision_by_id[row['decisionId']]}`",
-                f"- **修改成本：** {row['modificationCost']}",
-                f"- **修改风险：** {row['modificationRisk']}",
-                f"- **验证状态：** `{row['validationStatus']}` / `{row['confidence']}`",
-                "- **验证方式：**",
-                *_bullets(row["verification"]),
-                "",
-            ]
-        )
+    for row in confirmed_findings:
+        lines.extend(_finding_lines(row, decision_by_id))
+    lines.extend(["## 高概率问题（Likely Findings）", ""])
+    if not likely_findings:
+        lines.append("没有通过 LIKELY 验证门禁的高概率问题。")
+    for row in likely_findings:
+        lines.extend(_finding_lines(row, decision_by_id))
     lines.extend(["## 证据缺口（Evidence Gaps）", ""])
     lines.extend(
         _bullets([f"`{reference}`：{reason}" for reference, reason in evidence_gaps])

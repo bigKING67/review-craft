@@ -10,6 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 COMMANDS = (
     (
+        "complexity budget",
+        ["uv", "run", "--locked", "python", "scripts/complexity_budget.py"],
+    ),
+    (
         "tests",
         [
             "uv",

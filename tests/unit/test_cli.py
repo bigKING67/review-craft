@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -139,6 +140,40 @@ class CliTests(unittest.TestCase):
             self.assertEqual(scope["profile"]["resolved"], "application")
             self.assertIsNone(scope["diff"])
 
+    def test_auto_profile_uses_only_the_selected_inventory(self) -> None:
+        temporary, target = make_target()
+        self.addCleanup(temporary.cleanup)
+        (target / "backend").mkdir()
+        (target / "backend/app.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (target / "skills/demo").mkdir(parents=True)
+        (target / "skills/demo/SKILL.md").write_text(
+            "---\nname: excluded-agent-skill\n---\n",
+            encoding="utf-8",
+        )
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps({"scope": ["backend"], "exclude": ["skills/**"]}),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            completed = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_dir = Path(json.loads(completed.stdout)["runDir"])
+            scope = read_json(run_dir / "review-scope.json")
+            coverage = read_json(run_dir / "coverage.json")
+
+        self.assertEqual({row["path"] for row in coverage["files"]}, {"backend/app.py"})
+        self.assertEqual(scope["profile"]["resolved"], "application")
+        self.assertNotIn("contains an agent SKILL.md", scope["profile"]["signals"])
+
     def test_diff_preflight_covers_modified_added_and_deleted_files(self) -> None:
         temporary, target = make_target(commit=True)
         self.addCleanup(temporary.cleanup)
@@ -184,7 +219,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(by_path["app.py"]["diffStatus"], "M")
             self.assertEqual(by_path["gone.py"]["kind"], "deleted")
             self.assertEqual(scope["diff"]["baseRevision"], base)
-            self.assertEqual(scope["profile"]["resolved"], "agent-project")
+            self.assertEqual(scope["profile"]["resolved"], "application")
             validated = run_cli("validate", "--run-dir", str(run_dir), "--allow-draft")
             self.assertEqual(validated.returncode, 0, validated.stderr)
 
@@ -377,6 +412,62 @@ class CliTests(unittest.TestCase):
             stdout = (run_dir / receipt["stdoutArtifact"]).read_text(encoding="utf-8")
             self.assertEqual(stdout.strip(), "; touch nope")
             self.assertFalse((target / "nope").exists())
+
+    def test_evidence_timeout_terminates_descendants_before_receipt_returns(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        ready = Path(temporary.name).parent / f"{Path(temporary.name).name}-child-ready"
+        self.addCleanup(ready.unlink, missing_ok=True)
+        child_code = (
+            "from pathlib import Path; import time; "
+            f"Path({str(ready)!r}).write_text('ready'); "
+            "time.sleep(2); Path('late.txt').write_text('late')"
+        )
+        parent_code = (
+            "import subprocess, sys, time; "
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+            "time.sleep(60)"
+        )
+        config = target / ".review-craft.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "timeout-tree": {
+                            "argv": [sys.executable, "-c", parent_code],
+                            "timeoutSeconds": 1,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as output:
+            created = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--config",
+                str(config),
+                "--output-root",
+                output,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            run_dir = Path(json.loads(created.stdout)["runDir"])
+            evidence = run_cli(
+                "run-evidence",
+                "--run-dir",
+                str(run_dir),
+                "--command",
+                "timeout-tree",
+            )
+            self.assertEqual(evidence.returncode, 124, evidence.stderr)
+            receipt = json.loads(evidence.stdout)
+            self.assertTrue(receipt["timedOut"])
+            self.assertTrue(ready.is_file(), "descendant did not start before timeout")
+            time.sleep(2.5)
+            self.assertFalse((target / "late.txt").exists())
+            self.assertFalse(receipt["repositoryMutationDetected"])
 
     def test_evidence_detects_tracked_mutation(self) -> None:
         temporary, target = make_target(commit=True)

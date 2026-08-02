@@ -19,6 +19,7 @@ REQUIRED_FILES = (
     ".codex-plugin/plugin.json",
     ".github/workflows/validate.yml",
     ".gitignore",
+    ".review-craft.json",
     "AGENTS.md",
     "benchmarks/schemas/runtime-result.schema.json",
     "benchmarks/specs/runtime.json",
@@ -29,6 +30,7 @@ REQUIRED_FILES = (
     "THIRD_PARTY_NOTICES.md",
     "VERSION",
     "contracts/evidence-policy.json",
+    "contracts/complexity-budget.json",
     "contracts/package-boundary.json",
     "contracts/release-policy.json",
     "package.json",
@@ -45,6 +47,7 @@ REQUIRED_FILES = (
     "skills/review-craft/lib/review_craft/evidence.py",
     "skills/review-craft/lib/review_craft/evidence_registry.py",
     "skills/review-craft/lib/review_craft/locking.py",
+    "skills/review-craft/lib/review_craft/process_lifecycle.py",
     "skills/review-craft/lib/review_craft/remediation.py",
     "skills/review-craft/lib/review_craft/remediation_attempt_contract.py",
     "skills/review-craft/lib/review_craft/remediation_attempt_validation.py",
@@ -53,6 +56,7 @@ REQUIRED_FILES = (
     "skills/review-craft/lib/review_craft/remediation_validation.py",
     "skills/review-craft/lib/review_craft/repository_analysis.py",
     "skills/review-craft/lib/review_craft/semantic_evidence.py",
+    "skills/review-craft/lib/review_craft/score_validation.py",
     "skills/review-craft/references/modes-and-profiles.md",
     "skills/review-craft/references/remediation.md",
     "skills/review-craft/schemas/dependency-map.schema.json",
@@ -85,6 +89,7 @@ REQUIRED_FILES = (
     "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
     "scripts/codex_eval_adapter.py",
     "scripts/benchmark_runtime.py",
+    "scripts/complexity_budget.py",
     "scripts/eval_contracts.py",
     "scripts/run_evals.py",
 )
@@ -159,16 +164,17 @@ def validate_schemas(errors: list[str]) -> None:
             schemas[path.name] = schema
         except (json.JSONDecodeError, ValueError) as error:
             errors.append(f"{path.relative_to(ROOT)}: invalid schema: {error}")
-    config_path = ROOT / ".review-craft.example.json"
-    if "config.schema.json" in schemas and config_path.exists():
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        schema_errors = sorted(
-            Draft202012Validator(schemas["config.schema.json"]).iter_errors(config),
-            key=lambda item: list(item.path),
-        )
-        for error in schema_errors:
-            location = ".".join(str(part) for part in error.path) or "<root>"
-            errors.append(f".review-craft.example.json:{location}: {error.message}")
+    for config_name in (".review-craft.json", ".review-craft.example.json"):
+        config_path = ROOT / config_name
+        if "config.schema.json" in schemas and config_path.exists():
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            schema_errors = sorted(
+                Draft202012Validator(schemas["config.schema.json"]).iter_errors(config),
+                key=lambda item: list(item.path),
+            )
+            for error in schema_errors:
+                location = ".".join(str(part) for part in error.path) or "<root>"
+                errors.append(f"{config_name}:{location}: {error.message}")
     cases_path = ROOT / "evals/specs/cases.json"
     cases_schema_path = ROOT / "evals/schemas/eval-cases.schema.json"
     if cases_path.exists() and cases_schema_path.exists():

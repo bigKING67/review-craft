@@ -9,7 +9,6 @@ from .configuration import validate_config
 from .constants import (
     ARTIFACT_PATHS,
     DECISIONS,
-    EVIDENCE_LEVELS,
     FINAL_COVERAGE_DISPOSITIONS,
     LEGACY_ARTIFACT_PATHS,
     LEGACY_SCHEMA_VERSION,
@@ -20,7 +19,6 @@ from .constants import (
     REVIEW_MODES,
     SCHEMA_VERSION,
     SCORE_DIMENSIONS,
-    SEMANTIC_CLAIM_LEVELS,
     SEVERITIES,
     SUPPORTED_RUN_SCHEMA_VERSIONS,
     VALIDATION_STATUSES,
@@ -36,6 +34,7 @@ from .repository import (
 )
 from .repository_analysis import build_dependency_map, build_module_map
 from .schema_validation import validate_instance
+from .score_validation import validate_scorecard
 from .semantic_evidence import receipt_identity_payload, receipt_semantic_errors
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
@@ -555,154 +554,6 @@ def _validate_decisions(
     return result
 
 
-def _validate_scorecard(
-    scorecard: dict[str, Any],
-    findings: dict[str, dict[str, Any]],
-    candidates: list[dict[str, Any]],
-    coverage: dict[str, Any],
-    commands: list[dict[str, Any]],
-    errors: list[str],
-    final: bool,
-) -> None:
-    dimensions = scorecard.get("dimensions")
-    if not isinstance(dimensions, list):
-        errors.append("scorecard.dimensions: expected an array")
-        return
-    by_id = {row.get("id"): row for row in dimensions if isinstance(row, dict)}
-    expected_ids = {item[0] for item in SCORE_DIMENSIONS}
-    if set(by_id) != expected_ids:
-        errors.append("scorecard.dimensions: expected the canonical eight dimensions")
-        return
-    total = 0
-    for identifier, _, maximum in SCORE_DIMENSIONS:
-        row = by_id[identifier]
-        if row.get("maximum") != maximum:
-            errors.append(f"scorecard.{identifier}.maximum: expected {maximum}")
-        awarded = row.get("awarded")
-        if not isinstance(awarded, int) or isinstance(awarded, bool) or not 0 <= awarded <= maximum:
-            errors.append(f"scorecard.{identifier}.awarded: expected 0..{maximum}")
-            continue
-        deductions = row.get("deductions")
-        if not isinstance(deductions, list):
-            errors.append(f"scorecard.{identifier}.deductions: expected an array")
-            continue
-        points = 0
-        for index, deduction in enumerate(deductions):
-            prefix = f"scorecard.{identifier}.deductions[{index}]"
-            if not isinstance(deduction, dict):
-                errors.append(f"{prefix}: expected an object")
-                continue
-            value = deduction.get("points")
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                errors.append(f"{prefix}.points: expected a positive integer")
-            else:
-                points += value
-            if not _non_empty(deduction.get("reason")):
-                errors.append(f"{prefix}.reason: required")
-            if not _string_list(deduction.get("evidenceRefs")):
-                errors.append(f"{prefix}.evidenceRefs: required")
-        if maximum - awarded != points:
-            errors.append(
-                f"scorecard.{identifier}: deductions {points} do not equal {maximum - awarded}"
-            )
-        total += awarded
-    if scorecard.get("total") != total:
-        errors.append(f"scorecard.total: expected {total}, got {scorecard.get('total')!r}")
-    level = scorecard.get("evidenceLevel")
-    if level not in EVIDENCE_LEVELS:
-        errors.append("scorecard.evidenceLevel: expected E0..E4")
-        return
-    unresolved = sum(
-        1
-        for row in candidates
-        if row.get("validation", {}).get("status") in {"PENDING", "BLOCKED"}
-    )
-    if scorecard.get("unresolvedCandidates") != unresolved:
-        errors.append(f"scorecard.unresolvedCandidates: expected {unresolved}")
-    files = coverage.get("files", [])
-    accounted = sum(
-        1 for row in files if row.get("disposition") in FINAL_COVERAGE_DISPOSITIONS
-    )
-    reviewed = sum(
-        1
-        for row in files
-        if row.get("disposition") in {"REVIEWED", "COVERED_BY_PARENT"}
-    )
-    accounted_percent = round(100 * accounted / len(files), 2) if files else 100.0
-    reviewed_percent = round(100 * reviewed / len(files), 2) if files else 100.0
-    has_explicit_coverage_metrics = (
-        "accountedPercent" in scorecard or "reviewedPercent" in scorecard
-    )
-    if has_explicit_coverage_metrics:
-        if scorecard.get("accountedPercent") != accounted_percent:
-            errors.append(f"scorecard.accountedPercent: expected {accounted_percent}")
-        if scorecard.get("reviewedPercent") != reviewed_percent:
-            errors.append(f"scorecard.reviewedPercent: expected {reviewed_percent}")
-        if scorecard.get("coveragePercent") != reviewed_percent:
-            errors.append(f"scorecard.coveragePercent: expected {reviewed_percent}")
-    elif scorecard.get("coveragePercent") != accounted_percent:
-        # Historical run.v3 artifacts used coveragePercent for accounting closure.
-        errors.append(f"scorecard.coveragePercent: expected {accounted_percent}")
-    successful_receipts = [
-        row
-        for row in commands
-        if isinstance(row, dict)
-        and row.get("exitCode") == 0
-        and row.get("timedOut") is False
-        and row.get("repositoryMutationDetected") is False
-        and row.get("semanticEvidenceValid") is not False
-    ]
-    if EVIDENCE_LEVELS[level] >= EVIDENCE_LEVELS["E2"] and not successful_receipts:
-        errors.append(
-            "scorecard.evidenceLevel: E2+ requires a successful canonical command receipt"
-        )
-    semantic_receipts_present = any(
-        isinstance(row, dict) and "semanticEvidenceValid" in row for row in commands
-    )
-    if semantic_receipts_present and EVIDENCE_LEVELS[level] >= EVIDENCE_LEVELS["E3"]:
-        verified_levels = [
-            EVIDENCE_LEVELS[SEMANTIC_CLAIM_LEVELS[claim["kind"]]]
-            for row in successful_receipts
-            for claim in row.get("evidenceClaims", [])
-            if claim.get("status") == "VERIFIED" and claim.get("kind") in SEMANTIC_CLAIM_LEVELS
-        ]
-        if not verified_levels or max(verified_levels) < EVIDENCE_LEVELS[level]:
-            errors.append(
-                f"scorecard.evidenceLevel: {level} requires a matching verified semantic claim"
-            )
-    if final:
-        if EVIDENCE_LEVELS[level] < 1:
-            errors.append("scorecard.evidenceLevel: E1 is required for a numeric final score")
-        review_gaps = sum(
-            row.get("disposition") in {"PENDING", "DEFERRED", "UNREADABLE", "OUT_OF_SCOPE"}
-            for row in files
-            if isinstance(row, dict)
-        )
-        if scorecard.get("status") == "final" and (
-            accounted_percent != 100.0 or unresolved
-        ):
-            errors.append("scorecard.status: final requires closed coverage and candidates")
-        if (
-            has_explicit_coverage_metrics
-            and scorecard.get("status") == "final"
-            and review_gaps
-        ):
-            errors.append(
-                "scorecard.status: final requires no pending, deferred, unreadable, "
-                "or out-of-scope review gaps"
-            )
-        if scorecard.get("status") == "final" and any(
-            row.get("priority") in {"P0", "P1"}
-            and row.get("validationStatus") != "CONFIRMED"
-            for row in findings.values()
-        ):
-            errors.append("scorecard.status: unresolved P0/P1 finding prevents final status")
-        if total >= 95 and EVIDENCE_LEVELS[level] < 3:
-            errors.append("scorecard: scores >=95 require evidence level E3")
-        if total >= 98 and EVIDENCE_LEVELS[level] < 4:
-            errors.append("scorecard: scores >=98 require evidence level E4")
-
-
 def _validate_remediation(plan: dict[str, Any], errors: list[str], final: bool) -> None:
     if final and plan.get("changeClass") not in {
         "LOCAL_OPTIMIZATION",
@@ -900,10 +751,9 @@ def _validate_evidence_registry(
             errors.append(f"{prefix}: unknown registered evidence ID {identifier!r}")
 
 
-def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
-    run_dir = run_dir.expanduser().resolve(strict=True)
-    data = load_run(run_dir)
-    errors: list[str] = []
+def _validate_run_documents(
+    data: dict[str, Any], errors: list[str]
+) -> tuple[str, dict[str, str], dict[str, str], dict[str, Any]]:
     manifest = data["manifest"]
     schema_version = manifest.get("schemaVersion")
     document_schemas = _document_schemas(schema_version)
@@ -927,7 +777,8 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         _validate_document_header(name, data[name], schema_version, errors)
     if any(not isinstance(data[name], dict) for name in document_schemas):
         raise ContractError(errors)
-    manifest_configuration = data["manifest"].get("configuration")
+
+    manifest_configuration = manifest.get("configuration")
     errors.extend(
         f"config.schema.json: {error}"
         for error in validate_instance(manifest_configuration, _schema("config.schema.json"))
@@ -938,11 +789,19 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         validate_config(manifest_configuration)
     except (KeyError, TypeError, ValueError) as error:
         errors.append(f"review-manifest.configuration: {error}")
+    return schema_version, document_schemas, artifact_paths, manifest_configuration
+
+
+def _validate_manifest_identity(
+    manifest: dict[str, Any],
+    configuration: dict[str, Any],
+    coverage: dict[str, Any],
+    errors: list[str],
+) -> dict[str, Any]:
     target = manifest.get("target")
     if not isinstance(target, dict):
         target = {}
-    coverage = data["coverage"]
-    if manifest.get("configFingerprint") != sha256_json(manifest_configuration):
+    if manifest.get("configFingerprint") != sha256_json(configuration):
         errors.append("review-manifest.configFingerprint: does not match configuration")
     if target.get("sourceFingerprint") != coverage.get("inventoryFingerprint"):
         errors.append("review-manifest.target.sourceFingerprint: does not match coverage")
@@ -954,83 +813,146 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     }
     if target.get("identity") != sha256_json(identity_seed):
         errors.append("review-manifest.target.identity: does not match target fields")
-    rebuilt_module_map: dict[str, Any] | None = None
-    rebuilt_dependency_map: dict[str, Any] | None = None
+    return target
+
+
+def _current_source_projection(
+    target_root: Path, configuration: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str, str, str]:
+    records, _, current_diff = inventory_for_mode(
+        target_root,
+        mode=configuration["mode"],
+        scopes=configuration["scope"],
+        excludes=configuration["exclude"],
+        generated=configuration["generated"],
+        vendored=configuration["vendored"],
+        diff_base=configuration["diffBase"],
+    )
+    return (
+        records,
+        current_diff,
+        fingerprint_inventory(records),
+        worktree_fingerprint(target_root, records=records),
+        inspect_git(target_root).status,
+    )
+
+
+def _validate_live_source(
+    data: dict[str, Any],
+    configuration: dict[str, Any],
+    target: dict[str, Any],
+    schema_version: str,
+    errors: list[str],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     run_state = data["runState"]
     if not isinstance(run_state, dict) or not _non_empty(run_state.get("targetRoot")):
         errors.append("run-state.targetRoot: required")
+        return None, None
+    try:
+        target_root = Path(run_state["targetRoot"]).resolve(strict=True)
+        records, current_diff, current_source, current_worktree, current_status = (
+            _current_source_projection(target_root, configuration)
+        )
+    except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
+        errors.append(f"run-state.targetRoot: source verification failed: {error}")
+        return None, None
+
+    module_map = build_module_map(records)
+    dependency_map = build_dependency_map(target_root, records)
+    module_map["schemaVersion"] = schema_version
+    dependency_map["schemaVersion"] = schema_version
+    if current_source != target.get("sourceFingerprint"):
+        errors.append("run-state.targetRoot: source fingerprint changed after preflight")
+    if configuration.get("mode") == "diff":
+        stored_diff = data["reviewScope"].get("diff")
+        if (
+            not isinstance(current_diff, dict)
+            or not isinstance(stored_diff, dict)
+            or current_diff.get("changes") != stored_diff.get("changes")
+        ):
+            errors.append("run-state.targetRoot: diff scope changed after preflight")
+    if current_worktree != run_state.get("worktreeFingerprint"):
+        errors.append("run-state.targetRoot: worktree changed after preflight")
+    current_status_fingerprint = sha256_bytes(
+        current_status.encode("utf-8", errors="surrogateescape")
+    )
+    if current_status_fingerprint != run_state.get("statusFingerprint"):
+        errors.append("run-state.targetRoot: Git status changed after preflight")
+    return module_map, dependency_map
+
+
+def _validate_receipt_artifact(
+    run_dir: Path,
+    receipt: dict[str, Any],
+    command_id: str,
+    *,
+    field: str,
+    hash_field: str,
+    suffix: str,
+    receipt_artifacts: set[str],
+    errors: list[str],
+    prefix: str,
+) -> bytes | None:
+    expected = f"evidence/commands/{command_id}.{suffix}"
+    if receipt.get(field) != expected:
+        errors.append(f"{prefix}: {field} must be {expected}")
+        return None
+    if expected in receipt_artifacts:
+        errors.append(f"{prefix}: duplicate artifact path {expected}")
     else:
-        try:
-            target_root = Path(run_state["targetRoot"]).resolve(strict=True)
-            records, _, current_diff = inventory_for_mode(
-                target_root,
-                mode=manifest_configuration["mode"],
-                scopes=manifest_configuration["scope"],
-                excludes=manifest_configuration["exclude"],
-                generated=manifest_configuration["generated"],
-                vendored=manifest_configuration["vendored"],
-                diff_base=manifest_configuration["diffBase"],
-            )
-            current_source = fingerprint_inventory(records)
-            current_worktree = worktree_fingerprint(target_root, records=records)
-            current_status = inspect_git(target_root).status
-        except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
-            errors.append(f"run-state.targetRoot: source verification failed: {error}")
+        receipt_artifacts.add(expected)
+    try:
+        artifact = _run_file(run_dir, expected)
+    except ContractError as error:
+        errors.extend(f"{prefix}: {message}" for message in error.errors)
+        return None
+    content = artifact.read_bytes()
+    if receipt.get(hash_field) != sha256_bytes(content):
+        errors.append(f"{prefix}: {hash_field} does not match {expected}")
+    return content
+
+
+def _validate_receipt_identity(
+    receipt: dict[str, Any],
+    command_id: Any,
+    prefix: str,
+    receipt_ids: set[str],
+    receipt_sequences: set[int],
+    errors: list[str],
+) -> None:
+    if isinstance(command_id, str):
+        if command_id in receipt_ids:
+            errors.append(f"{prefix}: duplicate id")
         else:
-            rebuilt_module_map = build_module_map(records)
-            rebuilt_dependency_map = build_dependency_map(target_root, records)
-            rebuilt_module_map["schemaVersion"] = schema_version
-            rebuilt_dependency_map["schemaVersion"] = schema_version
-            if current_source != target.get("sourceFingerprint"):
-                errors.append("run-state.targetRoot: source fingerprint changed after preflight")
-            if manifest_configuration.get("mode") == "diff":
-                stored_diff = data["reviewScope"].get("diff")
-                if (
-                    not isinstance(current_diff, dict)
-                    or not isinstance(stored_diff, dict)
-                    or current_diff.get("changes") != stored_diff.get("changes")
-                ):
-                    errors.append("run-state.targetRoot: diff scope changed after preflight")
-            if current_worktree != run_state.get("worktreeFingerprint"):
-                errors.append("run-state.targetRoot: worktree changed after preflight")
-            current_status_fingerprint = sha256_bytes(
-                current_status.encode("utf-8", errors="surrogateescape")
-            )
-            if current_status_fingerprint != run_state.get("statusFingerprint"):
-                errors.append("run-state.targetRoot: Git status changed after preflight")
-    if rebuilt_module_map is not None and data["moduleMap"] != rebuilt_module_map:
-        errors.append("module-map: does not match the current inventory")
-    if rebuilt_dependency_map is not None and data["dependencyMap"] != rebuilt_dependency_map:
-        errors.append("dependency-map: does not match the current source projection")
+            receipt_ids.add(command_id)
+    sequence = receipt.get("sequence")
+    if isinstance(sequence, int) and not isinstance(sequence, bool):
+        if sequence in receipt_sequences:
+            errors.append(f"{prefix}: duplicate sequence")
+        else:
+            receipt_sequences.add(sequence)
+    if command_id != sha256_json(receipt_identity_payload(receipt))[:16]:
+        errors.append(f"{prefix}: id does not match receipt identity fields")
+
+
+def _validate_command_receipts(
+    run_dir: Path,
+    receipts: list[dict[str, Any]],
+    commands: dict[str, Any],
+    errors: list[str],
+) -> None:
     receipt_ids: set[str] = set()
     receipt_sequences: set[int] = set()
     receipt_artifacts: set[str] = set()
-    for index, receipt in enumerate(data["commands"]):
+    for index, receipt in enumerate(receipts):
         if not isinstance(receipt, dict):
             continue
         command_id = receipt.get("id")
         prefix = f"command receipt {command_id if isinstance(command_id, str) else index}"
-        errors.extend(
-            receipt_configuration_errors(
-                receipt,
-                manifest_configuration["commands"],
-                prefix=prefix,
-            )
+        errors.extend(receipt_configuration_errors(receipt, commands, prefix=prefix))
+        _validate_receipt_identity(
+            receipt, command_id, prefix, receipt_ids, receipt_sequences, errors
         )
-        if isinstance(command_id, str):
-            if command_id in receipt_ids:
-                errors.append(f"{prefix}: duplicate id")
-            else:
-                receipt_ids.add(command_id)
-        sequence = receipt.get("sequence")
-        if isinstance(sequence, int) and not isinstance(sequence, bool):
-            if sequence in receipt_sequences:
-                errors.append(f"{prefix}: duplicate sequence")
-            else:
-                receipt_sequences.add(sequence)
-        expected_id = sha256_json(receipt_identity_payload(receipt))[:16]
-        if command_id != expected_id:
-            errors.append(f"{prefix}: id does not match receipt identity fields")
         if not isinstance(command_id, str) or re.fullmatch(r"[a-f0-9]{16}", command_id) is None:
             continue
         stdout_bytes: bytes | None = None
@@ -1038,39 +960,50 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             ("stdoutArtifact", "stdoutSha256", "stdout"),
             ("stderrArtifact", "stderrSha256", "stderr"),
         ):
-            expected = f"evidence/commands/{command_id}.{suffix}"
-            if receipt.get(field) != expected:
-                errors.append(f"{prefix}: {field} must be {expected}")
-                continue
-            if expected in receipt_artifacts:
-                errors.append(f"{prefix}: duplicate artifact path {expected}")
-            else:
-                receipt_artifacts.add(expected)
-            try:
-                artifact = _run_file(run_dir, expected)
-            except ContractError as error:
-                errors.extend(f"{prefix}: {message}" for message in error.errors)
-                continue
-            content = artifact.read_bytes()
-            actual_hash = sha256_bytes(content)
-            if receipt.get(hash_field) != actual_hash:
-                errors.append(f"{prefix}: {hash_field} does not match {expected}")
+            content = _validate_receipt_artifact(
+                run_dir,
+                receipt,
+                command_id,
+                field=field,
+                hash_field=hash_field,
+                suffix=suffix,
+                receipt_artifacts=receipt_artifacts,
+                errors=errors,
+                prefix=prefix,
+            )
             if field == "stdoutArtifact":
                 stdout_bytes = content
-        command = manifest_configuration["commands"].get(receipt.get("name"))
+        command = commands.get(receipt.get("name"))
         if stdout_bytes is not None and isinstance(command, dict):
             errors.extend(
                 receipt_semantic_errors(
-                    receipt,
-                    command,
-                    stdout_bytes,
-                    run_dir,
-                    prefix=prefix,
+                    receipt, command, stdout_bytes, run_dir, prefix=prefix
                 )
             )
-    expected_sequences = set(range(len(data["commands"])))
-    if receipt_sequences != expected_sequences:
+    if receipt_sequences != set(range(len(receipts))):
         errors.append("command receipts: sequence values must be contiguous from zero")
+
+
+def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
+    run_dir = run_dir.expanduser().resolve(strict=True)
+    data = load_run(run_dir)
+    errors: list[str] = []
+    manifest = data["manifest"]
+    schema_version, document_schemas, artifact_paths, manifest_configuration = (
+        _validate_run_documents(data, errors)
+    )
+    coverage = data["coverage"]
+    target = _validate_manifest_identity(manifest, manifest_configuration, coverage, errors)
+    rebuilt_module_map, rebuilt_dependency_map = _validate_live_source(
+        data, manifest_configuration, target, schema_version, errors
+    )
+    if rebuilt_module_map is not None and data["moduleMap"] != rebuilt_module_map:
+        errors.append("module-map: does not match the current inventory")
+    if rebuilt_dependency_map is not None and data["dependencyMap"] != rebuilt_dependency_map:
+        errors.append("dependency-map: does not match the current source projection")
+    _validate_command_receipts(
+        run_dir, data["commands"], manifest_configuration["commands"], errors
+    )
     if isinstance(manifest, dict):
         artifacts = manifest.get("artifacts")
         if artifacts != artifact_paths:
@@ -1095,14 +1028,15 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         data["findings"], candidates, coverage_paths, errors
     )
     _validate_decisions(data["decisions"], findings, errors)
-    _validate_scorecard(
+    validate_scorecard(
         data["scorecard"],
         findings,
         data["candidates"],
         data["coverage"],
         data["commands"],
         errors,
-        final,
+        schema_version=schema_version,
+        final=final,
     )
     _validate_remediation(data["remediationPlan"], errors, final)
     if errors:

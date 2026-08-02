@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +14,7 @@ from .jsonio import (
     write_jsonl,
 )
 from .locking import exclusive_file_lock
+from .process_lifecycle import run_process
 from .repository import inspect_git, worktree_fingerprint
 from .semantic_evidence import (
     capture_semantic_evidence,
@@ -154,23 +154,11 @@ def _run_evidence_command_locked(
     before_status = inspect_git(target).status
     before_worktree = worktree_fingerprint(target, configuration=source_configuration)
     start = time.monotonic()
-    timed_out = False
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            capture_output=True,
-            timeout=timeout,
-            shell=False,
-        )
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as error:
-        timed_out = True
-        exit_code = 124
-        stdout = error.stdout or b""
-        stderr = error.stderr or b""
+    completed = run_process(argv, cwd=cwd, timeout=timeout)
+    exit_code = completed.returncode
+    stdout = completed.stdout
+    stderr = completed.stderr
+    timed_out = completed.timed_out
     duration_ms = round((time.monotonic() - start) * 1000)
     after_state = inspect_git(target)
     after_worktree = worktree_fingerprint(target, configuration=source_configuration)

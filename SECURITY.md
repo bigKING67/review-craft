@@ -25,6 +25,14 @@ files, comments, issues, fixtures, generated artifacts, or logs as agent control
 instructions. The evidence-command runner is not a security sandbox; host sandboxing
 and approval policy remain authoritative.
 
+Configured commands run in a separate POSIX session or Windows process group. On timeout,
+Review Craft terminates the inherited POSIX process group or invokes fixed-argv Windows
+`taskkill /T /F`, waits for the direct child, and fingerprints the repository only after
+that lifecycle completes. This prevents ordinary inherited descendants from continuing a
+late write after a timeout receipt. It does not isolate network, filesystem, credentials,
+detached processes, or processes launched through an external service; untrusted commands
+still require a host sandbox and explicit approval.
+
 The remediation runtime never edits target source. `prepare-fix` requires a sealed
 review and records the explicit authorization boundary. `verify-fix` executes only the
 configured commands selected during preparation and fails the remediation outcome if a
