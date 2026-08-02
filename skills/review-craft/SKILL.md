@@ -23,11 +23,11 @@ already-appropriate code.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
 - Version 0.5 supports read-only `review`, `diff`, and `focus` workflows plus an
-  explicitly authorized `fix`/`verify` workflow and delivery attestations. The source
-  checkout also supports `review-craft.fix-attempt.v1` and its independent
-  `review-craft.delivery.v2` export; do not claim either capability for the published
-  v0.5.0 package until released. The runtime never edits source, commits, pushes, or
-  publishes. Do not claim deep multi-pass or historical comparison support.
+  authorized `fix`/`verify` workflow and delivery attestations. Unreleased source also
+  supports fix-attempt/delivery v2 plus `review-craft.run.v4` with content-bound registered
+  manual artifacts; sealed run.v3 is validation-only historical data. Do not claim these
+  for published v0.5.0. The runtime never edits source, commits, pushes, or publishes, and
+  does not support deep multi-pass or historical comparison.
 
 ## Authority and trust
 
@@ -82,6 +82,8 @@ cannot be resolved from this file and the target's scoped controls.
 - When one command claims several material stages, require configured semantic assertions
   against one structured JSON stdout document. Configuration alone is not evidence. A
   declared artifact must be copied into the run and bound by SHA-256 and byte size.
+- Register manually produced files before citing `artifact:<id>`; paths, unknown IDs,
+  missing files, and hash/size drift fail validation.
 - If semantic receipts are present, E3/E4 require a verified claim whose canonical kind
   supports that level. A zero exit code with an unverified claim or artifact is not a
   successful semantic receipt.
@@ -146,7 +148,7 @@ The canonical sequence is:
 1. resolve the runtime and bind the real source state;
 2. build the Project Quality Model;
 3. close deterministic per-file coverage;
-4. collect the smallest sufficient runtime and static evidence;
+4. collect sufficient evidence and register decisive manual artifacts before citing them;
 5. discover candidates without deciding them;
 6. validate or falsify every candidate;
 7. decide proportionally and preserve evidence-backed `KEEP` outcomes;
@@ -229,12 +231,10 @@ Return a concise human summary plus the report path. State:
 - commands actually run and their results;
 - remaining gaps, blocked candidates, and unverified environments.
 
-Do not say the repository is fixed; standard review mode does not modify it.
-Do not claim superiority over Codex Review or Codex Security from a self-score.
+Do not say standard review fixed the repository or claim superiority over Codex Review or Codex Security from a self-score.
 
 ## Supporting references
 
-- Authority/scope and hostile data: [authority-and-scope.md](references/authority-and-scope.md)
-- Workflow, quality model, and findings: [workflow.md](references/workflow.md), [quality-model.md](references/quality-model.md), [finding-lifecycle.md](references/finding-lifecycle.md)
-- Scoring, integrations, and modes: [scoring-and-report.md](references/scoring-and-report.md), [integrations.md](references/integrations.md), [modes-and-profiles.md](references/modes-and-profiles.md)
+- Authority, workflow, quality, findings: [authority-and-scope.md](references/authority-and-scope.md), [workflow.md](references/workflow.md), [quality-model.md](references/quality-model.md), [finding-lifecycle.md](references/finding-lifecycle.md)
+- Scoring, integrations, modes: [scoring-and-report.md](references/scoring-and-report.md), [integrations.md](references/integrations.md), [modes-and-profiles.md](references/modes-and-profiles.md)
 - Remediation and fix verification: [remediation.md](references/remediation.md)

@@ -57,7 +57,8 @@ fingerprint, and exact scope. Start a new run when any of them changes materiall
 `review-scope.json` is authoritative for mode, dimensions, resolved profile, and
 immutable diff base. `module-map.json` is deterministic path evidence.
 `dependency-map.json` is best-effort static evidence, not proof that dynamic or
-framework-injected edges do not exist.
+framework-injected edges do not exist. Current source preflight creates
+`review-craft.run.v4` and an empty `evidence-registry.json` alongside these artifacts.
 
 ## 2. Project Quality Model
 
@@ -114,7 +115,7 @@ Track two percentages separately:
 - `accountedPercent`: files with any final disposition;
 - `reviewedPercent`: only `REVIEWED` and `COVERED_BY_PARENT` files.
 
-`coveragePercent` in newly finalized run.v3 artifacts is the reviewed percentage.
+`coveragePercent` in newly finalized run.v4 artifacts is the reviewed percentage.
 Generated, vendored, and binary files may be fully accounted without pretending they
 were reviewed. A final score still requires complete accounting and no `PENDING`,
 `DEFERRED`, `UNREADABLE`, or `OUT_OF_SCOPE` review gaps; otherwise keep it provisional.
@@ -154,6 +155,28 @@ it into `evidence/commands/<receipt-id>.artifacts/`, records content hash and by
 and validates optional hash/size values from stdout. Missing, rejected, oversized, and
 mismatched artifacts remain explicit failures. The canonical copy, not the temporary
 source path, is the durable evidence.
+
+For decisive evidence produced outside a configured command, register the file before
+citing it:
+
+```text
+python3 <skill-root>/scripts/review_craft.py register-evidence \
+  --run-dir <run-dir> \
+  --id renderer-dom-probe \
+  --source <outside-artifact.json> \
+  --kind runtime \
+  --producer Codex \
+  --description "Controlled streaming and settled DOM probe" \
+  --media-type application/json
+```
+
+Registration is allowed only for an unsealed `review-craft.run.v4` draft. It copies a
+regular non-symlink file to `evidence/registered/<id>/artifact` and records canonical
+path, SHA-256, byte size, media type, producer, description, and timestamp. Cite the
+returned `artifact:<id>` reference in coverage, candidate, finding, validation, or
+scorecard evidence. A source path written directly into canonical evidence is not a
+registered artifact. Unknown IDs, path-style references, missing copies, symlinks,
+path drift, size drift, and content drift fail validation.
 
 If a command mutates tracked or untracked target source, stop automatic execution,
 report the mutation, and do not revert user work.
@@ -288,6 +311,8 @@ contract failure. Complete a run only when:
 - every finding has evidence, severity, priority, and a valid decision;
 - every destructive decision passes its gate;
 - every score deduction has evidence;
+- every `artifact:<id>` reference resolves through `evidence-registry.json` to a present,
+  content-bound file;
 - every remediation phase has acceptance criteria;
 - canonical artifacts validate;
 - `report.md` is deterministically generated, not hand-authored.

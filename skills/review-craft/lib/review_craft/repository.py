@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import fnmatch
 import hashlib
 import os
@@ -236,6 +237,17 @@ def repository_paths(root: Path) -> list[str]:
     return _git_paths(root) if inspect_git(root).is_repository else _filesystem_paths(root)
 
 
+def _binary_preview(preview: bytes, *, complete: bool) -> bool:
+    if b"\0" in preview:
+        return True
+    try:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        decoder.decode(preview, final=complete)
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
 def _file_record(root: Path, relative: str) -> dict[str, Any]:
     path = root / relative
     stat = path.lstat()
@@ -269,17 +281,12 @@ def _file_record(root: Path, relative: str) -> dict[str, Any]:
                 preview += chunk[: 8192 - len(preview)]
             digest.update(chunk)
             size += len(chunk)
-    try:
-        preview.decode("utf-8")
-        invalid_utf8 = False
-    except UnicodeDecodeError:
-        invalid_utf8 = True
     return {
         "path": relative,
         "kind": "file",
         "sizeBytes": size,
         "sha256": digest.hexdigest(),
-        "binary": b"\0" in preview or invalid_utf8,
+        "binary": _binary_preview(preview, complete=size == len(preview)),
     }
 
 
@@ -288,17 +295,13 @@ def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[s
     if result.returncode != 0:
         raise OSError(result.stderr.decode("utf-8", errors="replace").strip())
     payload = result.stdout
-    try:
-        payload[:8192].decode("utf-8")
-        invalid_utf8 = False
-    except UnicodeDecodeError:
-        invalid_utf8 = True
+    preview = payload[:8192]
     return {
         "path": relative,
         "kind": "deleted",
         "sizeBytes": len(payload),
         "sha256": sha256_bytes(payload),
-        "binary": b"\0" in payload[:8192] or invalid_utf8,
+        "binary": _binary_preview(preview, complete=len(payload) == len(preview)),
     }
 
 

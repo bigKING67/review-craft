@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .constants import ARTIFACT_PATHS
+from .constants import ARTIFACT_PATHS, SCHEMA_VERSION
 from .jsonio import (
     canonical_compact,
     read_json,
@@ -63,6 +63,12 @@ def run_evidence_command(
 ) -> tuple[int, dict[str, Any]]:
     run_dir = Path(run_dir_value).expanduser().resolve(strict=True)
     manifest = read_json(run_dir / "review-manifest.json")
+    if manifest.get("schemaVersion") != SCHEMA_VERSION:
+        raise ValueError("run-evidence requires a current run.v4 review")
+    if manifest.get("status") != "draft" or manifest.get("sealedAt") is not None:
+        raise ValueError("run-evidence requires an unsealed draft review")
+    if manifest.get("artifacts") != ARTIFACT_PATHS:
+        raise ValueError("review manifest does not declare the current canonical artifact map")
     state = read_json(run_dir / "run-state.json")
     target = Path(state["targetRoot"]).resolve(strict=True)
     return run_configured_command(

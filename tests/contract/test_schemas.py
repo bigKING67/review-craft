@@ -42,6 +42,7 @@ class SchemaTests(unittest.TestCase):
                 ("decisions.json", "decisions.schema.json"),
                 ("scorecard.json", "scorecard.schema.json"),
                 ("remediation-plan.json", "remediation-plan.schema.json"),
+                ("evidence-registry.json", "evidence-registry.schema.json"),
             )
             schema_root = ROOT / "skills/review-craft/schemas"
             for artifact, schema_name in pairs:

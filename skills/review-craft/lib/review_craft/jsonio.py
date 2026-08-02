@@ -121,6 +121,29 @@ def atomic_write_text(path: Path, value: str, *, mode: int | None = None) -> Non
             temporary.unlink(missing_ok=True)
 
 
+def atomic_write_bytes(path: Path, value: bytes, *, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            temporary.chmod(mode)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def write_json(path: Path, value: Any, *, mode: int | None = None) -> None:
     atomic_write_text(path, canonical_json(value), mode=mode)
 

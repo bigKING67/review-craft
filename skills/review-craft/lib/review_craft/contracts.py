@@ -11,6 +11,8 @@ from .constants import (
     DECISIONS,
     EVIDENCE_LEVELS,
     FINAL_COVERAGE_DISPOSITIONS,
+    LEGACY_ARTIFACT_PATHS,
+    LEGACY_SCHEMA_VERSION,
     PERFORMANCE_CLASSES,
     PRIORITIES,
     PROFILES,
@@ -20,9 +22,11 @@ from .constants import (
     SCORE_DIMENSIONS,
     SEMANTIC_CLAIM_LEVELS,
     SEVERITIES,
+    SUPPORTED_RUN_SCHEMA_VERSIONS,
     VALIDATION_STATUSES,
 )
 from .evidence import receipt_configuration_errors
+from .evidence_registry import EVIDENCE_ID_PATTERN, registered_artifact_path
 from .jsonio import read_json, read_jsonl, sha256_bytes, sha256_json
 from .repository import (
     fingerprint_inventory,
@@ -46,6 +50,10 @@ DOCUMENT_SCHEMAS = {
     "decisions": "decisions.schema.json",
     "scorecard": "scorecard.schema.json",
     "remediationPlan": "remediation-plan.schema.json",
+}
+CURRENT_DOCUMENT_SCHEMAS = {
+    **DOCUMENT_SCHEMAS,
+    "evidenceRegistry": "evidence-registry.schema.json",
 }
 
 
@@ -84,8 +92,24 @@ def _safe_relative(value: Any) -> bool:
     )
 
 
-def _artifact(run_dir: Path, key: str) -> Path:
-    return _run_file(run_dir, ARTIFACT_PATHS[key])
+def _artifact_paths(schema_version: str) -> dict[str, str]:
+    if schema_version == LEGACY_SCHEMA_VERSION:
+        return LEGACY_ARTIFACT_PATHS
+    if schema_version == SCHEMA_VERSION:
+        return ARTIFACT_PATHS
+    raise ContractError([f"review-manifest.schemaVersion: unsupported {schema_version!r}"])
+
+
+def _document_schemas(schema_version: str) -> dict[str, str]:
+    if schema_version == LEGACY_SCHEMA_VERSION:
+        return DOCUMENT_SCHEMAS
+    if schema_version == SCHEMA_VERSION:
+        return CURRENT_DOCUMENT_SCHEMAS
+    raise ContractError([f"review-manifest.schemaVersion: unsupported {schema_version!r}"])
+
+
+def _artifact(run_dir: Path, artifact_paths: dict[str, str], key: str) -> Path:
+    return _run_file(run_dir, artifact_paths[key])
 
 
 def _run_file(run_dir: Path, relative: str) -> Path:
@@ -104,30 +128,51 @@ def _run_file(run_dir: Path, relative: str) -> Path:
 
 def load_run(run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.expanduser().resolve(strict=True)
+    manifest = read_json(_run_file(run_dir, "review-manifest.json"))
+    if not isinstance(manifest, dict):
+        raise ContractError(["manifest: expected a JSON object"])
+    schema_version = manifest.get("schemaVersion")
+    if schema_version not in SUPPORTED_RUN_SCHEMA_VERSIONS:
+        raise ContractError(
+            [f"review-manifest.schemaVersion: unsupported {schema_version!r}"]
+        )
+    artifact_paths = _artifact_paths(schema_version)
     result = {
-        "manifest": read_json(_run_file(run_dir, "review-manifest.json")),
-        "reviewScope": read_json(_artifact(run_dir, "reviewScope")),
-        "qualityModel": read_json(_artifact(run_dir, "qualityModel")),
-        "coverage": read_json(_artifact(run_dir, "coverage")),
-        "moduleMap": read_json(_artifact(run_dir, "moduleMap")),
-        "dependencyMap": read_json(_artifact(run_dir, "dependencyMap")),
-        "candidates": read_jsonl(_artifact(run_dir, "candidateLedger")),
-        "findings": read_json(_artifact(run_dir, "findings")),
-        "decisions": read_json(_artifact(run_dir, "decisions")),
-        "scorecard": read_json(_artifact(run_dir, "scorecard")),
-        "remediationPlan": read_json(_artifact(run_dir, "remediationPlan")),
-        "commands": read_jsonl(_artifact(run_dir, "commands")),
+        "manifest": manifest,
+        "reviewScope": read_json(_artifact(run_dir, artifact_paths, "reviewScope")),
+        "qualityModel": read_json(_artifact(run_dir, artifact_paths, "qualityModel")),
+        "coverage": read_json(_artifact(run_dir, artifact_paths, "coverage")),
+        "moduleMap": read_json(_artifact(run_dir, artifact_paths, "moduleMap")),
+        "dependencyMap": read_json(_artifact(run_dir, artifact_paths, "dependencyMap")),
+        "candidates": read_jsonl(_artifact(run_dir, artifact_paths, "candidateLedger")),
+        "findings": read_json(_artifact(run_dir, artifact_paths, "findings")),
+        "decisions": read_json(_artifact(run_dir, artifact_paths, "decisions")),
+        "scorecard": read_json(_artifact(run_dir, artifact_paths, "scorecard")),
+        "remediationPlan": read_json(
+            _artifact(run_dir, artifact_paths, "remediationPlan")
+        ),
+        "commands": read_jsonl(_artifact(run_dir, artifact_paths, "commands")),
+        "evidenceRegistry": (
+            read_json(_artifact(run_dir, artifact_paths, "evidenceRegistry"))
+            if schema_version == SCHEMA_VERSION
+            else None
+        ),
         "runState": read_json(_run_file(run_dir, "run-state.json")),
     }
     return result
 
 
-def _validate_document_header(name: str, document: Any, errors: list[str]) -> None:
+def _validate_document_header(
+    name: str,
+    document: Any,
+    schema_version: str,
+    errors: list[str],
+) -> None:
     if not isinstance(document, dict):
         errors.append(f"{name}: expected a JSON object")
         return
-    if document.get("schemaVersion") != SCHEMA_VERSION:
-        errors.append(f"{name}.schemaVersion: expected {SCHEMA_VERSION}")
+    if document.get("schemaVersion") != schema_version:
+        errors.append(f"{name}.schemaVersion: expected {schema_version}")
 
 
 def _validate_quality_model(model: dict[str, Any], errors: list[str], final: bool) -> None:
@@ -708,11 +753,162 @@ def _validate_remediation(plan: dict[str, Any], errors: list[str], final: bool) 
                 errors.append(f"{prefix}.{field}: must not be empty for finalization")
 
 
+def _append_evidence_refs(
+    result: list[tuple[str, str]],
+    value: Any,
+    prefix: str,
+) -> None:
+    if not isinstance(value, list):
+        return
+    for index, reference in enumerate(value):
+        if isinstance(reference, str):
+            result.append((f"{prefix}[{index}]", reference))
+
+
+def _evidence_references(data: dict[str, Any]) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    coverage = data.get("coverage")
+    if isinstance(coverage, dict):
+        for index, row in enumerate(coverage.get("files", [])):
+            if isinstance(row, dict):
+                _append_evidence_refs(
+                    result,
+                    row.get("evidenceRefs"),
+                    f"coverage.files[{index}].evidenceRefs",
+                )
+    for index, candidate in enumerate(data.get("candidates", [])):
+        if not isinstance(candidate, dict):
+            continue
+        for evidence_index, evidence in enumerate(candidate.get("evidence", [])):
+            if isinstance(evidence, dict) and isinstance(evidence.get("ref"), str):
+                result.append(
+                    (
+                        f"candidate-ledger[{index}].evidence[{evidence_index}].ref",
+                        evidence["ref"],
+                    )
+                )
+        validation = candidate.get("validation")
+        if isinstance(validation, dict):
+            _append_evidence_refs(
+                result,
+                validation.get("evidenceRefs"),
+                f"candidate-ledger[{index}].validation.evidenceRefs",
+            )
+    findings = data.get("findings")
+    if isinstance(findings, dict):
+        for index, finding in enumerate(findings.get("findings", [])):
+            if isinstance(finding, dict):
+                _append_evidence_refs(
+                    result,
+                    finding.get("evidenceRefs"),
+                    f"findings.findings[{index}].evidenceRefs",
+                )
+    scorecard = data.get("scorecard")
+    if isinstance(scorecard, dict):
+        for dimension_index, dimension in enumerate(scorecard.get("dimensions", [])):
+            if not isinstance(dimension, dict):
+                continue
+            for deduction_index, deduction in enumerate(dimension.get("deductions", [])):
+                if isinstance(deduction, dict):
+                    _append_evidence_refs(
+                        result,
+                        deduction.get("evidenceRefs"),
+                        (
+                            f"scorecard.dimensions[{dimension_index}].deductions"
+                            f"[{deduction_index}].evidenceRefs"
+                        ),
+                    )
+    return result
+
+
+def _validate_evidence_registry(
+    run_dir: Path,
+    registry: Any,
+    references: list[tuple[str, str]],
+    errors: list[str],
+) -> None:
+    if not isinstance(registry, dict):
+        errors.append("evidence-registry: expected a JSON object")
+        return
+    artifacts = registry.get("artifacts")
+    if not isinstance(artifacts, list):
+        errors.append("evidence-registry.artifacts: expected an array")
+        return
+    identifiers: set[str] = set()
+    paths: set[str] = set()
+    for index, entry in enumerate(artifacts):
+        prefix = f"evidence-registry.artifacts[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix}: expected an object")
+            continue
+        identifier = entry.get("id")
+        if not isinstance(identifier, str) or EVIDENCE_ID_PATTERN.fullmatch(identifier) is None:
+            errors.append(f"{prefix}.id: expected a canonical registered evidence ID")
+        elif identifier in identifiers:
+            errors.append(f"{prefix}.id: duplicate {identifier!r}")
+        else:
+            identifiers.add(identifier)
+        path = entry.get("path")
+        if not _safe_relative(path):
+            errors.append(f"{prefix}.path: expected a safe run-relative path")
+            continue
+        if path in paths:
+            errors.append(f"{prefix}.path: duplicate {path!r}")
+        else:
+            paths.add(path)
+        if isinstance(identifier, str):
+            expected_path = registered_artifact_path(identifier)
+            if path != expected_path:
+                errors.append(f"{prefix}.path: expected {expected_path}")
+                continue
+        try:
+            artifact = _run_file(run_dir, path)
+        except ContractError as error:
+            errors.extend(f"{prefix}: {message}" for message in error.errors)
+            continue
+        content = artifact.read_bytes()
+        if entry.get("sha256") != sha256_bytes(content):
+            errors.append(f"{prefix}.sha256: does not match {path}")
+        size_bytes = entry.get("sizeBytes")
+        if (
+            not isinstance(size_bytes, int)
+            or isinstance(size_bytes, bool)
+            or size_bytes != len(content)
+        ):
+            errors.append(f"{prefix}.sizeBytes: does not match {path}")
+
+    registered_root = run_dir / "evidence/registered"
+    if registered_root.is_symlink():
+        errors.append("evidence-registry.artifacts: registered root must not be a symlink")
+    elif registered_root.exists():
+        for artifact in sorted(registered_root.rglob("*")):
+            if not (artifact.is_file() or artifact.is_symlink()):
+                continue
+            relative = artifact.relative_to(run_dir).as_posix()
+            if relative not in paths:
+                errors.append(
+                    f"evidence-registry.artifacts: unregistered artifact path {relative}"
+                )
+
+    for prefix, reference in references:
+        if not reference.startswith("artifact:"):
+            continue
+        identifier = reference.removeprefix("artifact:")
+        if EVIDENCE_ID_PATTERN.fullmatch(identifier) is None:
+            errors.append(f"{prefix}: expected artifact:<registered-id>")
+        elif identifier not in identifiers:
+            errors.append(f"{prefix}: unknown registered evidence ID {identifier!r}")
+
+
 def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     run_dir = run_dir.expanduser().resolve(strict=True)
     data = load_run(run_dir)
     errors: list[str] = []
-    for name, schema_name in DOCUMENT_SCHEMAS.items():
+    manifest = data["manifest"]
+    schema_version = manifest.get("schemaVersion")
+    document_schemas = _document_schemas(schema_version)
+    artifact_paths = _artifact_paths(schema_version)
+    for name, schema_name in document_schemas.items():
         errors.extend(
             f"{schema_name}: {error}"
             for error in validate_instance(data[name], _schema(schema_name))
@@ -727,9 +923,9 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             f"command-receipt.schema.json[{index}]: {error}"
             for error in validate_instance(receipt, _schema("command-receipt.schema.json"))
         )
-    for name in DOCUMENT_SCHEMAS:
-        _validate_document_header(name, data[name], errors)
-    if any(not isinstance(data[name], dict) for name in DOCUMENT_SCHEMAS):
+    for name in document_schemas:
+        _validate_document_header(name, data[name], schema_version, errors)
+    if any(not isinstance(data[name], dict) for name in document_schemas):
         raise ContractError(errors)
     manifest_configuration = data["manifest"].get("configuration")
     errors.extend(
@@ -742,7 +938,6 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         validate_config(manifest_configuration)
     except (KeyError, TypeError, ValueError) as error:
         errors.append(f"review-manifest.configuration: {error}")
-    manifest = data["manifest"]
     target = manifest.get("target")
     if not isinstance(target, dict):
         target = {}
@@ -784,6 +979,8 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         else:
             rebuilt_module_map = build_module_map(records)
             rebuilt_dependency_map = build_dependency_map(target_root, records)
+            rebuilt_module_map["schemaVersion"] = schema_version
+            rebuilt_dependency_map["schemaVersion"] = schema_version
             if current_source != target.get("sourceFingerprint"):
                 errors.append("run-state.targetRoot: source fingerprint changed after preflight")
             if manifest_configuration.get("mode") == "diff":
@@ -876,10 +1073,17 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         errors.append("command receipts: sequence values must be contiguous from zero")
     if isinstance(manifest, dict):
         artifacts = manifest.get("artifacts")
-        if artifacts != ARTIFACT_PATHS:
+        if artifacts != artifact_paths:
             errors.append("review-manifest.artifacts: canonical artifact map mismatch")
         if final and manifest.get("status") not in {"draft", "final"}:
             errors.append("review-manifest.status: expected draft or final")
+    if schema_version == SCHEMA_VERSION:
+        _validate_evidence_registry(
+            run_dir,
+            data["evidenceRegistry"],
+            _evidence_references(data),
+            errors,
+        )
     _validate_quality_model(data["qualityModel"], errors, final)
     coverage_paths = _validate_coverage(data["coverage"], errors, final)
     _validate_review_scope(data["reviewScope"], manifest_configuration, coverage_paths, errors)

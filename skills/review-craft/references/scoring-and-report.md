@@ -60,7 +60,9 @@ verified from structured stdout, never from configuration alone. Canonical kinds
 evidence ceilings: check/test/build/package to E2; isolated-install/runtime/benchmark/
 profile/trace to E3; clean-deployment-reproduction to E4. If a run contains semantic
 receipts, E3/E4 require a matching verified claim. A declared claim or artifact failure
-also prevents that receipt from satisfying the ordinary E2 success gate.
+also prevents that receipt from satisfying the ordinary E2 success gate. Registered
+manual runtime, benchmark, profile, or trace artifacts can support a finding, but do not
+replace the successful canonical command receipt required for E2-E4.
 
 ## Confidence
 
@@ -79,8 +81,9 @@ The score label is mode-bound: `review` is repository-wide, while `focus` and `d
 explicitly state that their score applies only to the selected scope. Findings, evidence
 gaps, and remaining risks are separate deterministic sections. Evidence gaps are deduped
 from scorecard deduction references beginning with `evidence-gap:`; remaining risks come
-from `quality-model.json.unknowns`. Verified semantic claims and copied evidence artifacts
-are listed from canonical command receipts.
+from `quality-model.json.unknowns`. Verified semantic claims and copied command artifacts
+are listed from canonical command receipts. Current run.v4 reports also list every
+registered `artifact:<id>` with kind, producer, SHA-256, and byte size.
 
 `reportLanguage: zh-CN` requires human-facing canonical text such as finding rationale,
 target architecture, phase scope, benefits, risks, and acceptance criteria to be authored
@@ -88,7 +91,7 @@ in Chinese before finalization. Code identifiers, commands, paths, and canonical
 remain unchanged. The finalizer projects text deterministically and never performs implicit
 translation.
 
-New run.v3 scorecards write `accountedPercent` and `reviewedPercent`, with
+New run.v4 scorecards write `accountedPercent` and `reviewedPercent`, with
 `coveragePercent` retaining the reviewed value. For compatibility, a historical
 run.v3 scorecard without the two explicit fields is validated using its original
 `coveragePercent` accounting semantics; restart unfinished historical runs with the

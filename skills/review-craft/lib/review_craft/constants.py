@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-SCHEMA_VERSION = "review-craft.run.v3"
+LEGACY_SCHEMA_VERSION = "review-craft.run.v3"
+SCHEMA_VERSION = "review-craft.run.v4"
+SUPPORTED_RUN_SCHEMA_VERSIONS = {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
 VERSION = "0.5.0"
 FIX_SCHEMA_VERSION = "review-craft.fix.v1"
 FIX_ATTEMPT_SCHEMA_VERSION = "review-craft.fix-attempt.v1"
 DELIVERY_SCHEMA_VERSION = "review-craft.delivery.v1"
 ATTEMPT_DELIVERY_SCHEMA_VERSION = "review-craft.delivery.v2"
 
-ARTIFACT_PATHS = {
+LEGACY_ARTIFACT_PATHS = {
     "reviewScope": "review-scope.json",
     "qualityModel": "quality-model.json",
     "coverage": "coverage.json",
@@ -21,6 +23,23 @@ ARTIFACT_PATHS = {
     "commands": "evidence/commands.jsonl",
     "report": "report.md",
 }
+ARTIFACT_PATHS = {
+    **LEGACY_ARTIFACT_PATHS,
+    "evidenceRegistry": "evidence-registry.json",
+}
+
+REGISTERED_EVIDENCE_KINDS = {
+    "source",
+    "check",
+    "test",
+    "build",
+    "runtime",
+    "benchmark",
+    "profile",
+    "trace",
+    "other",
+}
+REGISTERED_EVIDENCE_MAX_BYTES = 64 * 1024 * 1024
 
 REVIEW_MODES = {"review", "diff", "focus"}
 PROFILES = {

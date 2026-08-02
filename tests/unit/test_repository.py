@@ -86,6 +86,39 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(records[0]["kind"], "symlink")
             self.assertEqual(records[0]["linkTarget"], os.readlink(root / "link"))
 
+    def test_inventory_accepts_utf8_character_split_at_preview_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "performance.md").write_bytes(
+                b"a" * 8191 + "盘".encode() + b"\n"
+            )
+            records, _ = inventory(root)
+            self.assertFalse(records[0]["binary"])
+
+    def test_inventory_rejects_invalid_utf8_nul_and_incomplete_eof(self) -> None:
+        cases = {
+            "invalid.bin": b"a" * 100 + b"\xff",
+            "nul.bin": b"a" * 100 + b"\0",
+            "incomplete.bin": b"a" * 8191 + b"\xe7",
+        }
+        for name, payload in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / name).write_bytes(payload)
+                records, _ = inventory(root)
+                self.assertTrue(records[0]["binary"])
+
+    def test_deleted_revision_accepts_utf8_split_at_preview_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "performance.md"
+            path.write_bytes(b"a" * 8191 + "盘".encode() + b"\n")
+            git_init(root)
+            repository.run_git(root, "add", "--", path.name, check=True)
+            repository.run_git(root, "commit", "-m", "fixture", check=True)
+            record = repository._file_record_at_revision(root, "HEAD", path.name)
+            self.assertFalse(record["binary"])
+
     def test_fingerprint_ignores_input_order(self) -> None:
         rows = [
             {"path": "b", "kind": "file", "sha256": "b" * 64, "classification": "source"},

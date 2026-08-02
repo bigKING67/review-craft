@@ -4,8 +4,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .constants import ARTIFACT_PATHS, REMEDIATION_PHASES, SCORE_DIMENSIONS
-from .contracts import validate_run
+from .constants import ARTIFACT_PATHS, REMEDIATION_PHASES, SCHEMA_VERSION, SCORE_DIMENSIONS
+from .contracts import ContractError, validate_run
 from .jsonio import atomic_write_text, read_json, read_jsonl, write_json
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -114,6 +114,17 @@ def render_report(data: dict[str, Any]) -> str:
         for artifact in receipt.get("evidenceArtifacts", [])
         if artifact.get("status") == "VERIFIED"
     ]
+    registry = data.get("evidenceRegistry")
+    if isinstance(registry, dict):
+        captured_artifacts.extend(
+            (
+                f"`artifact:{artifact['id']}`（{artifact['kind']}，"
+                f"{artifact['producer']}）：`{artifact['sha256']}`，"
+                f"{artifact['sizeBytes']} bytes"
+            )
+            for artifact in registry.get("artifacts", [])
+            if isinstance(artifact, dict)
+        )
     delete_subjects = [row["subject"] for row in decisions if row["decision"] == "DELETE"]
     keep_subjects = [row["subject"] for row in decisions if row["decision"] == "KEEP"]
     decision_by_id = {row["id"]: row["decision"] for row in decisions}
@@ -350,6 +361,16 @@ def render_report(data: dict[str, Any]) -> str:
 
 def finalize_run(run_dir: Path, *, sealed_at: str) -> Path:
     run_dir = run_dir.expanduser().resolve(strict=True)
+    manifest_path = run_dir / "review-manifest.json"
+    manifest = read_json(manifest_path)
+    schema_version = manifest.get("schemaVersion") if isinstance(manifest, dict) else None
+    if schema_version != SCHEMA_VERSION:
+        raise ContractError(
+            [
+                "finalize requires a current review-craft.run.v4 draft; "
+                "review-craft.run.v3 remains validation-only historical data"
+            ]
+        )
     scorecard_path = run_dir / ARTIFACT_PATHS["scorecard"]
     coverage = read_json(run_dir / ARTIFACT_PATHS["coverage"])
     scorecard = read_json(scorecard_path)
@@ -375,7 +396,6 @@ def finalize_run(run_dir: Path, *, sealed_at: str) -> Path:
     )
     write_json(scorecard_path, scorecard)
     data = validate_run(run_dir, final=True)
-    manifest_path = run_dir / "review-manifest.json"
     manifest = data["manifest"]
     manifest["status"] = "final"
     if not manifest.get("sealedAt"):

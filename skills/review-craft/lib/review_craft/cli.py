@@ -16,6 +16,8 @@ from .attempt_delivery import verify_attempt_delivery
 from .configuration import effective_preflight_config, load_config
 from .constants import (
     ARTIFACT_PATHS,
+    REGISTERED_EVIDENCE_KINDS,
+    REGISTERED_EVIDENCE_MAX_BYTES,
     REMEDIATION_PHASES,
     REVIEW_MODES,
     SCHEMA_VERSION,
@@ -25,6 +27,7 @@ from .contracts import ContractError, validate_run
 from .delivery import verify_delivery
 from .delivery_validation import validate_delivery
 from .evidence import run_evidence_command
+from .evidence_registry import register_evidence
 from .jsonio import (
     canonical_compact,
     read_json,
@@ -236,6 +239,11 @@ def _draft_artifacts(
             for identifier, title in REMEDIATION_PHASES
         ],
     }
+    evidence_registry = {
+        "documentType": "review-craft.evidence-registry",
+        "schemaVersion": SCHEMA_VERSION,
+        "artifacts": [],
+    }
     write_json(run_dir / "review-manifest.json", manifest)
     write_json(run_dir / ARTIFACT_PATHS["reviewScope"], review_scope)
     write_json(run_dir / ARTIFACT_PATHS["qualityModel"], quality_model)
@@ -247,6 +255,7 @@ def _draft_artifacts(
     write_json(run_dir / ARTIFACT_PATHS["decisions"], decisions)
     write_json(run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
     write_json(run_dir / ARTIFACT_PATHS["remediationPlan"], remediation)
+    write_json(run_dir / ARTIFACT_PATHS["evidenceRegistry"], evidence_registry, mode=0o600)
     write_jsonl(run_dir / ARTIFACT_PATHS["commands"], [])
     write_json(
         run_dir / "run-state.json",
@@ -408,6 +417,22 @@ def command_run_evidence(args: argparse.Namespace) -> int:
     )
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
     return code
+
+
+def command_register_evidence(args: argparse.Namespace) -> int:
+    entry = register_evidence(
+        args.run_dir,
+        identifier=args.id,
+        source_value=args.source,
+        kind=args.kind,
+        producer=args.producer,
+        description=args.description,
+        media_type=args.media_type,
+        registered_at=utc_now(),
+        max_bytes=args.max_bytes,
+    )
+    print(json.dumps(entry, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def command_validate(args: argparse.Namespace) -> int:
@@ -646,6 +671,20 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_selection.add_argument("--command")
     evidence_selection.add_argument("--all", action="store_true")
     evidence.set_defaults(handler=command_run_evidence)
+
+    register = subparsers.add_parser(
+        "register-evidence",
+        help="Copy and content-bind a manual evidence artifact into a draft review",
+    )
+    register.add_argument("--run-dir", required=True)
+    register.add_argument("--id", required=True)
+    register.add_argument("--source", required=True)
+    register.add_argument("--kind", choices=sorted(REGISTERED_EVIDENCE_KINDS), required=True)
+    register.add_argument("--producer", required=True)
+    register.add_argument("--description", required=True)
+    register.add_argument("--media-type", default="application/octet-stream")
+    register.add_argument("--max-bytes", type=int, default=REGISTERED_EVIDENCE_MAX_BYTES)
+    register.set_defaults(handler=command_register_evidence)
 
     validate = subparsers.add_parser("validate", help="Validate canonical artifacts")
     validate.add_argument("--run-dir", required=True)

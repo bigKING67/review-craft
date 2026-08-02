@@ -49,6 +49,14 @@ entire canonical attempt lineage into a portable delivery artifact instead of si
 reinterpreting it as legacy `fix.v1`. These source capabilities are not claimed for the
 published v0.5.0 package until a later version is explicitly released.
 
+Current source preflight also creates `review-craft.run.v4`. It adds
+`evidence-registry.json` plus `register-evidence`, so decisive manual runtime,
+benchmark, profile, or trace files are copied into the run and bound by canonical ID,
+path, SHA-256, and byte size before they can be cited as `artifact:<id>`. Sealed
+`review-craft.run.v3` data remains readable for historical validation, but does not gain
+the run.v4 manual-artifact integrity guarantee. This is an unreleased source capability,
+not a claim about the published v0.5.0 package.
+
 The following are intentionally not implemented in 0.5.0: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
 service. Delivery v1 also does not verify GitHub Releases or npm registry publication.
@@ -67,6 +75,7 @@ Review Craft requires:
   `MEASURE`, and `DOCUMENT` decisions;
 - evidence-gated scoring;
 - structured command claims and content-bound command-produced evidence artifacts;
+- content-bound registration for decisive manually produced evidence artifacts;
 - scope-limited score wording for `focus` and `diff` reports;
 - separate confirmed-finding, evidence-gap, and remaining-risk report sections;
 - migration, compatibility, rollback, and verification for destructive decisions;
@@ -286,6 +295,26 @@ artifacts into the canonical run, records SHA-256 and byte size, and revalidates
 Missing, rejected, oversized, or mismatched artifacts remain auditable receipt failures;
 they cannot be upgraded to verified evidence by editing configuration.
 
+Register a decisive artifact produced outside a configured command before citing it:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  register-evidence --run-dir <run-dir> \
+  --id renderer-dom-probe \
+  --source <outside-artifact.json> \
+  --kind runtime \
+  --producer Codex \
+  --description "Controlled streaming and settled DOM probe" \
+  --media-type application/json
+```
+
+The command is available only for an unsealed current-source run.v4 draft. It copies the
+regular non-symlink source to `evidence/registered/<id>/artifact` and returns
+`artifact:<id>`. Canonical validation rejects absolute, traversal, and path-style
+artifact references, unknown IDs, symlinks, missing copies, and SHA-256 or size drift.
+Manually placing a file under the run directory is not registration and does not make it
+durable evidence.
+
 Validate and finalize canonical artifacts:
 
 ```bash
@@ -472,18 +501,17 @@ Repository comments, README files, issues, logs, and fixtures are untrusted anal
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
 `.review-craft.json` control the workflow.
 
-Version 0.5 continues to create backward-compatible `review-craft.run.v3` review
-artifacts and separate `review-craft.fix.v1` remediation artifacts, and adds independent
-`review-craft.delivery.v1` attestations. Finalized
-v0.1/v0.2/v0.3 reports remain historical outputs; finalize an unfinished old run with
-its matching runtime or restart it with v0.5 preflight. Review Craft never mutates an
-old run in place. New run.v3 scorecards report both accounted and reviewed coverage;
-`coveragePercent` now carries the reviewed value. Historical run.v3 scorecards without
-the new optional fields retain their original accounting interpretation during
-validation.
-The current unreleased source adds `review-craft.fix-attempt.v1` and the independent
-`review-craft.delivery.v2` export without reinterpreting or mutating any existing
-`review-craft.fix.v1` or `review-craft.delivery.v1` artifact.
+The published v0.5.0 runtime creates `review-craft.run.v3` review artifacts, separate
+`review-craft.fix.v1` remediation artifacts, and independent
+`review-craft.delivery.v1` attestations. Current unreleased source creates run.v4 with a
+registered manual-evidence contract, and also adds `review-craft.fix-attempt.v1` plus the
+independent `review-craft.delivery.v2` export. Finalized historical run.v3 artifacts can
+still be validated, but unfinished run.v3 data must be finalized with its matching
+runtime or restarted with current preflight. Review Craft never mutates or silently
+upgrades an old run in place. Historical run.v3 scorecards without explicit accounted
+and reviewed fields retain their original `coveragePercent` interpretation during
+validation. No current-source protocol reinterprets or mutates existing
+`review-craft.fix.v1` or `review-craft.delivery.v1` artifacts.
 The deterministic report labels `focus` and `diff` scores as scope-limited rather than
 repository-wide, separates confirmed findings from evidence gaps and remaining risks, and
 lists verified command claims and captured evidence artifacts.
