@@ -26,7 +26,7 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.6.0` provides read-only repository, Git diff, and focused-dimension review
+Version `0.6.1` provides read-only repository, Git diff, and focused-dimension review
 workflows, explicitly authorized remediation verification, immutable fix-attempt lineage,
 and independent post-commit delivery attestations. The runtime binds selected findings to
 a sealed review, captures the exact pre-change source, executes only selected configured
@@ -53,7 +53,7 @@ instead of silently reinterpreting it as legacy `fix.v1`. The v0.5-compatible
 `review-craft.fix.v1` and `review-craft.delivery.v1` protocols remain supported without
 changing their semantics.
 
-The following are intentionally not implemented in 0.6.0: deep multi-pass review,
+The following are intentionally not implemented in 0.6.1: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
 service. Delivery v1 and v2 do not verify GitHub Releases or npm registry publication.
 
@@ -86,7 +86,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.6.0 does not claim to replace or
+Review Craft complements these tools. Version 0.6.1 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -125,7 +125,7 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 python3 "$CODEX_HOME/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo bigKING67/review-craft \
   --path skills/review-craft \
-  --ref v0.6.0 \
+  --ref v0.6.1 \
   --dest "$HOME/.agents/skills"
 ```
 
@@ -158,7 +158,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   doctor --json
 ```
 
-The result should report `"ready": true` and `"version": "0.6.0"`.
+The result should report `"ready": true` and `"version": "0.6.1"`.
 If you selected the Codex-only root, replace `$HOME/.agents/skills` in the
 verification path with `$CODEX_HOME/skills`.
 
