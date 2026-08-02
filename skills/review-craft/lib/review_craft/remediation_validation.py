@@ -25,7 +25,7 @@ from .schema_validation import validate_instance
 from .semantic_evidence import receipt_identity_payload, receipt_semantic_errors
 
 
-def _validate_receipts(
+def validate_command_receipts(
     fix_dir: Path, commands: dict[str, Any]
 ) -> dict[str, dict[str, Any]]:
     rows = read_jsonl(session_file(fix_dir, ARTIFACT_PATHS["commands"]))
@@ -109,7 +109,7 @@ def validate_fix_snapshot(
     """Validate immutable fix artifacts without comparing them to the live target."""
     fix_dir, plan, state = load_fix(fix_dir_value)
     validate_review_provenance(plan, state)
-    receipts = _validate_receipts(fix_dir, state["commands"])
+    receipts = validate_command_receipts(fix_dir, state["commands"])
     result_path = fix_dir / "fix-verification.json"
     assessment_path = fix_dir / "fix-assessment.json"
     if not require_verification and not result_path.exists() and not assessment_path.exists():

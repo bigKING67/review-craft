@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .attempt_delivery import verify_attempt_delivery
 from .configuration import effective_preflight_config, load_config
 from .constants import (
     ARTIFACT_PATHS,
@@ -33,6 +34,11 @@ from .jsonio import (
     write_jsonl,
 )
 from .remediation import prepare_fix, verify_fix
+from .remediation_attempt_validation import (
+    validate_fix_attempt,
+    validate_fix_lineage,
+)
+from .remediation_attempts import capture_fix_attempt, finalize_fix_attempt
 from .remediation_validation import validate_fix
 from .report import finalize_run
 from .repository import (
@@ -474,6 +480,68 @@ def command_validate_fix(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_capture_fix_attempt(args: argparse.Namespace) -> int:
+    attempt_dir, evidence = capture_fix_attempt(args.fix_dir)
+    print(
+        json.dumps(
+            {
+                "attemptId": evidence["attemptId"],
+                "attemptDir": str(attempt_dir),
+                "captureStatus": evidence["captureStatus"],
+                "completedAt": evidence["completedAt"],
+                "evidenceSha256": sha256_json(evidence),
+                "commands": evidence["commands"],
+                "skippedCommands": evidence["skippedCommands"],
+                "failureReasons": evidence["failureReasons"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return {"PASSED": 0, "FAILED": 4, "NO_CHANGES": 5}[
+        evidence["captureStatus"]
+    ]
+
+
+def command_finalize_fix_attempt(args: argparse.Namespace) -> int:
+    result = finalize_fix_attempt(
+        args.attempt_dir,
+        assessment_path=args.assessment,
+    )
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return {"VERIFIED": 0, "PARTIAL": 3, "FAILED": 4, "NO_CHANGES": 5}[
+        result["status"]
+    ]
+
+
+def command_validate_fix_attempt(args: argparse.Namespace) -> int:
+    data = validate_fix_attempt(
+        args.attempt_dir,
+        compare_live=not args.snapshot_only,
+    )
+    verification = data["verification"]
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "fixId": data["plan"]["fixId"],
+                "attemptId": data["manifest"]["attemptId"],
+                "status": verification["status"],
+                "snapshotOnly": args.snapshot_only,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_list_fix_attempts(args: argparse.Namespace) -> int:
+    lineage = validate_fix_lineage(args.fix_dir)["lineage"]
+    print(json.dumps(lineage, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def command_verify_delivery(args: argparse.Namespace) -> int:
     delivery_dir, attestation = verify_delivery(
         args.fix_dir,
@@ -500,16 +568,49 @@ def command_verify_delivery(args: argparse.Namespace) -> int:
     return {"VERIFIED": 0, "PARTIAL": 3, "FAILED": 4}[attestation["status"]]
 
 
-def command_validate_delivery(args: argparse.Namespace) -> int:
-    attestation = validate_delivery(args.delivery_dir)["attestation"]
+def command_verify_attempt_delivery(args: argparse.Namespace) -> int:
+    delivery_dir, attestation = verify_attempt_delivery(
+        args.attempt_dir,
+        verify_push=args.verify_push,
+        github_run=args.github_run,
+        output_root=args.output_root,
+    )
     print(
         json.dumps(
             {
-                "valid": True,
                 "deliveryId": attestation["deliveryId"],
+                "deliveryDir": str(delivery_dir),
                 "status": attestation["status"],
                 "fixId": attestation["fix"]["fixId"],
+                "attemptId": attestation["fix"]["attemptId"],
+                "lineageStatus": attestation["fix"]["lineageStatus"],
+                "commit": attestation["localSource"]["revision"],
+                "push": attestation["push"]["status"],
+                "githubActions": attestation["githubActions"]["status"],
+                "githubRelease": attestation["githubRelease"]["status"],
+                "npmPackage": attestation["npmPackage"]["status"],
             },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return {"VERIFIED": 0, "PARTIAL": 3, "FAILED": 4}[attestation["status"]]
+
+
+def command_validate_delivery(args: argparse.Namespace) -> int:
+    attestation = validate_delivery(args.delivery_dir)["attestation"]
+    payload = {
+        "valid": True,
+        "schemaVersion": attestation["schemaVersion"],
+        "deliveryId": attestation["deliveryId"],
+        "status": attestation["status"],
+        "fixId": attestation["fix"]["fixId"],
+    }
+    if "attemptId" in attestation["fix"]:
+        payload["attemptId"] = attestation["fix"]["attemptId"]
+    print(
+        json.dumps(
+            payload,
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -582,6 +683,36 @@ def build_parser() -> argparse.ArgumentParser:
     validate_remediation.add_argument("--allow-prepared", action="store_true")
     validate_remediation.set_defaults(handler=command_validate_fix)
 
+    capture_attempt = subparsers.add_parser(
+        "capture-fix-attempt",
+        help="Run commands into a new immutable fix attempt before assessment",
+    )
+    capture_attempt.add_argument("--fix-dir", required=True)
+    capture_attempt.set_defaults(handler=command_capture_fix_attempt)
+
+    finalize_attempt = subparsers.add_parser(
+        "finalize-fix-attempt",
+        help="Bind a post-command assessment to a captured fix attempt",
+    )
+    finalize_attempt.add_argument("--attempt-dir", required=True)
+    finalize_attempt.add_argument("--assessment", required=True)
+    finalize_attempt.set_defaults(handler=command_finalize_fix_attempt)
+
+    validate_attempt = subparsers.add_parser(
+        "validate-fix-attempt",
+        help="Validate a finalized fix attempt and optionally its live target",
+    )
+    validate_attempt.add_argument("--attempt-dir", required=True)
+    validate_attempt.add_argument("--snapshot-only", action="store_true")
+    validate_attempt.set_defaults(handler=command_validate_fix_attempt)
+
+    list_attempts = subparsers.add_parser(
+        "list-fix-attempts",
+        help="Validate and project the immutable attempt lineage for a fix",
+    )
+    list_attempts.add_argument("--fix-dir", required=True)
+    list_attempts.set_defaults(handler=command_list_fix_attempts)
+
     delivery = subparsers.add_parser(
         "verify-delivery",
         help="Create a content-bound post-commit, push, and CI delivery attestation",
@@ -599,6 +730,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run read-only gh verification for a GitHub Actions run id",
     )
     delivery.set_defaults(handler=command_verify_delivery)
+
+    attempt_delivery = subparsers.add_parser(
+        "verify-attempt-delivery",
+        help="Create a portable delivery attestation for the latest verified fix attempt",
+    )
+    attempt_delivery.add_argument("--attempt-dir", required=True)
+    attempt_delivery.add_argument("--output-root")
+    attempt_delivery.add_argument(
+        "--verify-push",
+        action="store_true",
+        help="Run read-only git ls-remote verification for the current branch",
+    )
+    attempt_delivery.add_argument(
+        "--github-run",
+        type=int,
+        help="Run read-only gh verification for a GitHub Actions run id",
+    )
+    attempt_delivery.set_defaults(handler=command_verify_attempt_delivery)
 
     validate_delivery_parser = subparsers.add_parser(
         "validate-delivery",

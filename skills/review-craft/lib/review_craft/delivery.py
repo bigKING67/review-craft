@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,7 @@ def _push_proof(
     remote: str,
     branch: str,
     revision: str,
+    schema_version: str = DELIVERY_SCHEMA_VERSION,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     ref = f"refs/heads/{branch}"
     failures: list[str] = []
@@ -142,7 +144,7 @@ def _push_proof(
                 failures.append("Remote branch SHA does not match the local HEAD commit.")
     evidence = {
         "documentType": "review-craft.delivery.git-remote-evidence",
-        "schemaVersion": DELIVERY_SCHEMA_VERSION,
+        "schemaVersion": schema_version,
         "capturedAt": command["startedAt"],
         "command": command,
         "remote": remote,
@@ -190,6 +192,7 @@ def _github_actions_proof(
     *,
     run_id: int,
     revision: str,
+    schema_version: str = DELIVERY_SCHEMA_VERSION,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     fields = "workflowName,status,conclusion,url,jobs,headSha,createdAt,updatedAt"
     command, stdout = _run_read_only_command(
@@ -231,7 +234,7 @@ def _github_actions_proof(
             failures.append("At least one GitHub Actions job is not completed.")
     evidence = {
         "documentType": "review-craft.delivery.github-actions-evidence",
-        "schemaVersion": DELIVERY_SCHEMA_VERSION,
+        "schemaVersion": schema_version,
         "capturedAt": command["startedAt"],
         "command": command,
         "runId": run_id,
@@ -311,8 +314,12 @@ def _failed_requested_ci(run_id: int, reason: str) -> dict[str, Any]:
     }
 
 
-def _remaining_risks(
-    source: dict[str, Any], push: dict[str, Any], ci: dict[str, Any]
+def delivery_remaining_risks(
+    source: dict[str, Any],
+    push: dict[str, Any],
+    ci: dict[str, Any],
+    *,
+    schema_version: str = DELIVERY_SCHEMA_VERSION,
 ) -> list[str]:
     risks = list(source["failureReasons"])
     if push["status"] == "NOT_REQUESTED":
@@ -325,43 +332,28 @@ def _remaining_risks(
         risks.extend(ci["failureReasons"])
     risks.extend(
         [
-            "GitHub Release state is not verified by delivery.v1.",
-            "npm registry state is not verified by delivery.v1.",
+            f"GitHub Release state is not verified by {schema_version}.",
+            f"npm registry state is not verified by {schema_version}.",
         ]
     )
     return list(dict.fromkeys(risks))
 
 
-def verify_delivery(
-    fix_dir_value: str | Path,
+def collect_delivery_evidence(
+    target: Path,
     *,
-    verify_push: bool = False,
-    github_run: int | None = None,
-    output_root: str | Path | None = None,
-    attested_at: str | None = None,
-) -> tuple[Path, dict[str, Any]]:
-    snapshot = validate_fix_snapshot(fix_dir_value, require_verification=True)
-    plan = snapshot["plan"]
-    state = snapshot["state"]
-    verification = snapshot["verification"]
-    if verification is None or verification["status"] != "VERIFIED":
-        raise ContractError(["verify-delivery requires a VERIFIED fix verification"])
-
-    fix_dir = Path(fix_dir_value).expanduser().resolve(strict=True)
-    target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
-    root = (
-        Path(output_root).expanduser().resolve()
-        if output_root
-        else Path(tempfile.gettempdir()) / "review-craft-deliveries"
-    )
-    repository_root = root / plan["review"]["repositoryName"]
-    try:
-        repository_root.resolve().relative_to(target)
-    except ValueError:
-        pass
-    else:
-        raise ValueError("delivery output resolves inside the target repository")
-    source_configuration = fix_source_configuration(state)
+    source_configuration: dict[str, Any],
+    expected_source_fingerprint: str,
+    verify_push: bool,
+    github_run: int | None,
+    schema_version: str = DELIVERY_SCHEMA_VERSION,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any] | None,
+    dict[str, Any],
+    dict[str, Any] | None,
+]:
     target_state = inspect_git(target)
     _, source_current = current_source(target, source_configuration)
     source_failures: list[str] = []
@@ -369,7 +361,7 @@ def verify_delivery(
         source_failures.append("The delivery target is not bound to a Git commit.")
     if target_state.status:
         source_failures.append("The delivery target worktree is not clean.")
-    if source_current["sourceFingerprint"] != verification["current"]["sourceFingerprint"]:
+    if source_current["sourceFingerprint"] != expected_source_fingerprint:
         source_failures.append("Current source fingerprint does not match fix verification.")
     local_source = {
         "status": "VERIFIED" if not source_failures else "FAILED",
@@ -377,10 +369,9 @@ def verify_delivery(
         "clean": not bool(target_state.status),
         "stableDuringCollection": True,
         **source_current,
-        "expectedSourceFingerprint": verification["current"]["sourceFingerprint"],
+        "expectedSourceFingerprint": expected_source_fingerprint,
         "sourceMatchesVerification": (
-            source_current["sourceFingerprint"]
-            == verification["current"]["sourceFingerprint"]
+            source_current["sourceFingerprint"] == expected_source_fingerprint
         ),
         "failureReasons": source_failures,
     }
@@ -406,6 +397,7 @@ def verify_delivery(
                 remote=local_source["remote"],
                 branch=local_source["branch"],
                 revision=local_source["revision"],
+                schema_version=schema_version,
             )
     if github_run is not None:
         if github_run < 1:
@@ -420,6 +412,7 @@ def verify_delivery(
                 target,
                 run_id=github_run,
                 revision=local_source["revision"],
+                schema_version=schema_version,
             )
 
     _, source_after = current_source(target, source_configuration)
@@ -430,34 +423,43 @@ def verify_delivery(
         local_source["failureReasons"].append(
             "Target source changed while delivery evidence was being collected."
         )
+    return local_source, push, push_evidence, ci, ci_evidence
+
+
+def finalize_delivery_artifact(
+    *,
+    target: Path,
+    repository_name: str,
+    schema_version: str,
+    attestation: dict[str, Any],
+    populate_source_artifacts: Callable[[Path], dict[str, Any]],
+    push_evidence: dict[str, Any] | None,
+    ci_evidence: dict[str, Any] | None,
+    state_source: dict[str, Any],
+    output_root: str | Path | None,
+) -> tuple[Path, dict[str, Any]]:
+    root = (
+        Path(output_root).expanduser().resolve()
+        if output_root
+        else Path(tempfile.gettempdir()) / "review-craft-deliveries"
+    )
+    repository_root = root / repository_name
+    try:
+        repository_root.resolve().relative_to(target)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("delivery output resolves inside the target repository")
 
     repository_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     staging = Path(tempfile.mkdtemp(prefix=".delivery-", dir=repository_root))
     final_dir: Path | None = None
     try:
-        source_dir = staging / "source"
-        evidence_dir = staging / "evidence"
-        source_dir.mkdir(mode=0o700)
-        evidence_dir.mkdir(mode=0o700)
-        copied = {
-            "fixPlan": ("fix-plan.json", "source/fix-plan.json"),
-            "fixAssessment": ("fix-assessment.json", "source/fix-assessment.json"),
-            "fixVerification": ("fix-verification.json", "source/fix-verification.json"),
-        }
-        source_artifacts: dict[str, Any] = {}
-        for key, (source_name, relative) in copied.items():
-            source_path = session_file(fix_dir, source_name)
-            destination = staging / relative
-            destination.write_bytes(source_path.read_bytes())
-            destination.chmod(0o600)
-            source_artifacts[key] = artifact_reference(destination, relative)
-        configuration_path = staging / "source/source-configuration.json"
-        write_json(configuration_path, source_configuration, mode=0o600)
-        source_artifacts["sourceConfiguration"] = artifact_reference(
-            configuration_path,
-            "source/source-configuration.json",
-        )
-
+        (staging / "source").mkdir(mode=0o700)
+        (staging / "evidence").mkdir(mode=0o700)
+        attestation["sourceArtifacts"] = populate_source_artifacts(staging)
+        push = attestation["push"]
+        ci = attestation["githubActions"]
         if push_evidence is not None:
             path = staging / "evidence/git-remote.json"
             write_json(path, push_evidence, mode=0o600)
@@ -467,44 +469,6 @@ def verify_delivery(
             write_json(path, ci_evidence, mode=0o600)
             ci["evidence"] = artifact_reference(path, "evidence/github-actions-run.json")
 
-        attestation = {
-            "documentType": "review-craft.delivery-attestation",
-            "schemaVersion": DELIVERY_SCHEMA_VERSION,
-            "toolVersion": __version__,
-            "deliveryId": "pending",
-            "attestedAt": attested_at or utc_now(),
-            "status": delivery_status(
-                source_status=local_source["status"],
-                push_requested=push["requested"],
-                push_status=push["status"],
-                ci_requested=ci["requested"],
-                ci_status=ci["status"],
-            ),
-            "fix": {
-                "fixId": plan["fixId"],
-                "reviewRunId": plan["review"]["runId"],
-                "reviewTargetIdentity": plan["review"]["targetIdentity"],
-                "repositoryName": plan["review"]["repositoryName"],
-                "verificationStatus": verification["status"],
-                "planSha256": sha256_json(plan),
-                "assessmentSha256": verification["assessmentSha256"],
-                "verificationSha256": sha256_json(verification),
-                "sourceConfigurationSha256": sha256_json(source_configuration),
-            },
-            "sourceArtifacts": source_artifacts,
-            "localSource": local_source,
-            "push": push,
-            "githubActions": ci,
-            "githubRelease": {
-                "status": "NOT_VERIFIED",
-                "reason": "GitHub Release verification is not implemented in delivery.v1.",
-            },
-            "npmPackage": {
-                "status": "NOT_VERIFIED",
-                "reason": "npm registry verification is not implemented in delivery.v1.",
-            },
-            "remainingRisks": _remaining_risks(local_source, push, ci),
-        }
         attestation["deliveryId"] = attestation_base_id(attestation)
         base_id = attestation["deliveryId"]
         suffix = 1
@@ -518,10 +482,10 @@ def verify_delivery(
                 staging / "delivery-state.json",
                 {
                     "documentType": "review-craft.delivery-state",
-                    "schemaVersion": DELIVERY_SCHEMA_VERSION,
+                    "schemaVersion": schema_version,
                     "deliveryId": attestation["deliveryId"],
                     "targetRoot": str(target),
-                    "sourceFixDir": str(fix_dir),
+                    **state_source,
                     "attestationSha256": sha256_json(attestation),
                 },
                 mode=0o600,
@@ -544,3 +508,100 @@ def verify_delivery(
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def verify_delivery(
+    fix_dir_value: str | Path,
+    *,
+    verify_push: bool = False,
+    github_run: int | None = None,
+    output_root: str | Path | None = None,
+    attested_at: str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    snapshot = validate_fix_snapshot(fix_dir_value, require_verification=True)
+    plan = snapshot["plan"]
+    state = snapshot["state"]
+    verification = snapshot["verification"]
+    if verification is None or verification["status"] != "VERIFIED":
+        raise ContractError(["verify-delivery requires a VERIFIED fix verification"])
+
+    fix_dir = Path(fix_dir_value).expanduser().resolve(strict=True)
+    target = Path(state["targetRoot"]).expanduser().resolve(strict=True)
+    source_configuration = fix_source_configuration(state)
+    local_source, push, push_evidence, ci, ci_evidence = collect_delivery_evidence(
+        target,
+        source_configuration=source_configuration,
+        expected_source_fingerprint=verification["current"]["sourceFingerprint"],
+        verify_push=verify_push,
+        github_run=github_run,
+    )
+
+    def populate_source_artifacts(staging: Path) -> dict[str, Any]:
+        copied = {
+            "fixPlan": ("fix-plan.json", "source/fix-plan.json"),
+            "fixAssessment": ("fix-assessment.json", "source/fix-assessment.json"),
+            "fixVerification": ("fix-verification.json", "source/fix-verification.json"),
+        }
+        source_artifacts: dict[str, Any] = {}
+        for key, (source_name, relative) in copied.items():
+            source_path = session_file(fix_dir, source_name)
+            destination = staging / relative
+            destination.write_bytes(source_path.read_bytes())
+            destination.chmod(0o600)
+            source_artifacts[key] = artifact_reference(destination, relative)
+        configuration_path = staging / "source/source-configuration.json"
+        write_json(configuration_path, source_configuration, mode=0o600)
+        source_artifacts["sourceConfiguration"] = artifact_reference(
+            configuration_path,
+            "source/source-configuration.json",
+        )
+        return source_artifacts
+
+    attestation = {
+        "documentType": "review-craft.delivery-attestation",
+        "schemaVersion": DELIVERY_SCHEMA_VERSION,
+        "toolVersion": __version__,
+        "deliveryId": "pending",
+        "attestedAt": attested_at or utc_now(),
+        "status": delivery_status(
+            source_status=local_source["status"],
+            push_requested=push["requested"],
+            push_status=push["status"],
+            ci_requested=ci["requested"],
+            ci_status=ci["status"],
+        ),
+        "fix": {
+            "fixId": plan["fixId"],
+            "reviewRunId": plan["review"]["runId"],
+            "reviewTargetIdentity": plan["review"]["targetIdentity"],
+            "repositoryName": plan["review"]["repositoryName"],
+            "verificationStatus": verification["status"],
+            "planSha256": sha256_json(plan),
+            "assessmentSha256": verification["assessmentSha256"],
+            "verificationSha256": sha256_json(verification),
+            "sourceConfigurationSha256": sha256_json(source_configuration),
+        },
+        "localSource": local_source,
+        "push": push,
+        "githubActions": ci,
+        "githubRelease": {
+            "status": "NOT_VERIFIED",
+            "reason": "GitHub Release verification is not implemented in delivery.v1.",
+        },
+        "npmPackage": {
+            "status": "NOT_VERIFIED",
+            "reason": "npm registry verification is not implemented in delivery.v1.",
+        },
+        "remainingRisks": delivery_remaining_risks(local_source, push, ci),
+    }
+    return finalize_delivery_artifact(
+        target=target,
+        repository_name=plan["review"]["repositoryName"],
+        schema_version=DELIVERY_SCHEMA_VERSION,
+        attestation=attestation,
+        populate_source_artifacts=populate_source_artifacts,
+        push_evidence=push_evidence,
+        ci_evidence=ci_evidence,
+        state_source={"sourceFixDir": str(fix_dir)},
+        output_root=output_root,
+    )

@@ -5,12 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .constants import DELIVERY_SCHEMA_VERSION
+from .constants import ATTEMPT_DELIVERY_SCHEMA_VERSION, DELIVERY_SCHEMA_VERSION
 from .contracts import ContractError
 from .jsonio import read_json, sha256_bytes, sha256_json
 from .schema_validation import validate_instance
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
+DELIVERY_SCHEMA_FILES = {
+    DELIVERY_SCHEMA_VERSION: "delivery-attestation.schema.json",
+    ATTEMPT_DELIVERY_SCHEMA_VERSION: "delivery-attestation-v2.schema.json",
+}
 
 
 def utc_now() -> str:
@@ -18,9 +22,17 @@ def utc_now() -> str:
 
 
 def validate_delivery_schema(document: Any) -> None:
-    schema = read_json(SCHEMA_ROOT / "delivery-attestation.schema.json")
+    if not isinstance(document, dict):
+        raise ContractError(["delivery attestation must be an object"])
+    schema_version = document.get("schemaVersion")
+    schema_name = DELIVERY_SCHEMA_FILES.get(schema_version)
+    if schema_name is None:
+        raise ContractError(
+            [f"delivery attestation schemaVersion is unsupported: {schema_version!r}"]
+        )
+    schema = read_json(SCHEMA_ROOT / schema_name)
     errors = [
-        f"delivery-attestation.schema.json: {message}"
+        f"{schema_name}: {message}"
         for message in validate_instance(document, schema)
     ]
     if errors:
@@ -126,8 +138,8 @@ def validate_delivery_state(directory: Path, attestation: dict[str, Any]) -> Non
     else:
         if state.get("documentType") != "review-craft.delivery-state":
             errors.append("delivery-state.documentType: invalid value")
-        if state.get("schemaVersion") != DELIVERY_SCHEMA_VERSION:
-            errors.append("delivery-state.schemaVersion: invalid value")
+        if state.get("schemaVersion") != attestation["schemaVersion"]:
+            errors.append("delivery-state.schemaVersion: does not match attestation")
         if state.get("deliveryId") != attestation["deliveryId"]:
             errors.append("delivery-state.deliveryId: does not match attestation")
         if state.get("attestationSha256") != sha256_json(attestation):

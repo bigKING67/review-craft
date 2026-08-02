@@ -40,7 +40,128 @@ For `DELETE` or `REWRITE`, follow the migration, compatibility, rollback, and
 verification gates already bound in the canonical decision. Stop if those details are
 not executable. A decision in a report is not itself authorization to modify source.
 
-## 3. Create an assessment
+## 3. Capture commands before assessment
+
+Use the attempt protocol for new source-checkout workflows:
+
+```text
+python3 <skill-root>/scripts/review_craft.py capture-fix-attempt \
+  --fix-dir <fix-dir>
+```
+
+This creates an independent directory under `<fix-dir>/attempts/`, executes the bound
+commands into an attempt-local receipt ledger, and writes:
+
+```text
+<attempt-dir>/
+├── attempt-manifest.json
+├── attempt-evidence.json
+└── evidence/
+    ├── commands.jsonl
+    └── commands/
+```
+
+No assessment exists yet. `attempt-evidence.json` records command completion time,
+source before and after commands, baseline-relative changes, command and semantic-claim
+results, skipped commands, structured claim observations, and classified failure reasons.
+The capture exits `0`, `4`, or `5` for `PASSED`, `FAILED`, or `NO_CHANGES`; contract errors
+exit `2`. A failed capture is still evidence and must not be deleted or rewritten merely to
+obtain a green result.
+
+## 4. Create a post-command assessment
+
+Read the captured receipts and structured stdout, then create the assessment outside the
+target repository:
+
+```json
+{
+  "documentType": "review-craft.fix-attempt-assessment",
+  "schemaVersion": "review-craft.fix-attempt.v1",
+  "fixId": "rcf-...",
+  "attemptId": "attempt-0001-...",
+  "evidenceSha256": "<sha256 of attempt-evidence.json>",
+  "kind": "AGENT_ASSISTED",
+  "assessor": "Codex",
+  "assessedAt": "2026-08-02T06:00:00Z",
+  "findings": [
+    {
+      "findingId": "RC-FINDING-001",
+      "status": "RESOLVED",
+      "rationale": "The captured test claim and measured runtime value match the fix criteria.",
+      "evidenceRefs": [
+        "change:src/example.py",
+        "claim:test:fixed-behavior",
+        "measurement:startup-ms"
+      ]
+    }
+  ],
+  "measurements": [
+    {
+      "id": "startup-ms",
+      "command": "test",
+      "jsonPointer": "/metrics/startupMs",
+      "value": 123.5,
+      "unit": "ms"
+    }
+  ],
+  "remainingRisks": []
+}
+```
+
+`assessedAt` must be at or after `attempt-evidence.completedAt`. Evidence references are:
+
+- `change:<repository-relative-path>` for a baseline-relative captured source change;
+- `command:<configured-name>` for an executed command;
+- `claim:<command>:<claim-id>` for a structured configured claim;
+- `measurement:<id>` for an exact scalar read from a command's JSON stdout;
+- `manual:<description>` only for a declared `HUMAN` assessment.
+
+The runtime re-reads the command stdout at finalization. A missing pointer, nonexistent
+command or claim, or measurement value that conflicts with the captured JSON is rejected.
+Free-text rationale does not override structured evidence.
+
+## 5. Finalize, validate, and retry without erasing history
+
+```text
+python3 <skill-root>/scripts/review_craft.py finalize-fix-attempt \
+  --attempt-dir <attempt-dir> \
+  --assessment <assessment.json>
+
+python3 <skill-root>/scripts/review_craft.py validate-fix-attempt \
+  --attempt-dir <attempt-dir>
+
+python3 <skill-root>/scripts/review_craft.py list-fix-attempts \
+  --fix-dir <fix-dir>
+```
+
+Finalization writes `fix-assessment.json` and `attempt-verification.json` exactly once.
+Snapshot validation verifies hashes, receipts, semantic observations, measurements,
+assessment timing, finding results, and the predecessor link. Live validation additionally
+requires the target to still match captured evidence; use `--snapshot-only` for an older
+attempt after the checkout has intentionally moved on.
+
+A retry is permitted only after the previous attempt is finalized and only when all of the
+following still match its pre-command source:
+
+- source and worktree fingerprints;
+- Git revision, branch, remote, and status fingerprint;
+- sealed review and fix-plan provenance;
+- selected command configuration.
+
+The retry creates the next attempt directory and binds the prior verification hash. It
+does not overwrite the first attempt. A successful retry after an isolated command failure
+is projected as `VERIFIED_WITH_RETRY` with `FLAKY_COMMAND_RECOVERED`. A changed source or
+configuration requires a new `prepare-fix` baseline instead of being mislabeled as a retry.
+Only the latest attempt may await assessment. An orphan receipt, missing predecessor,
+deleted failure, modified stdout, changed assessment, or duplicate finalization makes
+validation fail closed.
+
+## Legacy `review-craft.fix.v1` compatibility
+
+The published v0.5-compatible workflow remains available when a host cannot use attempt
+lineage. In this legacy protocol, create the assessment before command execution.
+
+### Create a legacy assessment
 
 Create a JSON assessment outside the target:
 
@@ -75,7 +196,7 @@ Evidence references are deliberately narrow:
 An `AUTOMATED` resolved result requires command evidence. Source change alone is not
 runtime or behavioral proof. `AGENT_ASSISTED` is not independent human validation.
 
-## 4. Verify and revalidate
+### Verify and revalidate the legacy session
 
 Run the selected commands and bind the assessment:
 
@@ -141,13 +262,27 @@ the runtime records evidence but does not perform rollback.
 
 ## Post-delivery attestation
 
-Fix verification intentionally stops before Git delivery. Do not rewrite an old
-`fix-verification.json` after commit, push, CI, or release state changes. After the host has
-committed a `VERIFIED` fix, create a separate delivery artifact:
+Fix verification intentionally stops before Git delivery. Keep protocol selection
+explicit: `verify-delivery` accepts only finalized legacy `review-craft.fix.v1`, while
+`verify-attempt-delivery` accepts only the latest finalized `VERIFIED` attempt from a
+lineage whose aggregate is `VERIFIED` or `VERIFIED_WITH_RETRY`. Neither producer searches
+backward for an older green result or converts one protocol into the other. Do not rewrite
+verification artifacts after commit, push, CI, or release state changes. After the host has
+committed a verified fix, create the matching delivery artifact:
 
 ```bash
 python3 <skill-root>/scripts/review_craft.py verify-delivery \
   --fix-dir <fix-dir>
+
+python3 <skill-root>/scripts/review_craft.py validate-delivery \
+  --delivery-dir <delivery-dir>
+```
+
+For attempt lineage:
+
+```bash
+python3 <skill-root>/scripts/review_craft.py verify-attempt-delivery \
+  --attempt-dir <latest-verified-attempt-dir>
 
 python3 <skill-root>/scripts/review_craft.py validate-delivery \
   --delivery-dir <delivery-dir>
@@ -166,14 +301,17 @@ python3 <skill-root>/scripts/review_craft.py verify-delivery \
   --github-run <github-actions-run-id>
 ```
 
+Use the same flags with `verify-attempt-delivery` when the source protocol is
+`review-craft.fix-attempt.v1`.
+
 `--verify-push` runs `git ls-remote` without a shell and verifies that the configured
 remote branch SHA equals local `HEAD`. `--github-run` runs `gh run view` without a shell
 and binds the run ID, workflow, head SHA, status, conclusion, URL, and normalized job list.
 Failed, incomplete, unreadable, or mismatched requested proof produces a valid `FAILED`
-attestation. `verify-delivery` exits `0`, `3`, or `4` for `VERIFIED`, `PARTIAL`, or `FAILED`;
+attestation. Both producers exit `0`, `3`, or `4` for `VERIFIED`, `PARTIAL`, or `FAILED`;
 contract and input errors exit `2`.
 
-Every attempt creates a new content-bound directory under the system temporary directory
+Every invocation creates a new content-bound directory under the system temporary directory
 or `--output-root`:
 
 ```text
@@ -195,3 +333,34 @@ output hashes remain in normalized evidence. GitHub Release and npm registry ada
 not implemented in `delivery.v1`; both stages remain `NOT_VERIFIED`. `validate-delivery`
 uses only copied artifacts and therefore continues to work after the original fix directory
 or target checkout is unavailable.
+
+Attempt delivery uses the separate `review-craft.delivery.v2` schema and copies the whole
+canonical lineage rather than only the selected terminal result:
+
+```text
+<delivery-dir>/
+├── delivery-attestation.json
+├── delivery-state.json
+├── source/
+│   ├── fix-plan.json
+│   ├── source-configuration.json
+│   ├── fix-lineage.json
+│   └── attempts/
+│       ├── attempt-0001-<hash>/
+│       │   ├── attempt-manifest.json
+│       │   ├── attempt-evidence.json
+│       │   ├── fix-assessment.json
+│       │   └── attempt-verification.json
+│       └── attempt-0002-<hash>/
+│           └── ...
+└── evidence/
+    ├── git-remote.json             # only when executed
+    └── github-actions-run.json     # only when executed
+```
+
+Portable v2 validation checks contiguous sequence, predecessor verification hashes,
+manifest/evidence/assessment/verification bindings, deterministic lineage projection,
+the selected latest verified attempt, local source fingerprint, delivery ID, and optional
+push/CI evidence. It intentionally does not copy raw attempt receipt ledgers or command
+stdout/stderr, so the delivery can verify canonical JSON and hash lineage but cannot replay
+the raw command payload. GitHub Release and npm registry remain `NOT_VERIFIED` in v2.

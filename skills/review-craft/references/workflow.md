@@ -258,11 +258,17 @@ Preserve migration and rollback paths whenever behavior or compatibility can
 change. Do not promise a target score without a target evidence level and explicit
 acceptance conditions.
 
-When the user authorizes implementation, follow `remediation.md`. A prepared fix session
-permits one terminal verification attempt under an exclusive session lock. Completed or
-receipt-bearing incomplete sessions are not resumed; prepare a new session for an explicit
-rerun. Final validation requires exact closure between the command receipt ledger and the
-verification references.
+When the user authorizes implementation, follow `remediation.md`. Prefer the attempt
+protocol: capture configured commands first, assess their immutable receipts afterward,
+then finalize. A retry requires the same source and configuration and appends a new
+content-bound attempt without rewriting its predecessor. Legacy `review-craft.fix.v1`
+remains single-attempt and fail-closed for compatibility. Both protocols require exact
+closure between the command receipt ledger and terminal verification references.
+After the host commits a verified result, keep delivery protocols separate:
+`verify-delivery --fix-dir` exports legacy `fix.v1`, while
+`verify-attempt-delivery --attempt-dir` exports the explicitly selected latest verified
+attempt and every canonical predecessor as `delivery.v2`. Both are read-only and use the
+same `validate-delivery` entry point; neither may reinterpret the other protocol.
 
 ## 10. Validation and completion
 

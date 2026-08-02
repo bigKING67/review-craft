@@ -39,9 +39,20 @@ commits, pushes, or publishes. Canonical run, fix, delivery, and eval artifacts 
 outside the target repository by default. A sanitized matched real-host Golden snapshot
 from v0.3 remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
+The current source checkout additionally implements the unreleased
+`review-craft.fix-attempt.v1` protocol and its independent
+`review-craft.delivery.v2` export. It runs bound commands before assessment, stores each
+attempt in a separate immutable directory, permits a retry only for the exact same
+source/Git/configuration state, and reports recovery without erasing the first failure.
+After the latest attempt is verified and committed, `verify-attempt-delivery` copies the
+entire canonical attempt lineage into a portable delivery artifact instead of silently
+reinterpreting it as legacy `fix.v1`. These source capabilities are not claimed for the
+published v0.5.0 package until a later version is explicitly released.
+
 The following are intentionally not implemented in 0.5.0: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
 service. Delivery v1 also does not verify GitHub Releases or npm registry publication.
+The same release/registry boundary applies to the unreleased delivery v2 source protocol.
 
 ## What makes it different
 
@@ -293,8 +304,45 @@ python3 skills/review-craft/scripts/review_craft.py \
 ```
 
 `prepare-fix` is read-only and records `EXPLICIT_USER_REQUIRED`. After the user has
-authorized the implementation and the host has applied only the selected changes,
-create a `review-craft.fix-assessment` JSON file and verify it:
+authorized the implementation and the host has applied only the selected changes, prefer
+capturing immutable command evidence before writing an assessment:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  capture-fix-attempt --fix-dir <fix-dir>
+```
+
+The result includes `attemptDir`, `completedAt`, and `evidenceSha256`. Read the attempt's
+receipts and structured stdout, then create a `review-craft.fix-attempt-assessment` that
+binds those exact values. Finalize, validate, and project its lineage:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  finalize-fix-attempt --attempt-dir <attempt-dir> \
+  --assessment <assessment.json>
+
+python3 skills/review-craft/scripts/review_craft.py \
+  validate-fix-attempt --attempt-dir <attempt-dir>
+
+python3 skills/review-craft/scripts/review_craft.py \
+  list-fix-attempts --fix-dir <fix-dir>
+```
+
+Assessment evidence can reference `change:<path>`, `command:<name>`,
+`claim:<command>:<claim-id>`, `measurement:<measurement-id>`, and HUMAN-only
+`manual:<description>` evidence. Each structured measurement names the command, RFC 6901
+JSON pointer, and exact scalar value. Finalization rejects a measurement that conflicts
+with captured stdout or an `assessedAt` earlier than command completion.
+
+If an attempt fails because of a command flake, finalize that failure first. A retry may
+then append another attempt only when source fingerprint, revision, branch, remote, Git
+status, fix plan, and command configuration still match. `VERIFIED_WITH_RETRY` preserves
+the failed predecessor and records `FLAKY_COMMAND_RECOVERED`; it never rewrites the first
+attempt. Use `--snapshot-only` when validating an older attempt after the live checkout has
+moved on.
+
+The published v0.5-compatible single-attempt workflow remains available. Create a
+`review-craft.fix-assessment` before running the legacy command:
 
 ```bash
 python3 skills/review-craft/scripts/review_craft.py \
@@ -310,12 +358,25 @@ the selected issue was resolved. See
 `skills/review-craft/references/remediation.md` for assessment evidence rules and exit
 codes.
 
-Each fix session has one terminal verification attempt. `verify-fix` holds an exclusive
+Legacy `review-craft.fix.v1` has one terminal verification attempt. `verify-fix` holds an exclusive
 session lock through command execution and terminal artifact creation, so concurrent or
 sequential callers cannot create competing results. A completed session is read-only.
 If a crash leaves command receipts or only one terminal artifact, the session fails closed;
 run `prepare-fix` again to create a new session for an explicit rerun. `validate-fix`
 requires the receipt ledger to match the final verification references exactly.
+
+Do not mix legacy root receipts with attempt-local receipts in the same fix directory.
+`verify-delivery` continues to accept only a legacy finalized `review-craft.fix.v1`
+source. For attempt lineage, explicitly name the latest verified attempt:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  verify-attempt-delivery --attempt-dir <latest-verified-attempt-dir>
+```
+
+The command rejects a failed, partial, awaiting-assessment, or non-latest attempt. It also
+requires the deterministic lineage aggregate to be `VERIFIED` or
+`VERIFIED_WITH_RETRY`; it never searches the lineage for an older green result.
 
 ### Post-delivery attestation
 
@@ -325,6 +386,17 @@ delivery artifact instead:
 ```bash
 python3 skills/review-craft/scripts/review_craft.py \
   verify-delivery --fix-dir <fix-dir>
+
+python3 skills/review-craft/scripts/review_craft.py \
+  validate-delivery --delivery-dir <delivery-dir>
+```
+
+For `review-craft.fix-attempt.v1`, use the separate v2 producer and the same portable
+validator:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  verify-attempt-delivery --attempt-dir <latest-verified-attempt-dir>
 
 python3 skills/review-craft/scripts/review_craft.py \
   validate-delivery --delivery-dir <delivery-dir>
@@ -344,6 +416,10 @@ python3 skills/review-craft/scripts/review_craft.py \
   --github-run <run-id>
 ```
 
+The same explicit `--verify-push` and `--github-run` options are available on
+`verify-attempt-delivery`; its evidence documents are versioned as
+`review-craft.delivery.v2`.
+
 `--verify-push` runs fixed-argv `git ls-remote` and requires the remote branch SHA to equal
 local `HEAD`. `--github-run` runs fixed-argv `gh run view` and requires matching `headSha`,
 completed run/jobs, and a successful conclusion. Requested missing, failed, incomplete, or
@@ -357,6 +433,15 @@ source inventory configuration. `validate-delivery` is portable: it does not rea
 original fix directory or target checkout. Raw command stdout/stderr are not stored; only
 normalized fields, byte counts, and hashes are retained. GitHub Release and npm registry
 stages remain explicit `NOT_VERIFIED` values in v1.
+
+Each `review-craft.delivery.v2` invocation copies `fix-plan.json`, the source inventory
+configuration, a deterministic `fix-lineage.json`, and the manifest, evidence,
+assessment, and verification JSON for every attempt through the selected latest attempt.
+This preserves failed predecessors and the SHA-256 predecessor chain in a portable
+snapshot. Raw attempt receipt ledgers and command stdout/stderr are deliberately not
+copied, so portable v2 validation verifies the canonical JSON/hash lineage but does not
+claim to replay raw command payloads. GitHub Release and npm registry stages likewise
+remain `NOT_VERIFIED`.
 
 ## Configuration
 
@@ -376,8 +461,9 @@ Consequently, a Review Craft receipt does not prove that excluded paths remained
 unchanged; command isolation and host policy still own that boundary.
 Evidence commands targeting the same run are serialized with an OS-managed file lock.
 This preserves receipt sequence and mutation attribution across concurrent callers; it
-does not make configured commands run in parallel. Fix verification adds a separate
-session-level lock around its complete one-attempt lifecycle.
+does not make configured commands run in parallel. Legacy fix verification adds a separate
+session-level lock around its complete one-attempt lifecycle. Attempt capture/finalization
+adds a fix-level lock, while every attempt owns a separate receipt ledger and terminal pair.
 Semantic claims and copied command artifacts are part of receipt identity. Fix verification
 preserves the same identity and treats a failed semantic assertion as a failed verification
 command even when the subprocess itself exited zero.
@@ -395,6 +481,9 @@ old run in place. New run.v3 scorecards report both accounted and reviewed cover
 `coveragePercent` now carries the reviewed value. Historical run.v3 scorecards without
 the new optional fields retain their original accounting interpretation during
 validation.
+The current unreleased source adds `review-craft.fix-attempt.v1` and the independent
+`review-craft.delivery.v2` export without reinterpreting or mutating any existing
+`review-craft.fix.v1` or `review-craft.delivery.v1` artifact.
 The deterministic report labels `focus` and `diff` scores as scope-limited rather than
 repository-wide, separates confirmed findings from evidence gaps and remaining risks, and
 lists verified command claims and captured evidence artifacts.

@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for evidence-driven engineering reviews and explicitly authorized remediation verification of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, delivery, dependencies, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, proportional KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, content-bound fix verification, and optional post-commit/push/CI delivery attestations. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
+description: "Use for evidence-driven engineering reviews and explicitly authorized remediation verification of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, delivery, dependencies, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, proportional KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, immutable fix-attempt lineage with post-command assessment, and optional post-commit/push/CI delivery attestations. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
 ---
 
 # Review Craft
@@ -23,12 +23,11 @@ already-appropriate code.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
 - Version 0.5 supports read-only `review`, `diff`, and `focus` workflows plus an
-  explicitly authorized, content-bound `fix` and `verify` workflow. The current
-  release can also create an independent delivery attestation after the host commits
-  changes, with push and GitHub Actions proof only when explicitly requested. The
-  runtime prepares and validates evidence but never edits target source, commits,
-  pushes, or publishes. Do not claim support for deep multi-pass or historical
-  comparison modes.
+  explicitly authorized `fix`/`verify` workflow and delivery attestations. The source
+  checkout also supports `review-craft.fix-attempt.v1` and its independent
+  `review-craft.delivery.v2` export; do not claim either capability for the published
+  v0.5.0 package until released. The runtime never edits source, commits, pushes, or
+  publishes. Do not claim deep multi-pass or historical comparison support.
 
 ## Authority and trust
 
@@ -171,17 +170,24 @@ findings. Read [remediation.md](references/remediation.md) before editing.
    read-only.
 4. Apply only the selected changes with the host's normal editing tools. The bundled
    runtime must never mutate target source.
-5. Record a HUMAN, AGENT_ASSISTED, or AUTOMATED assessment with post-change evidence.
-6. Run `verify-fix`, then `validate-fix`; every verification receipt must remain
-   bound to its selected canonical name, argv, and cwd, and the receipt ledger must match
-   final verification references exactly. Distinguish artifact validity from a `VERIFIED`,
-   `PARTIAL`, `FAILED`, or `NO_CHANGES` remediation outcome.
-7. Treat each fix session as a single terminal attempt. Concurrent and sequential repeats
-   are rejected; a completed, partial, or receipt-bearing incomplete session is never
-   resumed. After a crash or further edit, run `prepare-fix` again for an explicit rerun.
-8. After a verified fix is committed by the host, optionally run `verify-delivery`.
-   Local source proof is always read-only. `--verify-push` and `--github-run` are the
-   only v1 options that authorize network-backed proof. Then run `validate-delivery`.
+5. Prefer `capture-fix-attempt` to run the bound commands and create immutable evidence
+   before an assessment exists.
+6. Read those exact receipts, then create a `review-craft.fix-attempt-assessment` whose
+   timestamp and evidence hash bind the completed capture. Use structured `measurement:`
+   references when quoting a value from JSON stdout; conflicting values are rejected.
+7. Run `finalize-fix-attempt`, `validate-fix-attempt`, and `list-fix-attempts`. A retry is
+   allowed only after the prior attempt is finalized and only when the source, revision,
+   branch, Git status, plan, and command configuration remain identical. Preserve every
+   failed predecessor. A later pass becomes `VERIFIED_WITH_RETRY`, not a rewritten first
+   attempt. Distinguish `VERIFIED`, `PARTIAL`, `FAILED`, and `NO_CHANGES` outcomes.
+8. Use legacy `verify-fix` plus `validate-fix` only when compatibility with the published
+   single-attempt `review-craft.fix.v1` workflow is required. Never mix root v1 receipts
+   and attempt-local receipts in one fix directory.
+9. After a verified fix is committed, run `verify-delivery --fix-dir` for legacy `fix.v1`
+   or `verify-attempt-delivery --attempt-dir` for the latest verified attempt. Never search
+   backward for an older green attempt or reinterpret protocols. Local proof is read-only;
+   only `--verify-push` and `--github-run` authorize network proof. Then run
+   `validate-delivery`.
 
 Do not infer implementation authorization from `DELETE`, `REWRITE`, or any other report
 decision. Do not claim a finding is resolved from a diff alone when its criteria require
@@ -189,11 +195,13 @@ runtime evidence.
 
 ## Post-delivery attestation
 
-`review-craft.delivery.v1` is a new immutable artifact; it never edits the sealed review,
-`fix-plan.json`, `fix-assessment.json`, or `fix-verification.json`. It copies and hashes the
-three canonical fix artifacts plus the source inventory configuration, then binds the
-current clean commit and source fingerprint. Each invocation creates a separate delivery
-directory outside the target.
+Delivery attestations never edit the sealed review or source verification artifacts.
+`review-craft.delivery.v1` copies the three canonical legacy fix artifacts plus source
+inventory configuration. `review-craft.delivery.v2` instead copies the plan, source
+configuration, deterministic lineage projection, and all four canonical JSON documents
+for every finalized attempt through the selected latest attempt. Both bind the current
+clean commit and source fingerprint, and each invocation creates a separate directory
+outside the target.
 
 - Local-only proof is `PARTIAL` because remote push state is unknown.
 - `--verify-push` runs fixed-argv `git ls-remote` and requires the remote branch SHA to
@@ -201,10 +209,13 @@ directory outside the target.
 - `--github-run <id>` runs fixed-argv `gh run view`; head SHA, terminal status, successful
   conclusion, and terminal jobs must match. Requested failed, incomplete, missing, or
   mismatched proof makes the delivery `FAILED`.
-- GitHub Release and npm registry proof are not implemented in v1 and remain
+- GitHub Release and npm registry proof are not implemented in v1 or v2 and remain
   `NOT_VERIFIED`; do not upgrade them from user-authored text.
 - `validate-delivery` validates the copied snapshot and content-bound delivery ID without
   requiring the original fix directory or live target repository.
+- Portable v2 validation verifies canonical attempt JSON and its hash chain, but raw
+  command receipt ledgers and stdout/stderr are not copied and cannot be replayed from the
+  delivery artifact alone.
 
 ## Delivery
 
@@ -223,11 +234,7 @@ Do not claim superiority over Codex Review or Codex Security from a self-score.
 
 ## Supporting references
 
-- Scope, authority, hostile repository data: [authority-and-scope.md](references/authority-and-scope.md)
-- End-to-end review order and coverage: [workflow.md](references/workflow.md)
-- Project Quality Model: [quality-model.md](references/quality-model.md)
-- Candidate, finding, validation, and decisions: [finding-lifecycle.md](references/finding-lifecycle.md)
-- Scoring, evidence levels, and report contract: [scoring-and-report.md](references/scoring-and-report.md)
-- Design Craft and Codex Security boundaries: [integrations.md](references/integrations.md)
-- Review modes and project profiles: [modes-and-profiles.md](references/modes-and-profiles.md)
-- Explicit remediation and fix verification: [remediation.md](references/remediation.md)
+- Authority/scope and hostile data: [authority-and-scope.md](references/authority-and-scope.md)
+- Workflow, quality model, and findings: [workflow.md](references/workflow.md), [quality-model.md](references/quality-model.md), [finding-lifecycle.md](references/finding-lifecycle.md)
+- Scoring, integrations, and modes: [scoring-and-report.md](references/scoring-and-report.md), [integrations.md](references/integrations.md), [modes-and-profiles.md](references/modes-and-profiles.md)
+- Remediation and fix verification: [remediation.md](references/remediation.md)

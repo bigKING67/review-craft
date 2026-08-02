@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .constants import DELIVERY_SCHEMA_VERSION
+from .attempt_delivery_validation import validate_attempt_delivery_source
+from .constants import ATTEMPT_DELIVERY_SCHEMA_VERSION, DELIVERY_SCHEMA_VERSION
 from .contracts import ContractError
 from .delivery_contract import (
     attestation_base_id,
@@ -18,7 +19,7 @@ from .jsonio import read_json, sha256_json
 from .remediation_contract import assessment_rows, validate_schema
 
 
-def _validate_source_artifacts(
+def _validate_source_artifacts_v1(
     delivery_dir: Path, attestation: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     references = attestation["sourceArtifacts"]
@@ -143,7 +144,7 @@ def _validate_push(delivery_dir: Path, attestation: dict[str, Any]) -> list[str]
         return errors + ["git-remote evidence: expected an object"]
     if evidence.get("documentType") != "review-craft.delivery.git-remote-evidence":
         errors.append("git-remote evidence documentType is invalid")
-    if evidence.get("schemaVersion") != DELIVERY_SCHEMA_VERSION:
+    if evidence.get("schemaVersion") != attestation["schemaVersion"]:
         errors.append("git-remote evidence schemaVersion is invalid")
     bindings = {
         "remote": push["remote"],
@@ -209,7 +210,7 @@ def _validate_ci(delivery_dir: Path, attestation: dict[str, Any]) -> list[str]:
         return errors + ["github-actions evidence: expected an object"]
     if evidence.get("documentType") != "review-craft.delivery.github-actions-evidence":
         errors.append("github-actions evidence documentType is invalid")
-    if evidence.get("schemaVersion") != DELIVERY_SCHEMA_VERSION:
+    if evidence.get("schemaVersion") != attestation["schemaVersion"]:
         errors.append("github-actions evidence schemaVersion is invalid")
     bindings = {
         "runId": ci["runId"],
@@ -265,23 +266,32 @@ def validate_delivery(delivery_dir_value: str | Path) -> dict[str, Any]:
         errors.append(
             f"deliveryId is not content-bound; expected base {attestation_base_id(attestation)}"
         )
-    try:
-        plan, assessment, verification, configuration = _validate_source_artifacts(
-            delivery_dir, attestation
-        )
-    except ContractError as error:
-        errors.extend(error.errors)
-    else:
-        errors.extend(
-            _validate_fix_binding(
-                attestation,
-                plan,
-                assessment,
-                verification,
-                configuration,
+    schema_version = attestation["schemaVersion"]
+    if schema_version == DELIVERY_SCHEMA_VERSION:
+        try:
+            plan, assessment, verification, configuration = _validate_source_artifacts_v1(
+                delivery_dir, attestation
             )
-        )
-        errors.extend(_validate_local_source(attestation, verification))
+        except ContractError as error:
+            errors.extend(error.errors)
+        else:
+            errors.extend(
+                _validate_fix_binding(
+                    attestation,
+                    plan,
+                    assessment,
+                    verification,
+                    configuration,
+                )
+            )
+            errors.extend(_validate_local_source(attestation, verification))
+    elif schema_version == ATTEMPT_DELIVERY_SCHEMA_VERSION:
+        try:
+            source = validate_attempt_delivery_source(delivery_dir, attestation)
+        except ContractError as error:
+            errors.extend(error.errors)
+        else:
+            errors.extend(_validate_local_source(attestation, source["verification"]))
     errors.extend(_validate_push(delivery_dir, attestation))
     errors.extend(_validate_ci(delivery_dir, attestation))
     expected_status = delivery_status(
@@ -295,7 +305,9 @@ def validate_delivery(delivery_dir_value: str | Path) -> dict[str, Any]:
         errors.append("delivery status does not match source, push, and CI proof")
     for field in ("githubRelease", "npmPackage"):
         if attestation[field]["status"] != "NOT_VERIFIED":
-            errors.append(f"delivery {field}.status must remain NOT_VERIFIED in delivery.v1")
+            errors.append(
+                f"delivery {field}.status must remain NOT_VERIFIED in {schema_version}"
+            )
     try:
         validate_delivery_state(delivery_dir, attestation)
     except ContractError as error:

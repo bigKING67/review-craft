@@ -7,10 +7,13 @@
 - Do not duplicate inventory, validation, scoring, or report generation outside the canonical runtime.
 - Version 0.5 supports read-only `review`, `diff`, and `focus` modes plus explicitly
   authorized fix preparation and verification. The runtime records and validates fix
-  evidence but never edits target source. The current source also supports independent
-  post-commit delivery attestations; remote push and GitHub Actions proof require explicit
-  CLI options. Do not document deep multi-pass, historical comparison, SARIF, MCP, or
-  automatic source mutation as implemented.
+  evidence but never edits target source. The current source also supports immutable fix
+  attempt lineage with post-command assessment plus the independent
+  `review-craft.delivery.v2` export. Keep legacy `delivery.v1` semantics unchanged;
+  remote push and GitHub Actions proof require explicit CLI options. Do not claim that an
+  unreleased source capability is present in the published v0.5.0 package.
+  Do not document deep multi-pass, historical comparison, SARIF, MCP, or automatic source
+  mutation as implemented.
 
 ## Safety and evidence
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,7 @@ class RemediationTests(unittest.TestCase):
         self.target_tmp, self.target = make_target(commit=True)
         self.output_tmp = tempfile.TemporaryDirectory(prefix="review-craft-runs-")
         self.fix_tmp = tempfile.TemporaryDirectory(prefix="review-craft-fixes-")
+        self.flake_marker = Path(self.fix_tmp.name) / "flake-marker"
         (self.target / "auth.json").write_text(
             '{"token":"private-v1"}\n', encoding="utf-8"
         )
@@ -97,6 +99,48 @@ class RemediationTests(unittest.TestCase):
                                     "assert 'return 42' in Path('app.py').read_text()"
                                 ),
                             ]
+                        },
+                        "flaky-check": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import json; import sys; from pathlib import Path; "
+                                    "assert 'return 42' in Path('app.py').read_text(); "
+                                    f"marker = Path({str(self.flake_marker)!r}); "
+                                    "seen = marker.exists(); marker.write_text('seen'); "
+                                    "print(json.dumps({'checks': {'fixed': True}})); "
+                                    "sys.exit(0 if seen else 1)"
+                                ),
+                            ],
+                            "evidenceClaims": [
+                                {
+                                    "id": "fixed-behavior-check",
+                                    "kind": "test",
+                                    "jsonPointer": "/checks/fixed",
+                                    "equals": True,
+                                }
+                            ],
+                        },
+                        "measure-check": {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import json; from pathlib import Path; "
+                                    "assert 'return 42' in Path('app.py').read_text(); "
+                                    "print(json.dumps({'checks': {'fixed': True}, "
+                                    "'metrics': {'startupMs': 123.5}}))"
+                                ),
+                            ],
+                            "evidenceClaims": [
+                                {
+                                    "id": "fixed-behavior-check",
+                                    "kind": "test",
+                                    "jsonPointer": "/checks/fixed",
+                                    "equals": True,
+                                }
+                            ],
                         }
                     }
                 }
@@ -160,6 +204,50 @@ class RemediationTests(unittest.TestCase):
                             "evidenceRefs": evidence,
                         }
                     ],
+                    "remainingRisks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _attempt_assessment(
+        self,
+        attempt_dir: Path,
+        *,
+        command: str,
+        status: str = "RESOLVED",
+        evidence_refs: list[str] | None = None,
+        measurements: list[dict[str, object]] | None = None,
+        assessed_at: str | None = None,
+    ) -> Path:
+        manifest = read_json(attempt_dir / "attempt-manifest.json")
+        evidence = read_json(attempt_dir / "attempt-evidence.json")
+        path = Path(self.fix_tmp.name) / f"assessment-{manifest['attemptId']}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "documentType": "review-craft.fix-attempt-assessment",
+                    "schemaVersion": "review-craft.fix-attempt.v1",
+                    "fixId": manifest["fixId"],
+                    "attemptId": manifest["attemptId"],
+                    "evidenceSha256": sha256_json(evidence),
+                    "kind": "AGENT_ASSISTED",
+                    "assessor": "Review Craft attempt test",
+                    "assessedAt": assessed_at or evidence["completedAt"],
+                    "findings": [
+                        {
+                            "findingId": "RC-FINDING-001",
+                            "status": status,
+                            "rationale": "Assessment was written from captured receipts.",
+                            "evidenceRefs": evidence_refs
+                            or [
+                                "change:app.py",
+                                f"claim:{command}:fixed-behavior-check",
+                            ],
+                        }
+                    ],
+                    "measurements": measurements or [],
                     "remainingRisks": [],
                 }
             ),
@@ -576,6 +664,368 @@ class RemediationTests(unittest.TestCase):
         validated = run_cli("validate-fix", "--fix-dir", str(fix_dir))
         self.assertEqual(validated.returncode, 2)
         self.assertIn("receipt ledger must exactly match", validated.stderr)
+
+    def test_attempt_lineage_preserves_failure_and_records_flaky_recovery(self) -> None:
+        fix_dir = self._prepare("flaky-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+
+        first_capture = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        self.assertEqual(first_capture.returncode, 4, first_capture.stderr)
+        first_dir = Path(json.loads(first_capture.stdout)["attemptDir"])
+        first_assessment = self._attempt_assessment(
+            first_dir, command="flaky-check"
+        )
+        first_finalize = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(first_dir),
+            "--assessment",
+            str(first_assessment),
+        )
+        self.assertEqual(first_finalize.returncode, 4, first_finalize.stderr)
+        self.assertEqual(json.loads(first_finalize.stdout)["status"], "FAILED")
+
+        second_capture = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        self.assertEqual(second_capture.returncode, 0, second_capture.stderr)
+        second_dir = Path(json.loads(second_capture.stdout)["attemptDir"])
+        second_assessment = self._attempt_assessment(
+            second_dir, command="flaky-check"
+        )
+        second_finalize = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(second_dir),
+            "--assessment",
+            str(second_assessment),
+        )
+        self.assertEqual(second_finalize.returncode, 0, second_finalize.stderr)
+        second_result = json.loads(second_finalize.stdout)
+        self.assertEqual(second_result["status"], "VERIFIED")
+        self.assertEqual(
+            second_result["recoveryClassification"], "FLAKY_COMMAND_RECOVERED"
+        )
+
+        listed = run_cli("list-fix-attempts", "--fix-dir", str(fix_dir))
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        lineage = json.loads(listed.stdout)
+        self.assertEqual(lineage["aggregateStatus"], "VERIFIED_WITH_RETRY")
+        self.assertEqual(
+            [row["status"] for row in lineage["attempts"]],
+            ["FAILED", "VERIFIED"],
+        )
+        self.assertTrue((first_dir / "attempt-verification.json").is_file())
+        self.assertTrue((second_dir / "attempt-verification.json").is_file())
+        for attempt_dir in (first_dir, second_dir):
+            validated = run_cli(
+                "validate-fix-attempt",
+                "--attempt-dir",
+                str(attempt_dir),
+                "--snapshot-only",
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_attempt_assessment_is_post_command_and_measurement_bound(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        self.assertEqual(captured.returncode, 0, captured.stderr)
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir,
+            command="measure-check",
+            evidence_refs=[
+                "change:app.py",
+                "claim:measure-check:fixed-behavior-check",
+                "measurement:startup-ms",
+            ],
+            measurements=[
+                {
+                    "id": "startup-ms",
+                    "command": "measure-check",
+                    "jsonPointer": "/metrics/startupMs",
+                    "value": 123.5,
+                    "unit": "ms",
+                }
+            ],
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        result = json.loads(finalized.stdout)
+        self.assertEqual(result["measurements"][0]["value"], 123.5)
+        self.assertEqual(result["status"], "VERIFIED")
+
+    def test_attempt_rejects_measurement_conflicting_with_receipt(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir,
+            command="measure-check",
+            evidence_refs=["change:app.py", "measurement:startup-ms"],
+            measurements=[
+                {
+                    "id": "startup-ms",
+                    "command": "measure-check",
+                    "jsonPointer": "/metrics/startupMs",
+                    "value": 120,
+                }
+            ],
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 2)
+        self.assertIn("value conflicts with captured command evidence", finalized.stderr)
+        self.assertFalse((attempt_dir / "fix-assessment.json").exists())
+        self.assertFalse((attempt_dir / "attempt-verification.json").exists())
+
+    def test_attempt_rejects_assessment_before_evidence_completion(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir,
+            command="measure-check",
+            assessed_at="2020-01-01T00:00:00Z",
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 2)
+        self.assertIn("must not precede evidence completion", finalized.stderr)
+
+    def test_attempt_retry_rejects_source_or_git_status_drift(self) -> None:
+        fix_dir = self._prepare("flaky-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        first_capture = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        first_dir = Path(json.loads(first_capture.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(first_dir, command="flaky-check")
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(first_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 4, finalized.stderr)
+        (self.target / "extra.py").write_text("value = 1\n", encoding="utf-8")
+        retry = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        self.assertEqual(retry.returncode, 2)
+        self.assertIn("Git status changed", retry.stderr)
+        self.assertEqual(len(list((fix_dir / "attempts").iterdir())), 1)
+
+    def test_concurrent_attempt_capture_leaves_one_awaiting_assessment(self) -> None:
+        fix_dir = self._prepare("slow-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        environment = dict(os.environ)
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        argv = [
+            sys.executable,
+            str(RUNTIME_SCRIPT),
+            "capture-fix-attempt",
+            "--fix-dir",
+            str(fix_dir),
+        ]
+        processes = [
+            subprocess.Popen(
+                argv,
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(2)
+        ]
+        results = []
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            results.append((process.returncode, stdout, stderr))
+        self.assertEqual(sorted(row[0] for row in results), [0, 2], results)
+        rejected = next(row for row in results if row[0] == 2)
+        self.assertIn("must be finalized", rejected[2])
+        attempts = [path for path in (fix_dir / "attempts").iterdir() if path.is_dir()]
+        self.assertEqual(len(attempts), 1)
+
+    def test_attempt_tamper_and_deleted_predecessor_break_lineage(self) -> None:
+        fix_dir = self._prepare("flaky-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        first_capture = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        first_dir = Path(json.loads(first_capture.stdout)["attemptDir"])
+        first_assessment = self._attempt_assessment(first_dir, command="flaky-check")
+        run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(first_dir),
+            "--assessment",
+            str(first_assessment),
+        )
+        second_capture = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        second_dir = Path(json.loads(second_capture.stdout)["attemptDir"])
+        second_assessment = self._attempt_assessment(second_dir, command="flaky-check")
+        run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(second_dir),
+            "--assessment",
+            str(second_assessment),
+        )
+
+        first_assessment_path = first_dir / "fix-assessment.json"
+        first_payload = read_json(first_assessment_path)
+        first_payload["remainingRisks"] = ["tampered"]
+        write_json(first_assessment_path, first_payload)
+        tampered = run_cli("list-fix-attempts", "--fix-dir", str(fix_dir))
+        self.assertEqual(tampered.returncode, 2)
+        self.assertIn("assessmentSha256", tampered.stderr)
+
+        write_json(first_assessment_path, read_json(first_assessment))
+        restored = run_cli("list-fix-attempts", "--fix-dir", str(fix_dir))
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        shutil.rmtree(first_dir)
+        deleted = run_cli("list-fix-attempts", "--fix-dir", str(fix_dir))
+        self.assertEqual(deleted.returncode, 2)
+        self.assertIn("previous verification is unavailable", deleted.stderr)
+
+    def test_orphan_attempt_receipt_blocks_finalization(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        state = read_json(fix_dir / "fix-state.json")
+        run_configured_command(
+            session_dir=attempt_dir,
+            target=self.target,
+            commands=state["commands"],
+            command_name="measure-check",
+            allow_repository_mutation=False,
+            source_configuration=state["sourceConfiguration"],
+        )
+        assessment = self._attempt_assessment(
+            attempt_dir, command="measure-check"
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 2)
+        self.assertIn("receipt ledger must exactly match", finalized.stderr)
+
+    def test_attempt_finalize_is_single_terminal_write(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir, command="measure-check"
+        )
+        first = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(second.returncode, 2)
+        self.assertIn("already finalized", second.stderr)
+
+    def test_tampered_attempt_stdout_breaks_snapshot_validation(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir, command="measure-check"
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        receipt = read_jsonl(attempt_dir / "evidence/commands.jsonl")[0]
+        (attempt_dir / receipt["stdoutArtifact"]).write_text(
+            '{"checks":{"fixed":false}}\n', encoding="utf-8"
+        )
+        validated = run_cli(
+            "validate-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--snapshot-only",
+        )
+        self.assertEqual(validated.returncode, 2)
+        self.assertIn("stdoutSha256 mismatch", validated.stderr)
+
+    def test_attempt_rejects_unknown_command_reference(self) -> None:
+        fix_dir = self._prepare("measure-check")
+        (self.target / "app.py").write_text(
+            "def answer():\n    return 42\n", encoding="utf-8"
+        )
+        captured = run_cli("capture-fix-attempt", "--fix-dir", str(fix_dir))
+        attempt_dir = Path(json.loads(captured.stdout)["attemptDir"])
+        assessment = self._attempt_assessment(
+            attempt_dir,
+            command="measure-check",
+            evidence_refs=["change:app.py", "command:not-run"],
+        )
+        finalized = run_cli(
+            "finalize-fix-attempt",
+            "--attempt-dir",
+            str(attempt_dir),
+            "--assessment",
+            str(assessment),
+        )
+        self.assertEqual(finalized.returncode, 2)
+        self.assertIn("command evidence was not run", finalized.stderr)
 
     def test_remediation_contract_dependencies_are_one_way(self) -> None:
         records, _ = inventory(ROOT)
