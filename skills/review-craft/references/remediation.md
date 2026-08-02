@@ -158,8 +158,8 @@ validation fail closed.
 
 ## Legacy `review-craft.fix.v1` compatibility
 
-The published v0.5-compatible workflow remains available when a host cannot use attempt
-lineage. In this legacy protocol, create the assessment before command execution.
+The legacy v0.5-compatible workflow remains available when a host cannot use attempt
+lineage. In this protocol, create the assessment before command execution.
 
 ### Create a legacy assessment
 

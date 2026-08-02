@@ -22,12 +22,12 @@ already-appropriate code.
   attack paths, PoCs, and security remediation validation.
 - Review basic security posture here, but route plausible high-impact security
   candidates to Codex Security instead of recreating a weaker security scan.
-- Version 0.5 supports read-only `review`, `diff`, and `focus` workflows plus an
-  authorized `fix`/`verify` workflow and delivery attestations. Unreleased source also
-  supports fix-attempt/delivery v2 plus `review-craft.run.v4` with content-bound registered
-  manual artifacts; sealed run.v3 is validation-only historical data. Do not claim these
-  for published v0.5.0. The runtime never edits source, commits, pushes, or publishes, and
-  does not support deep multi-pass or historical comparison.
+- Version 0.6 supports read-only `review`, `diff`, and `focus` workflows plus authorized
+  remediation verification, immutable fix-attempt lineage, and delivery v1/v2
+  attestations. Preflight creates `review-craft.run.v4` with content-bound registered
+  manual artifacts; sealed run.v3 is validation-only historical data. The runtime never
+  edits source, commits, pushes, or publishes, and does not support deep multi-pass or
+  historical comparison.
 
 ## Authority and trust
 

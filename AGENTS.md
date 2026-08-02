@@ -5,15 +5,14 @@
 - `skills/review-craft/` is the only installable runtime product.
 - Keep repository governance under `scripts/`, `contracts/`, `tests/`, and `evals/`.
 - Do not duplicate inventory, validation, scoring, or report generation outside the canonical runtime.
-- Version 0.5 supports read-only `review`, `diff`, and `focus` modes plus explicitly
+- Version 0.6 supports read-only `review`, `diff`, and `focus` modes plus explicitly
   authorized fix preparation and verification. The runtime records and validates fix
-  evidence but never edits target source. The current source also supports immutable fix
-  attempt lineage with post-command assessment plus the independent
-  `review-craft.delivery.v2` export. Keep legacy `delivery.v1` semantics unchanged;
-  current source preflight creates `review-craft.run.v4` with a content-bound manual
-  evidence registry, while sealed `review-craft.run.v3` remains validation-only legacy data.
-  remote push and GitHub Actions proof require explicit CLI options. Do not claim that an
-  unreleased source capability is present in the published v0.5.0 package.
+  evidence but never edits target source. It supports immutable fix-attempt lineage with
+  post-command assessment plus the independent `review-craft.delivery.v2` export.
+  Preflight creates `review-craft.run.v4` with a content-bound manual evidence registry;
+  sealed `review-craft.run.v3` remains validation-only legacy data. Keep legacy
+  `fix.v1` and `delivery.v1` semantics unchanged. Remote push and GitHub Actions proof
+  require explicit CLI options.
   Do not document deep multi-pass, historical comparison, SARIF, MCP, or automatic source
   mutation as implemented.
 

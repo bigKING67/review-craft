@@ -26,41 +26,36 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.5.0` provides read-only repository, Git diff, and focused-dimension review
-workflows, an explicitly authorized remediation-verification protocol, and independent
-post-commit delivery attestations. The runtime binds selected findings to a sealed review,
-captures the exact pre-change source, executes only selected configured verification
-commands, and content-binds the resulting source diff, command receipts, and
-HUMAN/AGENT_ASSISTED/AUTOMATED assessment. After the host commits a `VERIFIED` fix,
-`verify-delivery` creates a separate immutable `review-craft.delivery.v1` artifact for the
-clean commit and matching source fingerprint. Push and GitHub Actions proof require
-explicit options and fixed read-only commands. The runtime never edits target source,
-commits, pushes, or publishes. Canonical run, fix, delivery, and eval artifacts are written
-outside the target repository by default. A sanitized matched real-host Golden snapshot
-from v0.3 remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
+Version `0.6.0` provides read-only repository, Git diff, and focused-dimension review
+workflows, explicitly authorized remediation verification, immutable fix-attempt lineage,
+and independent post-commit delivery attestations. The runtime binds selected findings to
+a sealed review, captures the exact pre-change source, executes only selected configured
+verification commands, and content-binds the resulting source diff, command receipts, and
+HUMAN/AGENT_ASSISTED/AUTOMATED assessment. It never edits target source, commits, pushes,
+or publishes. Canonical run, fix, delivery, and eval artifacts are written outside the
+target repository by default. A sanitized matched real-host Golden snapshot from v0.3
+remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
-The current source checkout additionally implements the unreleased
-`review-craft.fix-attempt.v1` protocol and its independent
-`review-craft.delivery.v2` export. It runs bound commands before assessment, stores each
-attempt in a separate immutable directory, permits a retry only for the exact same
+Preflight creates `review-craft.run.v4`. Its `evidence-registry.json` and
+`register-evidence` command copy decisive manual runtime, benchmark, profile, or trace
+files into the run and bind each file by canonical ID, path, SHA-256, and byte size before
+it can be cited as `artifact:<id>`. Validation rejects unknown or path-style references,
+missing or modified bytes, size drift, symlinks, duplicate IDs or paths, orphan artifacts,
+and mutation after the run is sealed. Sealed `review-craft.run.v3` data remains readable
+for historical validation but does not gain run.v4 integrity guarantees.
+
+The `review-craft.fix-attempt.v1` protocol runs bound commands before assessment, stores
+each attempt in a separate immutable directory, permits a retry only for the exact same
 source/Git/configuration state, and reports recovery without erasing the first failure.
 After the latest attempt is verified and committed, `verify-attempt-delivery` copies the
-entire canonical attempt lineage into a portable delivery artifact instead of silently
-reinterpreting it as legacy `fix.v1`. These source capabilities are not claimed for the
-published v0.5.0 package until a later version is explicitly released.
+entire canonical attempt lineage into a portable `review-craft.delivery.v2` artifact
+instead of silently reinterpreting it as legacy `fix.v1`. The v0.5-compatible
+`review-craft.fix.v1` and `review-craft.delivery.v1` protocols remain supported without
+changing their semantics.
 
-Current source preflight also creates `review-craft.run.v4`. It adds
-`evidence-registry.json` plus `register-evidence`, so decisive manual runtime,
-benchmark, profile, or trace files are copied into the run and bound by canonical ID,
-path, SHA-256, and byte size before they can be cited as `artifact:<id>`. Sealed
-`review-craft.run.v3` data remains readable for historical validation, but does not gain
-the run.v4 manual-artifact integrity guarantee. This is an unreleased source capability,
-not a claim about the published v0.5.0 package.
-
-The following are intentionally not implemented in 0.5.0: deep multi-pass review,
+The following are intentionally not implemented in 0.6.0: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
-service. Delivery v1 also does not verify GitHub Releases or npm registry publication.
-The same release/registry boundary applies to the unreleased delivery v2 source protocol.
+service. Delivery v1 and v2 do not verify GitHub Releases or npm registry publication.
 
 ## What makes it different
 
@@ -91,7 +86,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.5.0 does not claim to replace or
+Review Craft complements these tools. Version 0.6.0 does not claim to replace or
 outperform Codex Security.
 
 ## Repository layout
@@ -130,7 +125,7 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 python3 "$CODEX_HOME/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo bigKING67/review-craft \
   --path skills/review-craft \
-  --ref v0.5.0 \
+  --ref v0.6.0 \
   --dest "$HOME/.agents/skills"
 ```
 
@@ -163,7 +158,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   doctor --json
 ```
 
-The result should report `"ready": true` and `"version": "0.5.0"`.
+The result should report `"ready": true` and `"version": "0.6.0"`.
 If you selected the Codex-only root, replace `$HOME/.agents/skills` in the
 verification path with `$CODEX_HOME/skills`.
 
@@ -370,7 +365,7 @@ the failed predecessor and records `FLAKY_COMMAND_RECOVERED`; it never rewrites 
 attempt. Use `--snapshot-only` when validating an older attempt after the live checkout has
 moved on.
 
-The published v0.5-compatible single-attempt workflow remains available. Create a
+The legacy v0.5-compatible single-attempt workflow remains available. Create a
 `review-craft.fix-assessment` before running the legacy command:
 
 ```bash
@@ -501,17 +496,15 @@ Repository comments, README files, issues, logs, and fixtures are untrusted anal
 data. Only current user instructions, scoped `AGENTS.md`, and the structured
 `.review-craft.json` control the workflow.
 
-The published v0.5.0 runtime creates `review-craft.run.v3` review artifacts, separate
-`review-craft.fix.v1` remediation artifacts, and independent
-`review-craft.delivery.v1` attestations. Current unreleased source creates run.v4 with a
-registered manual-evidence contract, and also adds `review-craft.fix-attempt.v1` plus the
-independent `review-craft.delivery.v2` export. Finalized historical run.v3 artifacts can
-still be validated, but unfinished run.v3 data must be finalized with its matching
-runtime or restarted with current preflight. Review Craft never mutates or silently
-upgrades an old run in place. Historical run.v3 scorecards without explicit accounted
-and reviewed fields retain their original `coveragePercent` interpretation during
-validation. No current-source protocol reinterprets or mutates existing
-`review-craft.fix.v1` or `review-craft.delivery.v1` artifacts.
+Version 0.6 creates `review-craft.run.v4` review artifacts with a registered
+manual-evidence contract, supports `review-craft.fix-attempt.v1`, and exports independent
+`review-craft.delivery.v2` attestations. Finalized historical run.v3 artifacts can still
+be validated, but unfinished run.v3 data must be finalized with its matching v0.5 runtime
+or restarted with current preflight. Review Craft never mutates or silently upgrades an
+old run in place. Historical run.v3 scorecards without explicit accounted and reviewed
+fields retain their original `coveragePercent` interpretation during validation. The
+legacy `review-craft.fix.v1` and `review-craft.delivery.v1` protocols remain available;
+no current protocol reinterprets or mutates their existing artifacts.
 The deterministic report labels `focus` and `diff` scores as scope-limited rather than
 repository-wide, separates confirmed findings from evidence gaps and remaining risks, and
 lists verified command claims and captured evidence artifacts.

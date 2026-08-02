@@ -75,10 +75,9 @@ through `.review-craft.json` rather than editing generated artifacts.
 
 ## Run schema compatibility
 
-The published v0.5.0 runtime creates `review-craft.run.v3` artifacts. Current unreleased
-source creates `review-craft.run.v4`, adds `evidence-registry.json`, and requires manual
-artifact references to use registered `artifact:<id>` identities whose files, SHA-256,
-and byte sizes validate. Sealed run.v3 artifacts remain supported as historical
-validation input, but they do not gain run.v4 manual-artifact integrity guarantees.
-An unfinished run.v3 must be finalized with its matching runtime or restarted with the
+Version 0.6 creates `review-craft.run.v4`, adds `evidence-registry.json`, and requires
+manual artifact references to use registered `artifact:<id>` identities whose files,
+SHA-256, and byte sizes validate. Sealed run.v3 artifacts remain supported as historical
+validation input, but they do not gain run.v4 manual-artifact integrity guarantees. An
+unfinished run.v3 must be finalized with its matching v0.5 runtime or restarted with the
 current preflight. Review Craft never mutates or silently upgrades an old run in place.
