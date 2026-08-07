@@ -1,0 +1,233 @@
+{
+  "schema": "review-craft.eval-cases.v2",
+  "cases": [
+    {
+      "id": "failure-truthfulness-positive",
+      "class": "positive",
+      "fixture": "evals/fixtures/failure-truthfulness-positive",
+      "pairId": "failure-truthfulness",
+      "riskLens": {
+        "id": "failure-truthfulness",
+        "prompt": "Check whether critical and non-critical failures are reflected accurately in caller-visible success or failure."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "failure-truthfulness-positive", "--target", "."],
+        "purpose": "Observe the returned status when the durable write fails."
+      },
+      "seededIssue": "A durable write failure is caught and converted into an apparent successful result.",
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["service.py"],
+      "evidenceRequirement": "Trace the critical write exception to the caller-visible success value."
+    },
+    {
+      "id": "failure-truthfulness-negative",
+      "class": "negative",
+      "fixture": "evals/fixtures/failure-truthfulness-negative",
+      "pairId": "failure-truthfulness",
+      "riskLens": {
+        "id": "failure-truthfulness",
+        "prompt": "Check whether critical and non-critical failures are reflected accurately in caller-visible success or failure."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "failure-truthfulness-negative", "--target", "."],
+        "purpose": "Observe durable state and returned status when optional telemetry fails."
+      },
+      "seededIssue": "Optional telemetry failure is intentionally non-blocking after the durable write succeeds.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["service.py"],
+      "evidenceRequirement": "Distinguish the durable write from explicitly best-effort telemetry."
+    },
+    {
+      "id": "retry-idempotency-positive",
+      "class": "positive",
+      "fixture": "evals/fixtures/retry-idempotency-positive",
+      "pairId": "retry-idempotency",
+      "riskLens": {
+        "id": "retry-idempotency",
+        "prompt": "Check whether retries reuse stable operation identity and avoid duplicate externally visible side effects after ambiguous failures."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "retry-idempotency-positive", "--target", "."],
+        "purpose": "Observe charge count and idempotency keys across a timeout retry."
+      },
+      "seededIssue": "Each retry creates a new idempotency key, so an ambiguous timeout can charge twice.",
+      "expectedDecisions": ["REPLACE", "CLEAN_UP"],
+      "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["payments.py"],
+      "evidenceRequirement": "Establish that the first timed-out call committed and the retry used a different key."
+    },
+    {
+      "id": "retry-idempotency-negative",
+      "class": "negative",
+      "fixture": "evals/fixtures/retry-idempotency-negative",
+      "pairId": "retry-idempotency",
+      "riskLens": {
+        "id": "retry-idempotency",
+        "prompt": "Check whether retries reuse stable operation identity and avoid duplicate externally visible side effects after ambiguous failures."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "retry-idempotency-negative", "--target", "."],
+        "purpose": "Observe charge count and idempotency keys across a timeout retry."
+      },
+      "seededIssue": "Retries deliberately reuse one stable request-derived idempotency key.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["payments.py"],
+      "evidenceRequirement": "Show that both attempts share one key and the gateway deduplicates the side effect."
+    },
+    {
+      "id": "ack-order-positive",
+      "class": "positive",
+      "fixture": "evals/fixtures/ack-order-positive",
+      "pairId": "ack-order",
+      "riskLens": {
+        "id": "ack-order",
+        "prompt": "Check ordering between durable state changes and externally visible acknowledgement, including crash or persistence failure windows."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "ack-order-positive", "--target", "."],
+        "purpose": "Observe event order when persistence fails."
+      },
+      "seededIssue": "The job is acknowledged before persistence, allowing accepted work to be lost on a write failure.",
+      "expectedDecisions": ["REPLACE", "CLEAN_UP"],
+      "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["jobs.py"],
+      "evidenceRequirement": "Trace acknowledgement before the failing durable save."
+    },
+    {
+      "id": "ack-order-negative",
+      "class": "negative",
+      "fixture": "evals/fixtures/ack-order-negative",
+      "pairId": "ack-order",
+      "riskLens": {
+        "id": "ack-order",
+        "prompt": "Check ordering between durable state changes and externally visible acknowledgement, including crash or persistence failure windows."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "ack-order-negative", "--target", "."],
+        "purpose": "Observe event order when persistence fails."
+      },
+      "seededIssue": "Persistence completes before acknowledgement, and a failed save produces no external acceptance.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["jobs.py"],
+      "evidenceRequirement": "Show that the failing save prevents acknowledgement."
+    },
+    {
+      "id": "cache-lifetime-positive",
+      "class": "positive",
+      "fixture": "evals/fixtures/cache-lifetime-positive",
+      "pairId": "cache-lifetime",
+      "riskLens": {
+        "id": "cache-lifetime",
+        "prompt": "Check cache key cardinality, process lifetime, and whether capacity or eviction matches the source of keys."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "cache-lifetime-positive", "--target", "."],
+        "purpose": "Observe cache size after many caller-controlled keys."
+      },
+      "seededIssue": "Caller-controlled keys accumulate in a process-global cache without a capacity bound.",
+      "expectedDecisions": ["REPLACE", "MEASURE"],
+      "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["templates.py"],
+      "evidenceRequirement": "Establish unbounded key growth and process-global lifetime."
+    },
+    {
+      "id": "cache-lifetime-negative",
+      "class": "negative",
+      "fixture": "evals/fixtures/cache-lifetime-negative",
+      "pairId": "cache-lifetime",
+      "riskLens": {
+        "id": "cache-lifetime",
+        "prompt": "Check cache key cardinality, process lifetime, and whether capacity or eviction matches the source of keys."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "cache-lifetime-negative", "--target", "."],
+        "purpose": "Observe cache size after many caller-controlled keys."
+      },
+      "seededIssue": "The process-global cache has an explicit small LRU capacity and eviction behavior.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["templates.py"],
+      "evidenceRequirement": "Verify the capacity and actual eviction rather than inferring growth from the global cache."
+    },
+    {
+      "id": "compatibility-path-positive",
+      "class": "positive",
+      "fixture": "evals/fixtures/compatibility-path-positive",
+      "pairId": "compatibility-path",
+      "riskLens": {
+        "id": "compatibility-path",
+        "prompt": "Check whether legacy compatibility code still has a persisted-format, public API, dispatch, build, or runtime consumer before keeping or deleting it."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "compatibility-path-positive", "--target", "."],
+        "purpose": "Observe supported versions, exports, and dispatch behavior."
+      },
+      "seededIssue": "A legacy decoder has no dispatch, export, persisted-format, or runtime consumer and is safe cleanup debt.",
+      "expectedDecisions": ["DELETE", "CLEAN_UP"],
+      "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["records.py"],
+      "evidenceRequirement": "Close dispatch, export, compatibility, and runtime-consumer checks before deletion."
+    },
+    {
+      "id": "compatibility-path-negative",
+      "class": "negative",
+      "fixture": "evals/fixtures/compatibility-path-negative",
+      "pairId": "compatibility-path",
+      "riskLens": {
+        "id": "compatibility-path",
+        "prompt": "Check whether legacy compatibility code still has a persisted-format, public API, dispatch, build, or runtime consumer before keeping or deleting it."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "compatibility-path-negative", "--target", "."],
+        "purpose": "Observe supported versions, exports, and dispatch behavior."
+      },
+      "seededIssue": "The legacy decoder remains required for supported persisted version-1 records.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["DELETE", "REWRITE"],
+      "expectedLocations": ["records.py"],
+      "evidenceRequirement": "Trace version-1 input through the live dispatcher before considering deletion."
+    },
+    {
+      "id": "io-multiplicity-positive",
+      "class": "positive",
+      "fixture": "evals/fixtures/io-multiplicity-positive",
+      "pairId": "io-multiplicity",
+      "riskLens": {
+        "id": "io-multiplicity",
+        "prompt": "Check external I/O multiplicity against available batch operations and the actual cardinality of the critical path."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "io-multiplicity-positive", "--target", "."],
+        "purpose": "Observe single-item and batch read counts for a representative order set."
+      },
+      "seededIssue": "The critical path performs one external customer lookup per order despite an available batch API.",
+      "expectedDecisions": ["REPLACE", "CLEAN_UP"],
+      "prohibitedDecisions": ["KEEP"],
+      "expectedLocations": ["orders.py", "store.py"],
+      "evidenceRequirement": "Trace one external read per order and confirm a batch capability exists."
+    },
+    {
+      "id": "io-multiplicity-negative",
+      "class": "negative",
+      "fixture": "evals/fixtures/io-multiplicity-negative",
+      "pairId": "io-multiplicity",
+      "riskLens": {
+        "id": "io-multiplicity",
+        "prompt": "Check external I/O multiplicity against available batch operations and the actual cardinality of the critical path."
+      },
+      "verification": {
+        "argv": ["python3", "$REVIEW_CRAFT_EVAL_EVIDENCE_ROOT/verify_case.py", "--case", "io-multiplicity-negative", "--target", "."],
+        "purpose": "Observe single-item and batch read counts for a representative order set."
+      },
+      "seededIssue": "The implementation performs one batch external read and only loops over in-memory results.",
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REWRITE", "REPLACE"],
+      "expectedLocations": ["orders.py", "store.py"],
+      "evidenceRequirement": "Distinguish the one batch read from the in-memory result loop."
+    }
+  ]
+}

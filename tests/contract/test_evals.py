@@ -92,13 +92,7 @@ class EvalContractTests(unittest.TestCase):
             self.assertIn(status, remediation)
         self.assertIn("Do not infer implementation authorization", remediation)
 
-    def test_host_output_literals_have_explicit_types_for_structured_output(self) -> None:
-        schema = json.loads(
-            (ROOT / "evals/schemas/eval-host-output.schema.json").read_text(
-                encoding="utf-8"
-            )
-        )
-
+    def test_host_bound_schemas_are_compatible_with_structured_output(self) -> None:
         def visit(value: object) -> None:
             if isinstance(value, dict):
                 self.assertNotIn("uniqueItems", value)
@@ -110,7 +104,15 @@ class EvalContractTests(unittest.TestCase):
                 for child in value:
                     visit(child)
 
-        visit(schema)
+        for schema_name in (
+            "eval-host-output.schema.json",
+            "eval-ablation-adjudication.schema.json",
+        ):
+            with self.subTest(schema=schema_name):
+                schema = json.loads(
+                    (ROOT / "evals/schemas" / schema_name).read_text(encoding="utf-8")
+                )
+                visit(schema)
 
     def test_eval_suite_has_six_positive_and_six_negative_cases(self) -> None:
         payload = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))
@@ -126,12 +128,120 @@ class EvalContractTests(unittest.TestCase):
             self.assertTrue(case["evidenceRequirement"], case["id"])
 
     def test_eval_cases_match_the_public_schema(self) -> None:
-        payload = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))
         schema = json.loads(
             (ROOT / "evals/schemas/eval-cases.schema.json").read_text(encoding="utf-8")
         )
-        errors = list(Draft202012Validator(schema).iter_errors(payload))
-        self.assertEqual(errors, [])
+        for path in sorted((ROOT / "evals/specs").glob("*.json")):
+            with self.subTest(path=path.name):
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                errors = list(Draft202012Validator(schema).iter_errors(payload))
+                self.assertEqual(errors, [])
+
+    def test_self_correction_suite_has_six_matched_positive_negative_pairs(self) -> None:
+        payload = json.loads(
+            (ROOT / "evals/specs/self-correction-cases.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(payload["schema"], "review-craft.eval-cases.v2")
+        pairs: dict[str, list[dict]] = {}
+        for case in payload["cases"]:
+            pairs.setdefault(case["pairId"], []).append(case)
+            self.assertIn(case["id"], case["verification"]["argv"])
+            self.assertTrue((ROOT / case["fixture"]).is_dir())
+        self.assertEqual(len(pairs), 6)
+        for pair_id, cases in pairs.items():
+            with self.subTest(pair=pair_id):
+                self.assertEqual(
+                    sorted(case["class"] for case in cases),
+                    ["negative", "positive"],
+                )
+                self.assertEqual(cases[0]["riskLens"], cases[1]["riskLens"])
+
+    def test_self_correction_verifier_observes_all_twelve_fixture_behaviors(self) -> None:
+        suite = json.loads(
+            (ROOT / "evals/specs/self-correction-cases.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        expected = {
+            "failure-truthfulness-positive": {
+                "returned": {"ok": True, "order_id": None},
+                "durableRecordCount": 0,
+            },
+            "failure-truthfulness-negative": {
+                "returned": {"ok": True, "order_id": "order-1"},
+                "durableRecordCount": 1,
+            },
+            "retry-idempotency-positive": {
+                "returned": {"charged": 25},
+                "attemptCount": 2,
+                "distinctKeyCount": 2,
+                "chargeCount": 2,
+            },
+            "retry-idempotency-negative": {
+                "returned": {"charged": 25},
+                "attemptCount": 2,
+                "distinctKeyCount": 1,
+                "chargeCount": 1,
+            },
+            "ack-order-positive": {
+                "events": ["acknowledge", "save-attempt"],
+                "error": "OSError",
+            },
+            "ack-order-negative": {
+                "events": ["save-attempt"],
+                "error": "OSError",
+            },
+            "cache-lifetime-positive": {"cacheSize": 100, "inputKeyCount": 100},
+            "cache-lifetime-negative": {"cacheSize": 16, "inputKeyCount": 100},
+            "compatibility-path-positive": {
+                "supportedVersions": [2, 3],
+                "publicExports": ["load_record"],
+                "version1Result": None,
+                "version1Error": "unsupported record version",
+            },
+            "compatibility-path-negative": {
+                "supportedVersions": [1, 2, 3],
+                "publicExports": ["load_record"],
+                "version1Result": {"name": "Ada"},
+                "version1Error": None,
+            },
+            "io-multiplicity-positive": {
+                "resultCount": 50,
+                "singleReadCount": 50,
+                "batchReadCount": 0,
+            },
+            "io-multiplicity-negative": {
+                "resultCount": 50,
+                "singleReadCount": 0,
+                "batchReadCount": 1,
+            },
+        }
+        verifier = ROOT / "evals/verifiers/verify_case.py"
+        for case in suite["cases"]:
+            with self.subTest(case=case["id"]):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(verifier),
+                        "--case",
+                        case["id"],
+                        "--target",
+                        str(ROOT / case["fixture"]),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                observation = json.loads(completed.stdout)
+                self.assertEqual(
+                    observation["schema"], "review-craft.eval-observation.v1"
+                )
+                self.assertEqual(observation["caseId"], case["id"])
+                self.assertEqual(observation["observation"], expected[case["id"]])
 
     def test_negative_suite_contains_rewrite_traps(self) -> None:
         cases = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))[

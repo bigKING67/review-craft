@@ -14,6 +14,7 @@ from referencing import Registry, Resource
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = ROOT / "evals/schemas"
 RUN_SCHEMA = SCHEMA_ROOT / "eval-run.schema.json"
+CASES_SCHEMA = SCHEMA_ROOT / "eval-cases.schema.json"
 HOST_OUTPUT_SCHEMA = SCHEMA_ROOT / "eval-host-output.schema.json"
 ADAPTER_SCHEMA = SCHEMA_ROOT / "eval-adapter.schema.json"
 ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-adjudication.schema.json"
@@ -21,6 +22,22 @@ ADJUDICATION_RESULT_SCHEMA = SCHEMA_ROOT / "eval-adjudication-result.schema.json
 COMPARISON_SCHEMA = SCHEMA_ROOT / "eval-comparison.schema.json"
 GOLDEN_SNAPSHOT_SCHEMA = SCHEMA_ROOT / "eval-golden-snapshot.schema.json"
 USAGE_SCHEMA = SCHEMA_ROOT / "eval-usage.schema.json"
+TOOL_TRACE_SCHEMA = SCHEMA_ROOT / "eval-tool-trace.schema.json"
+ABLATION_SCHEDULE_SCHEMA = SCHEMA_ROOT / "eval-ablation-schedule.schema.json"
+ABLATION_RUN_SCHEMA = SCHEMA_ROOT / "eval-ablation-run.schema.json"
+ABLATION_BLIND_BUNDLE_SCHEMA = SCHEMA_ROOT / "eval-ablation-blind-bundle.schema.json"
+ABLATION_ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-ablation-adjudication.schema.json"
+ABLATION_ADJUDICATION_RESULT_SCHEMA = (
+    SCHEMA_ROOT / "eval-ablation-adjudication-result.schema.json"
+)
+ABLATION_COMPARISON_SCHEMA = SCHEMA_ROOT / "eval-ablation-comparison.schema.json"
+ABLATION_SNAPSHOT_SCHEMA = SCHEMA_ROOT / "eval-ablation-snapshot.schema.json"
+ABLATION_TREATMENTS = (
+    "ORDINARY_PROMPT",
+    "ADVERSARIAL_PROMPT",
+    "RISK_LENS_ADVERSARIAL",
+    "REVIEW_CRAFT_EVIDENCE_LOOP",
+)
 USAGE_COUNT_FIELDS = (
     "inputTokens",
     "cachedInputTokens",
@@ -248,6 +265,116 @@ def validate_usage_record(payload: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_eval_suite(payload: dict[str, Any]) -> list[str]:
+    errors = schema_errors(payload, CASES_SCHEMA)
+    if errors or payload.get("schema") != "review-craft.eval-cases.v2":
+        return errors
+    pairs: dict[str, list[dict[str, Any]]] = {}
+    for case in payload["cases"]:
+        pairs.setdefault(case["pairId"], []).append(case)
+        argv = case["verification"]["argv"]
+        if any("\0" in argument for argument in argv):
+            errors.append(f"case {case['id']}: verification argv contains NUL")
+        if case["id"] not in argv:
+            errors.append(f"case {case['id']}: verification argv must bind the case id")
+    for pair_id, cases in sorted(pairs.items()):
+        classes = sorted(case["class"] for case in cases)
+        if classes != ["negative", "positive"]:
+            errors.append(f"pair {pair_id}: expected one positive and one negative case")
+            continue
+        lenses = {sha256_json(case["riskLens"]) for case in cases}
+        if len(lenses) != 1:
+            errors.append(f"pair {pair_id}: positive and negative cases must share one risk lens")
+    return errors
+
+
+def validate_ablation_schedule(payload: dict[str, Any]) -> list[str]:
+    errors = schema_errors(payload, ABLATION_SCHEDULE_SCHEMA)
+    if errors:
+        return errors
+    treatments = payload["treatments"]
+    for index, case in enumerate(payload["cases"]):
+        expected = treatments[index % len(treatments) :] + treatments[: index % len(treatments)]
+        if case["order"] != expected:
+            errors.append(f"case {case['id']}: order does not match Latin-square rotation")
+    return errors
+
+
+def validate_ablation_run(ablation_dir: Path) -> list[str]:
+    errors = []
+    manifest_path = ablation_dir / "ablation.json"
+    try:
+        payload = read_json(manifest_path)
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"ablation.json: {error}"]
+    errors.extend(
+        f"ablation.json:{error}" for error in schema_errors(payload, ABLATION_RUN_SCHEMA)
+    )
+    if errors:
+        return errors
+    for binding_name in ("suite", "schedule"):
+        binding = payload[binding_name]
+        try:
+            path = safe_artifact(ablation_dir, binding["artifact"])
+            actual = file_hash(path)
+        except EvalError as error:
+            errors.append(f"{binding_name}: {error}")
+            continue
+        if actual != binding["sha256"]:
+            errors.append(f"{binding_name}: sha256 mismatch")
+        if binding_name == "schedule":
+            try:
+                schedule = read_json(path)
+            except (OSError, json.JSONDecodeError) as error:
+                errors.append(f"schedule: {error}")
+            else:
+                errors.extend(f"schedule:{error}" for error in validate_ablation_schedule(schedule))
+                if schedule.get("ablationId") != payload["ablationId"]:
+                    errors.append("schedule.ablationId does not match the manifest")
+    seen = set()
+    statuses = []
+    for treatment in payload["treatments"]:
+        name = treatment["treatment"]
+        if name in seen:
+            errors.append(f"treatment {name}: duplicate run")
+        seen.add(name)
+        statuses.append(treatment["status"])
+        try:
+            run_dir = safe_artifact(ablation_dir, treatment["runDir"])
+        except EvalError as error:
+            errors.append(f"treatment {name}: {error}")
+            continue
+        if not run_dir.is_dir():
+            errors.append(f"treatment {name}: runDir must be a directory")
+            continue
+        run_errors = validate_run(run_dir)
+        errors.extend(f"treatment {name}:{error}" for error in run_errors)
+        if run_errors:
+            continue
+        run = read_json(run_dir / "result.json")
+        expected = {
+            "treatment": run["treatment"],
+            "runDir": treatment["runDir"],
+            "runId": run["runId"],
+            "runContentSha256": run["contentSha256"],
+            "status": run["status"],
+            "goldenEligible": run["goldenEligible"],
+        }
+        if treatment != expected:
+            errors.append(f"treatment {name}: summary does not match the bound run")
+        if run.get("ablation", {}).get("id") != payload["ablationId"]:
+            errors.append(f"treatment {name}: ablation id mismatch")
+    expected_status = overall_status([{"status": status} for status in statuses])
+    if payload["status"] != expected_status:
+        errors.append("ablation status does not match treatment runs")
+    expected_content = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
+    )
+    if payload["contentSha256"] != expected_content:
+        errors.append("ablation contentSha256 does not match the manifest")
+    return errors
+
+
 def aggregate_usage(records: list[dict[str, Any]]) -> dict[str, Any]:
     usages = [record["usage"] for record in records]
     reported = [usage for usage in usages if usage["availability"] == "AVAILABLE"]
@@ -369,6 +496,11 @@ def score_cases(
     }
     if records and all("usage" in record for record in records):
         metrics["usage"] = aggregate_usage(records)
+    if records and all("verificationExecuted" in record for record in records):
+        metrics["verificationExecutionPercent"] = _percent(
+            sum(bool(record["verificationExecuted"]) for record in records),
+            len(records),
+        )
     return metrics
 
 
@@ -384,13 +516,41 @@ def overall_status(records: list[dict[str, Any]]) -> str:
 
 
 def golden_eligible(payload: dict[str, Any]) -> bool:
-    return bool(
+    base = bool(
         payload["status"] == "COMPLETED"
         and payload["suite"]["fullSuite"]
         and payload["adapter"]["description"]["evidenceKind"] == "REAL_HOST"
         and not payload["source"]["dirty"]
         and payload["source"]["stableThroughoutRun"]
     )
+    if payload.get("schema") != "review-craft.eval-run.v4":
+        return base
+    return bool(
+        base
+        and payload.get("metrics", {}).get("usage", {}).get("availability") == "COMPLETE"
+        and _verification_treatment_valid(payload)
+    )
+
+
+def _verification_treatment_valid(payload: dict[str, Any]) -> bool:
+    treatment = payload.get("treatment")
+    records = payload.get("cases", [])
+    if treatment == "REVIEW_CRAFT_EVIDENCE_LOOP":
+        return bool(
+            records
+            and all(
+                record.get("verificationExecuted") is True
+                and record.get("verificationExitCode") == 0
+                for record in records
+            )
+        )
+    if treatment in set(ABLATION_TREATMENTS) - {"REVIEW_CRAFT_EVIDENCE_LOOP"}:
+        return all(
+            record.get("verificationExecuted") is False
+            and record.get("verificationExitCode") is None
+            for record in records
+        )
+    return True
 
 
 def validate_run(run_dir: Path) -> list[str]:
@@ -423,6 +583,12 @@ def validate_run(run_dir: Path) -> list[str]:
         payload["promptTemplate"]["sha256"],
         "promptTemplate",
     )
+    if payload["schema"] == "review-craft.eval-run.v4":
+        check_artifact(
+            payload["ablation"]["scheduleArtifact"],
+            payload["ablation"]["scheduleSha256"],
+            "ablation schedule",
+        )
     seen_case_ids = set()
     for record in payload["cases"]:
         case_id = record["id"]
@@ -462,6 +628,38 @@ def validate_run(run_dir: Path) -> list[str]:
                     )
                     if artifact_usage != usage_record:
                         errors.append(f"case {case_id}: usage artifact does not match result")
+        if payload["schema"] == "review-craft.eval-run.v4":
+            trace_path = check_artifact(
+                record["toolTraceArtifact"],
+                record["toolTraceSha256"],
+                f"case {case_id} tool trace",
+            )
+            if trace_path is not None:
+                try:
+                    trace = read_json(trace_path)
+                except (OSError, json.JSONDecodeError) as error:
+                    errors.append(f"case {case_id} tool trace: {error}")
+                else:
+                    errors.extend(
+                        f"case {case_id} tool trace:{error}"
+                        for error in schema_errors(trace, TOOL_TRACE_SCHEMA)
+                    )
+                    matched = [
+                        item
+                        for item in trace.get("items", [])
+                        if item.get("type") == "commandExecution"
+                        and f"--case {case_id}" in item.get("command", "")
+                    ]
+                    expected_executed = bool(matched)
+                    expected_exit = matched[-1].get("exitCode") if matched else None
+                    if record["verificationExecuted"] != expected_executed:
+                        errors.append(
+                            f"case {case_id}: verificationExecuted does not match tool trace"
+                        )
+                    if record["verificationExitCode"] != expected_exit:
+                        errors.append(
+                            f"case {case_id}: verificationExitCode does not match tool trace"
+                        )
         try:
             fixture = safe_artifact(run_dir, record["fixtureArtifact"])
             actual_tree = tree_sha256(fixture)
@@ -514,6 +712,7 @@ def validate_run(run_dir: Path) -> list[str]:
     if suite_path is not None:
         try:
             suite = read_json(suite_path)
+            errors.extend(f"suite:{error}" for error in validate_eval_suite(suite))
             cases_by_id = {case["id"]: case for case in suite["cases"]}
             selected = payload["suite"]["selectedCaseIds"]
             if [record["id"] for record in payload["cases"]] != selected:
@@ -572,6 +771,113 @@ def validate_golden_snapshot(payload: dict[str, Any]) -> list[str]:
         GOLDEN_SNAPSHOT_SCHEMA,
         label="golden snapshot",
     )
+
+
+def validate_ablation_comparison(payload: dict[str, Any]) -> list[str]:
+    errors = validate_content_bound_payload(
+        payload,
+        ABLATION_COMPARISON_SCHEMA,
+        label="ablation comparison",
+    )
+    if errors:
+        return errors
+    arms = payload["arms"]
+    treatments = [arm["treatment"] for arm in arms]
+    if treatments != list(ABLATION_TREATMENTS):
+        errors.append("ablation comparison:arms must use canonical A/B/C/D order")
+    expected_deltas = [
+        ("A_TO_B", ABLATION_TREATMENTS[0], ABLATION_TREATMENTS[1]),
+        ("B_TO_C", ABLATION_TREATMENTS[1], ABLATION_TREATMENTS[2]),
+        ("C_TO_D", ABLATION_TREATMENTS[2], ABLATION_TREATMENTS[3]),
+        ("A_TO_D", ABLATION_TREATMENTS[0], ABLATION_TREATMENTS[3]),
+    ]
+    actual_deltas = [
+        (row["id"], row["from"], row["to"]) for row in payload["deltas"]
+    ]
+    if actual_deltas != expected_deltas:
+        errors.append("ablation comparison:deltas must use canonical A->B, B->C, C->D, A->D order")
+    adjudication_hashes = {arm["adjudicationContentSha256"] for arm in arms}
+    if len(adjudication_hashes) != 1:
+        errors.append("ablation comparison:all arms must bind one adjudication result")
+    expected_eligible = bool(
+        all(arm["goldenEligible"] for arm in arms)
+        and all(
+            arm["semanticMetrics"]["semanticEvidenceValidation"] == "ADJUDICATED"
+            for arm in arms
+        )
+    )
+    if payload["comparativeEligible"] != expected_eligible:
+        errors.append(
+            "ablation comparison:comparativeEligible does not match arm and adjudication gates"
+        )
+    return errors
+
+
+def _snapshot_sanitization_errors(value: Any, *, location: str = "<root>") -> list[str]:
+    errors = []
+    forbidden_keys = {
+        "adapterCommand",
+        "baseUrl",
+        "command",
+        "fixtureArtifact",
+        "normalizedOutputArtifact",
+        "output",
+        "prompt",
+        "promptArtifact",
+        "promptTemplate",
+        "rawOutput",
+        "runDir",
+        "stderr",
+        "stderrArtifact",
+        "stdout",
+        "stdoutArtifact",
+        "toolTrace",
+        "toolTraceArtifact",
+    }
+    absolute_path_patterns = (
+        "/Users/",
+        "/home/",
+        "/private/",
+        "C:\\Users\\",
+    )
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_location = f"{location}.{key}"
+            if key in forbidden_keys:
+                errors.append(f"ablation snapshot:{child_location} is forbidden")
+            errors.extend(_snapshot_sanitization_errors(child, location=child_location))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            errors.extend(
+                _snapshot_sanitization_errors(child, location=f"{location}.{index}")
+            )
+    elif isinstance(value, str) and any(
+        marker in value for marker in absolute_path_patterns
+    ):
+        errors.append(f"ablation snapshot:{location} contains an absolute path")
+    return errors
+
+
+def validate_ablation_snapshot(payload: dict[str, Any]) -> list[str]:
+    errors = validate_content_bound_payload(
+        payload,
+        ABLATION_SNAPSHOT_SCHEMA,
+        label="ablation snapshot",
+    )
+    if errors:
+        return errors
+    errors.extend(_snapshot_sanitization_errors(payload))
+    treatments = [arm["treatment"] for arm in payload["arms"]]
+    if treatments != list(ABLATION_TREATMENTS):
+        errors.append("ablation snapshot:arms must use canonical A/B/C/D order")
+    if not all(arm["goldenEligible"] for arm in payload["arms"]):
+        errors.append("ablation snapshot:all arms must be Golden-eligible")
+    if not all(
+        arm["semanticMetrics"]["semanticEvidenceValidation"] == "ADJUDICATED"
+        for arm in payload["arms"]
+    ):
+        errors.append("ablation snapshot:all semantic metrics must be adjudicated")
+    return errors
 
 
 def _adjudication_context(
@@ -819,4 +1125,330 @@ def validate_adjudication_result(run_dir: Path, payload: dict[str, Any]) -> list
         return [str(error)]
     if payload != expected:
         errors.append("semantic adjudication result does not match the bound run and decisions")
+    return errors
+
+
+def _ablation_sample_id(run: dict[str, Any], record: dict[str, Any]) -> str:
+    digest = sha256_json(
+        {
+            "runContentSha256": run["contentSha256"],
+            "caseId": record["id"],
+            "normalizedOutputSha256": record["normalizedOutputSha256"],
+            "toolTraceSha256": record["toolTraceSha256"],
+        }
+    )
+    return f"sample-{digest[:16]}"
+
+
+def _ablation_context(
+    ablation_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
+    errors = validate_ablation_run(ablation_dir)
+    if errors:
+        raise EvalError("ablation is invalid: " + "; ".join(errors))
+    manifest = read_json(ablation_dir / "ablation.json")
+    suite = read_json(safe_artifact(ablation_dir, manifest["suite"]["artifact"]))
+    cases_by_id = {case["id"]: case for case in suite["cases"]}
+    samples = {}
+    for treatment_summary in manifest["treatments"]:
+        treatment = treatment_summary["treatment"]
+        run_dir = safe_artifact(ablation_dir, treatment_summary["runDir"])
+        run = read_json(run_dir / "result.json")
+        if run["status"] != "COMPLETED":
+            raise EvalError(
+                "ablation adjudication requires four completed child runs; "
+                f"{treatment} is {run['status']}"
+            )
+        for record in run["cases"]:
+            if record["status"] != "COMPLETED":
+                raise EvalError(
+                    "ablation adjudication requires completed cases; "
+                    f"{treatment}/{record['id']} is {record['status']}"
+                )
+            sample_id = _ablation_sample_id(run, record)
+            if sample_id in samples:
+                raise EvalError("ablation blind sample id collision")
+            samples[sample_id] = {
+                "sampleId": sample_id,
+                "treatment": treatment,
+                "case": cases_by_id[record["id"]],
+                "run": run,
+                "record": record,
+                "output": read_json(
+                    safe_artifact(run_dir, record["normalizedOutputArtifact"])
+                ),
+                "toolTrace": read_json(safe_artifact(run_dir, record["toolTraceArtifact"])),
+            }
+    return manifest, suite, samples
+
+
+def build_ablation_adjudication_template(
+    ablation_dir: Path,
+    *,
+    kind: str,
+    protocol: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    manifest, _, samples = _ablation_context(ablation_dir)
+    bundle = {
+        "schema": "review-craft.eval-ablation-blind-bundle.v1",
+        "ablationId": manifest["ablationId"],
+        "ablationContentSha256": manifest["contentSha256"],
+        "samples": [
+            {
+                "sampleId": sample_id,
+                "case": {
+                    key: value
+                    for key, value in context["case"].items()
+                    if key != "fixture"
+                },
+                "output": context["output"],
+                "toolTrace": context["toolTrace"],
+            }
+            for sample_id, context in sorted(samples.items())
+        ],
+        "contentSha256": "0" * 64,
+    }
+    bundle["contentSha256"] = sha256_json(
+        {key: value for key, value in bundle.items() if key != "contentSha256"}
+    )
+    bundle_errors = validate_content_bound_payload(
+        bundle,
+        ABLATION_BLIND_BUNDLE_SCHEMA,
+        label="ablation blind bundle",
+    )
+    if bundle_errors:
+        raise EvalError("generated blind bundle is invalid: " + "; ".join(bundle_errors))
+    template = {
+        "schema": "review-craft.eval-ablation-adjudication.v1",
+        "ablationId": manifest["ablationId"],
+        "ablationContentSha256": manifest["contentSha256"],
+        "bundleContentSha256": bundle["contentSha256"],
+        "adjudicator": {"kind": kind, "protocol": protocol},
+        "samples": [
+            {
+                "sampleId": sample_id,
+                "outcome": "UNRESOLVED",
+                "decisionDisposition": "UNRESOLVED",
+                "evidenceDisposition": "UNRESOLVED",
+                "falsificationDisposition": "UNRESOLVED",
+                "externalFeedbackDisposition": "UNRESOLVED",
+                "rationale": "Pending blinded semantic adjudication.",
+            }
+            for sample_id in sorted(samples)
+        ],
+    }
+    errors = schema_errors(template, ABLATION_ADJUDICATION_SCHEMA)
+    if errors:
+        raise EvalError("generated ablation adjudication template is invalid: " + "; ".join(errors))
+    return bundle, template
+
+
+def _ablation_semantic_metrics(
+    entries: list[dict[str, Any]],
+    contexts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    normalized_entries = [
+        {
+            "id": contexts[entry["sampleId"]]["case"]["id"],
+            "outcome": entry["outcome"],
+            "decisionDisposition": entry["decisionDisposition"],
+        }
+        for entry in entries
+    ]
+    cases_by_id = {
+        context["case"]["id"]: context["case"] for context in contexts.values()
+    }
+    outputs = {
+        context["case"]["id"]: context["output"] for context in contexts.values()
+    }
+    metrics = _semantic_metrics(
+        entries=normalized_entries,
+        cases_by_id=cases_by_id,
+        outputs=outputs,
+    )
+    unresolved_entries = [
+        entry
+        for entry in entries
+        if "UNRESOLVED"
+        in {
+            entry["outcome"],
+            entry["decisionDisposition"],
+            entry["evidenceDisposition"],
+            entry["falsificationDisposition"],
+            entry["externalFeedbackDisposition"],
+        }
+    ]
+    unresolved = bool(unresolved_entries)
+    applicable_falsification = [
+        entry for entry in entries if entry["falsificationDisposition"] != "NOT_APPLICABLE"
+    ]
+    metrics.update(
+        {
+            "resolvedCases": len(entries) - len(unresolved_entries),
+            "unresolvedCases": len(unresolved_entries),
+            "semanticEvidenceAdequacyPercent": (
+                None
+                if unresolved
+                else _percent(
+                    sum(entry["evidenceDisposition"] == "DECISIVE" for entry in entries),
+                    len(entries),
+                )
+            ),
+            "semanticFalsificationAdequacyPercent": (
+                None
+                if unresolved
+                else _percent(
+                    sum(
+                        entry["falsificationDisposition"] == "ADEQUATE"
+                        for entry in applicable_falsification
+                    ),
+                    len(applicable_falsification),
+                )
+            ),
+            "semanticDecisiveExternalFeedbackPercent": (
+                None
+                if unresolved
+                else _percent(
+                    sum(
+                        entry["externalFeedbackDisposition"] == "DECISIVE"
+                        for entry in entries
+                    ),
+                    len(entries),
+                )
+            ),
+            "semanticEvidenceValidation": "PARTIAL" if unresolved else "ADJUDICATED",
+        }
+    )
+    return metrics
+
+
+def build_ablation_adjudication_result(
+    ablation_dir: Path,
+    bundle: dict[str, Any],
+    adjudication: dict[str, Any],
+) -> dict[str, Any]:
+    bundle_errors = validate_content_bound_payload(
+        bundle,
+        ABLATION_BLIND_BUNDLE_SCHEMA,
+        label="ablation blind bundle",
+    )
+    if bundle_errors:
+        raise EvalError("blind bundle is invalid: " + "; ".join(bundle_errors))
+    input_errors = schema_errors(adjudication, ABLATION_ADJUDICATION_SCHEMA)
+    if input_errors:
+        raise EvalError("ablation adjudication input is invalid: " + "; ".join(input_errors))
+    manifest, _, contexts = _ablation_context(ablation_dir)
+    if adjudication["ablationId"] != manifest["ablationId"]:
+        raise EvalError("ablation adjudication id does not match the run")
+    if adjudication["ablationContentSha256"] != manifest["contentSha256"]:
+        raise EvalError("ablation adjudication hash does not match the run")
+    if adjudication["bundleContentSha256"] != bundle["contentSha256"]:
+        raise EvalError("ablation adjudication does not match the blind bundle")
+    bundle_ids = [sample["sampleId"] for sample in bundle["samples"]]
+    entry_ids = [entry["sampleId"] for entry in adjudication["samples"]]
+    if len(entry_ids) != len(set(entry_ids)) or set(entry_ids) != set(bundle_ids):
+        raise EvalError("ablation adjudication sample coverage mismatch")
+    entries_by_id = {entry["sampleId"]: entry for entry in adjudication["samples"]}
+    grouped = []
+    for treatment_summary in manifest["treatments"]:
+        treatment = treatment_summary["treatment"]
+        treatment_contexts = {
+            sample_id: context
+            for sample_id, context in contexts.items()
+            if context["treatment"] == treatment
+        }
+        entries = []
+        for sample_id, context in sorted(
+            treatment_contexts.items(), key=lambda pair: pair[1]["case"]["id"]
+        ):
+            entry = entries_by_id[sample_id]
+            _validate_adjudication_entry(
+                case=context["case"], output=context["output"], entry=entry
+            )
+            entries.append(
+                {
+                    "caseId": context["case"]["id"],
+                    "sampleId": sample_id,
+                    "normalizedOutputSha256": context["record"]["normalizedOutputSha256"],
+                    "toolTraceSha256": context["record"]["toolTraceSha256"],
+                    **{key: value for key, value in entry.items() if key != "sampleId"},
+                }
+            )
+        grouped.append(
+            {
+                "treatment": treatment,
+                "runId": treatment_summary["runId"],
+                "runContentSha256": treatment_summary["runContentSha256"],
+                "cases": entries,
+                "metrics": _ablation_semantic_metrics(
+                    [entries_by_id[sample_id] for sample_id in treatment_contexts],
+                    treatment_contexts,
+                ),
+            }
+        )
+    result = {
+        "schema": "review-craft.eval-ablation-adjudication-result.v1",
+        "ablation": {
+            "id": manifest["ablationId"],
+            "contentSha256": manifest["contentSha256"],
+        },
+        "adjudicator": adjudication["adjudicator"],
+        "bundleContentSha256": bundle["contentSha256"],
+        "inputContentSha256": sha256_json(adjudication),
+        "treatments": grouped,
+        "contentSha256": "0" * 64,
+    }
+    result["contentSha256"] = sha256_json(
+        {key: value for key, value in result.items() if key != "contentSha256"}
+    )
+    errors = validate_content_bound_payload(
+        result,
+        ABLATION_ADJUDICATION_RESULT_SCHEMA,
+        label="ablation adjudication result",
+    )
+    if errors:
+        raise EvalError("generated ablation adjudication is invalid: " + "; ".join(errors))
+    return result
+
+
+def validate_ablation_adjudication_result(
+    ablation_dir: Path,
+    bundle: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[str]:
+    errors = validate_content_bound_payload(
+        payload,
+        ABLATION_ADJUDICATION_RESULT_SCHEMA,
+        label="ablation adjudication result",
+    )
+    if errors:
+        return errors
+    samples = []
+    for treatment in payload["treatments"]:
+        for case in treatment["cases"]:
+            samples.append(
+                {
+                    "sampleId": case["sampleId"],
+                    "outcome": case["outcome"],
+                    "decisionDisposition": case["decisionDisposition"],
+                    "evidenceDisposition": case["evidenceDisposition"],
+                    "falsificationDisposition": case["falsificationDisposition"],
+                    "externalFeedbackDisposition": case["externalFeedbackDisposition"],
+                    "rationale": case["rationale"],
+                }
+            )
+    adjudication = {
+        "schema": "review-craft.eval-ablation-adjudication.v1",
+        "ablationId": payload["ablation"]["id"],
+        "ablationContentSha256": payload["ablation"]["contentSha256"],
+        "bundleContentSha256": payload["bundleContentSha256"],
+        "adjudicator": payload["adjudicator"],
+        "samples": sorted(samples, key=lambda entry: entry["sampleId"]),
+    }
+    try:
+        expected = build_ablation_adjudication_result(ablation_dir, bundle, adjudication)
+    except (EvalError, KeyError, TypeError, OSError, json.JSONDecodeError) as error:
+        return [str(error)]
+    if payload != expected:
+        errors.append("ablation adjudication result does not match the bound evidence")
     return errors

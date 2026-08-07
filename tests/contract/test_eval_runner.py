@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,398 @@ class EvalRunnerTests(unittest.TestCase):
                 for record in run["cases"]
             ],
         }
+
+    def _synthetic_ablation(self, output_root: Path, *, full_suite: bool = False) -> Path:
+        args = [
+            "run-ablation",
+            "--output-root",
+            str(output_root),
+            "--case-timeout",
+            "30",
+        ]
+        if not full_suite:
+            for case_id in (
+                "failure-truthfulness-positive",
+                "failure-truthfulness-negative",
+                "retry-idempotency-positive",
+                "retry-idempotency-negative",
+            ):
+                args.extend(("--case", case_id))
+        args.extend(
+            (
+                "--adapter-command",
+                sys.executable,
+                str(FAKE_ADAPTER),
+                "--mode",
+                "usage",
+            )
+        )
+        completed = run_eval(*args)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return Path(json.loads(completed.stdout)["ablationDir"])
+
+    def _adjudicate_ablation(self, root: Path, ablation_dir: Path) -> tuple[Path, Path]:
+        bundle_path = root / "blind-bundle.json"
+        template_path = root / "ablation-adjudication.json"
+        prepared = run_eval(
+            "prepare-ablation-adjudication",
+            "--ablation-dir",
+            str(ablation_dir),
+            "--kind",
+            "AGENT_ASSISTED",
+            "--protocol",
+            "test-ablation-v1",
+            "--bundle-output",
+            str(bundle_path),
+            "--output",
+            str(template_path),
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        _, _, contexts = eval_contracts._ablation_context(ablation_dir)
+        for entry in template["samples"]:
+            context = contexts[entry["sampleId"]]
+            entry.update(
+                {
+                    "outcome": (
+                        "SEEDED_ISSUE_MATCH"
+                        if context["case"]["class"] == "positive"
+                        else "NO_FINDING_CORRECT"
+                    ),
+                    "decisionDisposition": "APPROPRIATE",
+                    "evidenceDisposition": "DECISIVE",
+                    "falsificationDisposition": "ADEQUATE",
+                    "externalFeedbackDisposition": (
+                        "DECISIVE"
+                        if context["treatment"] == "REVIEW_CRAFT_EVIDENCE_LOOP"
+                        else "NOT_USED"
+                    ),
+                    "rationale": f"Contract adjudication for {entry['sampleId']}.",
+                }
+            )
+        template_path.write_text(
+            json.dumps(template, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        result_path = root / "ablation-adjudication-result.json"
+        adjudicated = run_eval(
+            "adjudicate-ablation",
+            "--ablation-dir",
+            str(ablation_dir),
+            "--bundle",
+            str(bundle_path),
+            "--adjudication",
+            str(template_path),
+            "--output",
+            str(result_path),
+        )
+        self.assertEqual(adjudicated.returncode, 0, adjudicated.stderr)
+        return bundle_path, result_path
+
+    def _make_ablation_export_eligible(self, ablation_dir: Path) -> None:
+        manifest_path = ablation_dir / "ablation.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        clean_fingerprint = eval_contracts.sha256_bytes(b"")
+        for summary in manifest["treatments"]:
+            run_dir = ablation_dir / summary["runDir"]
+            result_path = run_dir / "result.json"
+            run = json.loads(result_path.read_text(encoding="utf-8"))
+            run["source"].update(
+                {
+                    "dirty": False,
+                    "dirtyFingerprint": clean_fingerprint,
+                    "completedDirty": False,
+                    "completedDirtyFingerprint": clean_fingerprint,
+                    "stableThroughoutRun": True,
+                }
+            )
+            run["adapter"]["description"]["evidenceKind"] = "REAL_HOST"
+            run["goldenEligible"] = eval_contracts.golden_eligible(run)
+            self.assertTrue(run["goldenEligible"])
+            run["contentSha256"] = eval_contracts.sha256_json(
+                {key: value for key, value in run.items() if key != "contentSha256"}
+            )
+            eval_contracts.write_json(result_path, run)
+            summary.update(
+                {
+                    "runContentSha256": run["contentSha256"],
+                    "status": run["status"],
+                    "goldenEligible": run["goldenEligible"],
+                }
+            )
+        manifest["contentSha256"] = eval_contracts.sha256_json(
+            {key: value for key, value in manifest.items() if key != "contentSha256"}
+        )
+        eval_contracts.write_json(manifest_path, manifest)
+        self.assertEqual(eval_contracts.validate_ablation_run(ablation_dir), [])
+
+    def test_four_arm_ablation_schedule_prompt_boundaries_and_trace_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ablation_dir = self._synthetic_ablation(Path(directory))
+            manifest = json.loads(
+                (ablation_dir / "ablation.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["status"], "COMPLETED")
+            self.assertEqual(
+                [row["treatment"] for row in manifest["treatments"]],
+                list(eval_runner.ABLATION_TREATMENTS),
+            )
+            schedule = json.loads(
+                (ablation_dir / manifest["schedule"]["artifact"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            for index, case in enumerate(schedule["cases"]):
+                expected = list(
+                    eval_runner.ABLATION_TREATMENTS[
+                        index % len(eval_runner.ABLATION_TREATMENTS) :
+                    ]
+                    + eval_runner.ABLATION_TREATMENTS[
+                        : index % len(eval_runner.ABLATION_TREATMENTS)
+                    ]
+                )
+                self.assertEqual(case["order"], expected)
+
+            suite = json.loads((ablation_dir / "suite.json").read_text(encoding="utf-8"))
+            cases = {case["id"]: case for case in suite["cases"]}
+            for summary in manifest["treatments"]:
+                run_dir = ablation_dir / summary["runDir"]
+                run = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+                for record in run["cases"]:
+                    case = cases[record["id"]]
+                    prompt = (run_dir / record["promptArtifact"]).read_text(
+                        encoding="utf-8"
+                    )
+                    lens_expected = summary["treatment"] in {
+                        "RISK_LENS_ADVERSARIAL",
+                        "REVIEW_CRAFT_EVIDENCE_LOOP",
+                    }
+                    self.assertEqual(case["riskLens"]["prompt"] in prompt, lens_expected)
+                    self.assertEqual(
+                        case["id"] in prompt,
+                        summary["treatment"] == "REVIEW_CRAFT_EVIDENCE_LOOP",
+                    )
+                    for hidden in (
+                        case["seededIssue"],
+                        case["evidenceRequirement"],
+                        *case["expectedLocations"],
+                    ):
+                        self.assertNotIn(hidden, prompt)
+            validated = run_eval("validate-ablation", "--ablation-dir", str(ablation_dir))
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+            evidence_summary = next(
+                row
+                for row in manifest["treatments"]
+                if row["treatment"] == "REVIEW_CRAFT_EVIDENCE_LOOP"
+            )
+            evidence_run_dir = ablation_dir / evidence_summary["runDir"]
+            evidence_run = json.loads(
+                (evidence_run_dir / "result.json").read_text(encoding="utf-8")
+            )
+            trace_path = evidence_run_dir / evidence_run["cases"][0]["toolTraceArtifact"]
+            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+            trace["items"][0]["outputBytes"] += 1
+            trace_path.write_text(json.dumps(trace), encoding="utf-8")
+            tampered = run_eval("validate-ablation", "--ablation-dir", str(ablation_dir))
+            self.assertEqual(tampered.returncode, 2)
+            self.assertIn("tool trace: sha256 mismatch", tampered.stderr)
+
+    def test_ablation_blind_adjudication_is_bound_and_tamper_evident(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ablation_dir = self._synthetic_ablation(root)
+            bundle_path = root / "blind-bundle.json"
+            template_path = root / "unresolved.json"
+            prepared = run_eval(
+                "prepare-ablation-adjudication",
+                "--ablation-dir",
+                str(ablation_dir),
+                "--kind",
+                "AGENT_ASSISTED",
+                "--protocol",
+                "test-ablation-v1",
+                "--bundle-output",
+                str(bundle_path),
+                "--output",
+                str(template_path),
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            bundle_text = bundle_path.read_text(encoding="utf-8")
+            for treatment in eval_runner.ABLATION_TREATMENTS:
+                self.assertNotIn(treatment, bundle_text)
+            bundle = json.loads(bundle_text)
+            for sample in bundle["samples"]:
+                for treatment in eval_runner.ABLATION_TREATMENTS:
+                    predictable = "sample-" + eval_contracts.sha256_json(
+                        {
+                            "ablationId": bundle["ablationId"],
+                            "treatment": treatment,
+                            "caseId": sample["case"]["id"],
+                        }
+                    )[:16]
+                    self.assertNotEqual(sample["sampleId"], predictable)
+            template = json.loads(template_path.read_text(encoding="utf-8"))
+            self.assertTrue(
+                all(sample["outcome"] == "UNRESOLVED" for sample in template["samples"])
+            )
+
+            bundle_path, result_path = self._adjudicate_ablation(root, ablation_dir)
+            validated = run_eval(
+                "validate-ablation-adjudication",
+                "--ablation-dir",
+                str(ablation_dir),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result["treatments"][0]["cases"][0]["rationale"] = "Tampered."
+            result_path.write_text(json.dumps(result), encoding="utf-8")
+            tampered = run_eval(
+                "validate-ablation-adjudication",
+                "--ablation-dir",
+                str(ablation_dir),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+            )
+            self.assertEqual(tampered.returncode, 2)
+            self.assertIn("contentSha256", tampered.stderr)
+
+    def test_verifier_execution_is_part_of_ablation_golden_eligibility(self) -> None:
+        base = {
+            "schema": "review-craft.eval-run.v4",
+            "cases": [
+                {"verificationExecuted": False, "verificationExitCode": None},
+                {"verificationExecuted": False, "verificationExitCode": None},
+            ],
+        }
+        for treatment in eval_runner.ABLATION_TREATMENTS[:-1]:
+            self.assertTrue(
+                eval_contracts._verification_treatment_valid(
+                    {**base, "treatment": treatment}
+                )
+            )
+        contaminated = {
+            **base,
+            "treatment": "ORDINARY_PROMPT",
+            "cases": [
+                {"verificationExecuted": True, "verificationExitCode": 0},
+            ],
+        }
+        self.assertFalse(eval_contracts._verification_treatment_valid(contaminated))
+        evidence_loop = {
+            **base,
+            "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
+            "cases": [
+                {"verificationExecuted": True, "verificationExitCode": 0},
+                {"verificationExecuted": True, "verificationExitCode": 0},
+            ],
+        }
+        self.assertTrue(eval_contracts._verification_treatment_valid(evidence_loop))
+        evidence_loop["cases"][1]["verificationExitCode"] = 1
+        self.assertFalse(eval_contracts._verification_treatment_valid(evidence_loop))
+
+    def test_ablation_manifest_rejects_wrong_treatment_missing_child_and_hash_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = self._synthetic_ablation(root / "source")
+            mutations = {
+                "wrong-treatment": lambda manifest: manifest["treatments"][0].update(
+                    {"treatment": "ADVERSARIAL_PROMPT"}
+                ),
+                "missing-child": lambda manifest: manifest["treatments"][0].update(
+                    {"runDir": "missing-child"}
+                ),
+                "hash-drift": lambda manifest: manifest["treatments"][0].update(
+                    {"runContentSha256": "0" * 64}
+                ),
+            }
+            for name, mutate in mutations.items():
+                with self.subTest(name=name):
+                    target = root / name
+                    shutil.copytree(original, target)
+                    manifest_path = target / "ablation.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    mutate(manifest)
+                    manifest["contentSha256"] = eval_contracts.sha256_json(
+                        {
+                            key: value
+                            for key, value in manifest.items()
+                            if key != "contentSha256"
+                        }
+                    )
+                    eval_contracts.write_json(manifest_path, manifest)
+                    validated = run_eval(
+                        "validate-ablation", "--ablation-dir", str(target)
+                    )
+                    self.assertEqual(validated.returncode, 2)
+
+    def test_ablation_comparison_and_sanitized_export_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ablation_dir = self._synthetic_ablation(root / "runs", full_suite=True)
+            self._make_ablation_export_eligible(ablation_dir)
+            bundle_path, result_path = self._adjudicate_ablation(root, ablation_dir)
+            comparison_path = root / "comparison.json"
+            compared = run_eval(
+                "compare-ablation",
+                "--ablation-dir",
+                str(ablation_dir),
+                "--bundle",
+                str(bundle_path),
+                "--adjudication-result",
+                str(result_path),
+                "--output",
+                str(comparison_path),
+            )
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+            self.assertTrue(comparison["comparativeEligible"])
+            self.assertEqual(
+                [row["id"] for row in comparison["deltas"]],
+                ["A_TO_B", "B_TO_C", "C_TO_D", "A_TO_D"],
+            )
+            self.assertEqual(
+                comparison["deltas"][2]["semanticPercentagePoints"][
+                    "semanticDecisiveExternalFeedbackPercent"
+                ],
+                100.0,
+            )
+            self.assertEqual(eval_contracts.validate_ablation_comparison(comparison), [])
+
+            snapshot_path = root / "snapshot.json"
+            exported = run_eval(
+                "export-ablation",
+                "--ablation-dir",
+                str(ablation_dir),
+                "--bundle",
+                str(bundle_path),
+                "--adjudication-result",
+                str(result_path),
+                "--output",
+                str(snapshot_path),
+            )
+            self.assertEqual(exported.returncode, 0, exported.stderr)
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            self.assertEqual(eval_contracts.validate_ablation_snapshot(snapshot), [])
+            self.assertEqual(len(snapshot["limitations"]), 3)
+            rendered = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+            for forbidden in (
+                "baseUrl",
+                "adapterCommand",
+                "promptArtifact",
+                "stdoutArtifact",
+                "stderrArtifact",
+                "toolTraceArtifact",
+                str(ROOT),
+                "/private/",
+            ):
+                self.assertNotIn(forbidden, rendered)
 
     def test_synthetic_adapter_exercises_runner_without_claiming_golden_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

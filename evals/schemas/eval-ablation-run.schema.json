@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-ablation-run.schema.json",
+  "title": "Four-arm Review Craft ablation manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "ablationId",
+    "status",
+    "startedAt",
+    "completedAt",
+    "suite",
+    "schedule",
+    "treatments",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {"const": "review-craft.eval-ablation-run.v1"},
+    "ablationId": {
+      "type": "string",
+      "pattern": "^rca-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}(?:-[0-9]+)?$"
+    },
+    "status": {"enum": ["COMPLETED", "PARTIAL", "FAILED", "UNAVAILABLE"]},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "suite": {"$ref": "#/$defs/artifactBinding"},
+    "schedule": {"$ref": "#/$defs/artifactBinding"},
+    "treatments": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "treatment",
+          "runDir",
+          "runId",
+          "runContentSha256",
+          "status",
+          "goldenEligible"
+        ],
+        "properties": {
+          "treatment": {
+            "enum": [
+              "ORDINARY_PROMPT",
+              "ADVERSARIAL_PROMPT",
+              "RISK_LENS_ADVERSARIAL",
+              "REVIEW_CRAFT_EVIDENCE_LOOP"
+            ]
+          },
+          "runDir": {"$ref": "#/$defs/artifact"},
+          "runId": {
+            "type": "string",
+            "pattern": "^rce-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}(?:-[0-9]+)?$"
+          },
+          "runContentSha256": {"$ref": "#/$defs/sha256"},
+          "status": {"enum": ["COMPLETED", "PARTIAL", "FAILED", "UNAVAILABLE"]},
+          "goldenEligible": {"type": "boolean"}
+        }
+      }
+    },
+    "contentSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifact": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"},
+    "artifactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "sha256"],
+      "properties": {
+        "artifact": {"$ref": "#/$defs/artifact"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

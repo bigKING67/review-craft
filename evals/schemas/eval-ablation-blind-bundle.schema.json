@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-ablation-blind-bundle.schema.json",
+  "title": "Treatment-blinded semantic review bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "ablationId", "ablationContentSha256", "samples", "contentSha256"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-ablation-blind-bundle.v1"},
+    "ablationId": {"type": "string", "minLength": 1},
+    "ablationContentSha256": {"$ref": "#/$defs/sha256"},
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sampleId", "case", "output", "toolTrace"],
+        "properties": {
+          "sampleId": {"type": "string", "pattern": "^sample-[a-f0-9]{16}$"},
+          "case": {"type": "object"},
+          "output": {"$ref": "eval-host-output.schema.json"},
+          "toolTrace": {"$ref": "eval-tool-trace.schema.json"}
+        }
+      }
+    },
+    "contentSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

@@ -26,7 +26,8 @@
     "schema": {
       "enum": [
         "review-craft.eval-run.v2",
-        "review-craft.eval-run.v3"
+        "review-craft.eval-run.v3",
+        "review-craft.eval-run.v4"
       ]
     },
     "runId": {
@@ -45,7 +46,14 @@
       "format": "date-time"
     },
     "treatment": {
-      "enum": ["REVIEW_CRAFT", "ORDINARY_PROMPT", "CODEX_NATIVE_REVIEW"]
+      "enum": [
+        "REVIEW_CRAFT",
+        "ORDINARY_PROMPT",
+        "CODEX_NATIVE_REVIEW",
+        "ADVERSARIAL_PROMPT",
+        "RISK_LENS_ADVERSARIAL",
+        "REVIEW_CRAFT_EVIDENCE_LOOP"
+      ]
     },
     "source": {
       "type": "object",
@@ -144,6 +152,19 @@
         "sha256": {
           "$ref": "#/$defs/sha256"
         }
+      }
+    },
+    "ablation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "scheduleArtifact", "scheduleSha256"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^rca-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}(?:-[0-9]+)?$"
+        },
+        "scheduleArtifact": {"$ref": "#/$defs/artifact"},
+        "scheduleSha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "adapter": {
@@ -271,6 +292,18 @@
           },
           "usage": {
             "$ref": "eval-usage.schema.json"
+          },
+          "toolTraceArtifact": {
+            "$ref": "#/$defs/artifact"
+          },
+          "toolTraceSha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "verificationExecuted": {
+            "type": "boolean"
+          },
+          "verificationExitCode": {
+            "type": ["integer", "null"]
           }
         }
       }
@@ -343,6 +376,12 @@
         },
         "usage": {
           "$ref": "eval-usage.schema.json#/$defs/usageAggregate"
+        },
+        "verificationExecutionPercent": {
+          "anyOf": [
+            {"$ref": "#/$defs/percentage"},
+            {"type": "null"}
+          ]
         }
       }
     },
@@ -357,7 +396,9 @@
     {
       "if": {
         "properties": {
-          "schema": {"const": "review-craft.eval-run.v3"}
+          "schema": {
+            "enum": ["review-craft.eval-run.v3", "review-craft.eval-run.v4"]
+          }
         },
         "required": ["schema"]
       },
@@ -370,6 +411,40 @@
           },
           "metrics": {
             "required": ["usage"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema": {"const": "review-craft.eval-run.v4"}
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "required": ["ablation"],
+        "properties": {
+          "treatment": {
+            "enum": [
+              "ORDINARY_PROMPT",
+              "ADVERSARIAL_PROMPT",
+              "RISK_LENS_ADVERSARIAL",
+              "REVIEW_CRAFT_EVIDENCE_LOOP"
+            ]
+          },
+          "cases": {
+            "items": {
+              "required": [
+                "toolTraceArtifact",
+                "toolTraceSha256",
+                "verificationExecuted",
+                "verificationExitCode"
+              ]
+            }
+          },
+          "metrics": {
+            "required": ["verificationExecutionPercent"]
           }
         }
       }

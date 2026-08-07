@@ -76,7 +76,17 @@ REQUIRED_FILES = (
     "skills/review-craft/scripts/review_craft.py",
     "evals/prompts/ordinary-review.md",
     "evals/prompts/review-craft.md",
+    "evals/prompts/adversarial-review.md",
+    "evals/prompts/risk-lens-adversarial.md",
+    "evals/prompts/review-craft-evidence-loop.md",
     "evals/schemas/eval-adapter.schema.json",
+    "evals/schemas/eval-ablation-adjudication-result.schema.json",
+    "evals/schemas/eval-ablation-adjudication.schema.json",
+    "evals/schemas/eval-ablation-blind-bundle.schema.json",
+    "evals/schemas/eval-ablation-comparison.schema.json",
+    "evals/schemas/eval-ablation-run.schema.json",
+    "evals/schemas/eval-ablation-schedule.schema.json",
+    "evals/schemas/eval-ablation-snapshot.schema.json",
     "evals/schemas/eval-adjudication-result.schema.json",
     "evals/schemas/eval-adjudication.schema.json",
     "evals/schemas/eval-cases.schema.json",
@@ -84,7 +94,11 @@ REQUIRED_FILES = (
     "evals/schemas/eval-golden-snapshot.schema.json",
     "evals/schemas/eval-host-output.schema.json",
     "evals/schemas/eval-run.schema.json",
+    "evals/schemas/eval-tool-trace.schema.json",
     "evals/schemas/eval-usage.schema.json",
+    "evals/specs/self-correction-cases.json",
+    "evals/verifiers/verify_case.py",
+    "evals/ablation-results/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
     "scripts/codex_eval_adapter.py",
@@ -175,20 +189,26 @@ def validate_schemas(errors: list[str]) -> None:
             for error in schema_errors:
                 location = ".".join(str(part) for part in error.path) or "<root>"
                 errors.append(f"{config_name}:{location}: {error.message}")
-    cases_path = ROOT / "evals/specs/cases.json"
     cases_schema_path = ROOT / "evals/schemas/eval-cases.schema.json"
-    if cases_path.exists() and cases_schema_path.exists():
-        cases = json.loads(cases_path.read_text(encoding="utf-8"))
+    if cases_schema_path.exists():
         schema = schemas.get("eval-cases.schema.json")
-        if schema is not None:
-            case_errors = sorted(
-                Draft202012Validator(schema).iter_errors(cases),
-                key=lambda item: list(item.path),
-            )
-            for error in case_errors:
-                location = ".".join(str(part) for part in error.path) or "<root>"
-                errors.append(f"evals/specs/cases.json:{location}: {error.message}")
-    from eval_contracts import validate_golden_snapshot
+        from eval_contracts import validate_eval_suite
+
+        for cases_path in sorted((ROOT / "evals/specs").glob("*.json")):
+            cases = json.loads(cases_path.read_text(encoding="utf-8"))
+            if schema is not None:
+                case_errors = sorted(
+                    Draft202012Validator(schema).iter_errors(cases),
+                    key=lambda item: list(item.path),
+                )
+                for error in case_errors:
+                    location = ".".join(str(part) for part in error.path) or "<root>"
+                    errors.append(
+                        f"{cases_path.relative_to(ROOT)}:{location}: {error.message}"
+                    )
+            for error in validate_eval_suite(cases):
+                errors.append(f"{cases_path.relative_to(ROOT)}:{error}")
+    from eval_contracts import validate_ablation_snapshot, validate_golden_snapshot
 
     golden_root = ROOT / "evals/golden-results"
     for snapshot_path in sorted(golden_root.glob("*/snapshot.json")):
@@ -197,6 +217,14 @@ def validate_schemas(errors: list[str]) -> None:
         except json.JSONDecodeError:
             continue
         for error in validate_golden_snapshot(snapshot):
+            errors.append(f"{snapshot_path.relative_to(ROOT)}:{error}")
+    ablation_root = ROOT / "evals/ablation-results"
+    for snapshot_path in sorted(ablation_root.glob("*/snapshot.json")):
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        for error in validate_ablation_snapshot(snapshot):
             errors.append(f"{snapshot_path.relative_to(ROOT)}:{error}")
 
 

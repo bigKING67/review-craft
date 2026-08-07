@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-ablation-comparison.schema.json",
+  "title": "Matched four-arm ablation comparison",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "matched",
+    "comparativeEligible",
+    "ablation",
+    "matchedFields",
+    "adjudicator",
+    "arms",
+    "deltas",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "review-craft.eval-ablation-comparison.v1"
+    },
+    "matched": {"type": "boolean", "const": true},
+    "comparativeEligible": {"type": "boolean"},
+    "ablation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "contentSha256"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^rca-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}(?:-[0-9]+)?$"
+        },
+        "contentSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "matchedFields": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "adjudicator": {
+      "$ref": "eval-ablation-adjudication.schema.json#/$defs/adjudicator"
+    },
+    "arms": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/arm"}
+    },
+    "deltas": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/delta"}
+    },
+    "contentSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "treatment": {
+      "type": "string",
+      "enum": [
+        "ORDINARY_PROMPT",
+        "ADVERSARIAL_PROMPT",
+        "RISK_LENS_ADVERSARIAL",
+        "REVIEW_CRAFT_EVIDENCE_LOOP"
+      ]
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "treatment",
+        "runId",
+        "runContentSha256",
+        "goldenEligible",
+        "structuralMetrics",
+        "adjudicationContentSha256",
+        "semanticMetrics"
+      ],
+      "properties": {
+        "treatment": {"$ref": "#/$defs/treatment"},
+        "runId": {
+          "type": "string",
+          "pattern": "^rce-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}(?:-[0-9]+)?$"
+        },
+        "runContentSha256": {"$ref": "#/$defs/sha256"},
+        "goldenEligible": {"type": "boolean"},
+        "structuralMetrics": {"$ref": "eval-run.schema.json#/properties/metrics"},
+        "adjudicationContentSha256": {"$ref": "#/$defs/sha256"},
+        "semanticMetrics": {
+          "$ref": "eval-ablation-adjudication-result.schema.json#/$defs/metrics"
+        }
+      }
+    },
+    "percentagePointDeltas": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["number", "null"],
+        "minimum": -100,
+        "maximum": 100
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["durationRatio", "totalTokensRatio", "toolCallsRatio"],
+      "properties": {
+        "durationRatio": {"type": ["number", "null"], "minimum": 0},
+        "totalTokensRatio": {"type": ["number", "null"], "minimum": 0},
+        "toolCallsRatio": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "structuralPercentagePoints",
+        "semanticPercentagePoints",
+        "cost"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": ["A_TO_B", "B_TO_C", "C_TO_D", "A_TO_D"]
+        },
+        "from": {"$ref": "#/$defs/treatment"},
+        "to": {"$ref": "#/$defs/treatment"},
+        "structuralPercentagePoints": {"$ref": "#/$defs/percentagePointDeltas"},
+        "semanticPercentagePoints": {"$ref": "#/$defs/percentagePointDeltas"},
+        "cost": {"$ref": "#/$defs/cost"}
+      }
+    }
+  }
+}

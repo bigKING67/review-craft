@@ -19,7 +19,8 @@
     "schema": {
       "enum": [
         "review-craft.eval-adapter.v2",
-        "review-craft.eval-adapter.v3"
+        "review-craft.eval-adapter.v3",
+        "review-craft.eval-adapter.v4"
       ]
     },
     "name": {
@@ -76,6 +77,7 @@
         "codexHomeExtensionTreeSha256"
       ],
       "properties": {
+        "homeMatchesCodexHome": {"type": "boolean", "const": true},
         "ignoreUserConfig": {"const": true},
         "ignoreRules": {"const": true},
         "allowCodexHomeExtensions": {"type": "boolean"},
@@ -106,6 +108,16 @@
           "const": "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
         }
       }
+    },
+    "toolTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "transport", "environmentVariable"],
+      "properties": {
+        "protocol": {"const": "review-craft.eval-tool-trace.v1"},
+        "transport": {"const": "ENV_PATH"},
+        "environmentVariable": {"const": "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"}
+      }
     }
   },
   "allOf": [
@@ -118,6 +130,20 @@
       },
       "then": {
         "required": ["usage"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema": {"const": "review-craft.eval-adapter.v4"}
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "required": ["usage", "toolTrace"],
+        "properties": {
+          "isolation": {"required": ["homeMatchesCodexHome"]}
+        }
       }
     }
   ]

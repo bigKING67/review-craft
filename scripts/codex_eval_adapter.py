@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-ADAPTER_VERSION = "0.5.0"
+ADAPTER_VERSION = "0.6.0"
 PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
+TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 USAGE_COLLECTOR = {
     "name": "codex-cli",
     "version": ADAPTER_VERSION,
@@ -56,6 +57,13 @@ TOKEN_FIELDS = {
     "output_tokens": "outputTokens",
     "reasoning_output_tokens": "reasoningOutputTokens",
 }
+ABLATION_TREATMENTS = {
+    "ORDINARY_PROMPT",
+    "ADVERSARIAL_PROMPT",
+    "RISK_LENS_ADVERSARIAL",
+    "REVIEW_CRAFT_EVIDENCE_LOOP",
+}
+SKILL_TREATMENTS = {"REVIEW_CRAFT", "REVIEW_CRAFT_EVIDENCE_LOOP"}
 
 
 class AdapterError(RuntimeError):
@@ -95,10 +103,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--describe", action="store_true")
     parser.add_argument("--fixture-root")
     parser.add_argument("--skill-root")
+    parser.add_argument("--evidence-root")
     parser.add_argument("--prompt-file")
     parser.add_argument("--output-schema")
     parser.add_argument("--output-file")
     parser.add_argument("--treatment")
+    parser.add_argument("--case-id")
     return parser.parse_args(argv)
 
 
@@ -181,6 +191,46 @@ def parse_codex_jsonl(value: str) -> dict[str, Any]:
     }
 
 
+def parse_tool_trace(value: str, replacements: dict[str, str]) -> dict[str, Any]:
+    items = []
+    for line in (line for line in value.splitlines() if line.strip()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") not in TOOL_ITEM_TYPES:
+            continue
+        item_type = item["type"]
+        row: dict[str, Any] = {
+            "sequence": len(items),
+            "type": TOOL_ITEM_TYPES[item_type],
+            "status": str(item.get("status") or "completed"),
+        }
+        if item_type == "command_execution":
+            command = str(item.get("command") or "")
+            for source, replacement in sorted(
+                replacements.items(), key=lambda pair: len(pair[0]), reverse=True
+            ):
+                command = command.replace(source, replacement)
+            output = str(item.get("aggregated_output") or "").encode(
+                "utf-8", errors="surrogateescape"
+            )
+            exit_code = item.get("exit_code")
+            row.update(
+                {
+                    "command": command or "<unknown>",
+                    "exitCode": exit_code if isinstance(exit_code, int) else None,
+                    "outputBytes": len(output),
+                    "outputSha256": hashlib.sha256(output).hexdigest(),
+                }
+            )
+        items.append(row)
+    return {"schema": "review-craft.eval-tool-trace.v1", "items": items}
+
+
 def write_usage_output(payload: dict[str, Any]) -> None:
     output = os.environ.get(USAGE_OUTPUT_ENV)
     if output is None:
@@ -188,6 +238,19 @@ def write_usage_output(payload: dict[str, Any]) -> None:
     path = Path(output).expanduser()
     if not path.parent.is_dir():
         raise AdapterError("usage output parent directory does not exist")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_tool_trace_output(payload: dict[str, Any]) -> None:
+    output = os.environ.get(TOOL_TRACE_OUTPUT_ENV)
+    if output is None:
+        return
+    path = Path(output).expanduser()
+    if not path.parent.is_dir():
+        raise AdapterError("tool trace output parent directory does not exist")
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -214,9 +277,14 @@ def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
 
 def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
     home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    process_home = Path.home().expanduser()
+    if process_home.resolve() != home.resolve():
+        raise AdapterError(
+            "HOME and CODEX_HOME must point to the same isolated auth-only directory"
+        )
     paths = sorted(
         path
-        for root_name in ("skills", "plugins")
+        for root_name in ("skills", "plugins", ".agents/skills", ".agents/plugins")
         for root in [home / root_name]
         if root.is_dir()
         for path in root.rglob("*")
@@ -236,6 +304,7 @@ def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
     system_rows = _fingerprint_rows(system_paths, home=home)
     extension_rows = _fingerprint_rows(extension_paths, home=home)
     return {
+        "homeMatchesCodexHome": True,
         "ignoreUserConfig": True,
         "ignoreRules": True,
         "allowCodexHomeExtensions": allow_extensions,
@@ -307,17 +376,30 @@ def provider_config_args(provider: dict[str, Any]) -> list[str]:
     return [item for key, value in values.items() for item in ("--config", f"{key}={value}")]
 
 
+def validate_treatment_resources(
+    treatment: str | None, evidence_root: Path | None
+) -> None:
+    if treatment == "REVIEW_CRAFT_EVIDENCE_LOOP" and evidence_root is None:
+        raise AdapterError("Review Craft evidence-loop treatment requires verifier access")
+    if (
+        treatment in ABLATION_TREATMENTS - {"REVIEW_CRAFT_EVIDENCE_LOOP"}
+        and evidence_root is not None
+    ):
+        raise AdapterError("non-evidence ablation treatments cannot access verifiers")
+
+
 def build_codex_command(
     *,
     executable: str,
     args: argparse.Namespace,
     fixture_root: Path,
     skill_root: Path,
+    evidence_root: Path | None,
     output_schema: Path,
     output_file: Path,
     provider: dict[str, Any],
 ) -> list[str]:
-    return [
+    command = [
         executable,
         "exec",
         "--ephemeral",
@@ -331,8 +413,6 @@ def build_codex_command(
         "--json",
         "--cd",
         str(fixture_root),
-        "--add-dir",
-        str(skill_root),
         "--model",
         args.model,
         "--config",
@@ -344,6 +424,13 @@ def build_codex_command(
         str(output_file),
         "-",
     ]
+    if args.treatment in SKILL_TREATMENTS:
+        insertion = command.index("--model")
+        command[insertion:insertion] = ["--add-dir", str(skill_root)]
+    if evidence_root is not None:
+        insertion = command.index("--model")
+        command[insertion:insertion] = ["--add-dir", str(evidence_root)]
+    return command
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -356,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v3",
+                    "schema": "review-craft.eval-adapter.v4",
                     "name": "codex-cli",
                     "version": codex_version(),
                     "model": args.model,
@@ -370,6 +457,11 @@ def main(argv: list[str] | None = None) -> int:
                         "transport": "ENV_PATH",
                         "environmentVariable": USAGE_OUTPUT_ENV,
                     },
+                    "toolTrace": {
+                        "protocol": "review-craft.eval-tool-trace.v1",
+                        "transport": "ENV_PATH",
+                        "environmentVariable": TOOL_TRACE_OUTPUT_ENV,
+                    },
                 },
                 sort_keys=True,
             )
@@ -382,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
         "output-schema": args.output_schema,
         "output-file": args.output_file,
         "treatment": args.treatment,
+        "case-id": args.case_id,
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
@@ -396,25 +489,41 @@ def main(argv: list[str] | None = None) -> int:
         return 127
     fixture_root = Path(args.fixture_root).resolve(strict=True)
     skill_root = Path(args.skill_root).resolve(strict=True)
+    evidence_root = (
+        Path(args.evidence_root).resolve(strict=True) if args.evidence_root else None
+    )
+    validate_treatment_resources(args.treatment, evidence_root)
     prompt = Path(args.prompt_file).read_text(encoding="utf-8")
     command = build_codex_command(
         executable=executable,
         args=args,
         fixture_root=fixture_root,
         skill_root=skill_root,
+        evidence_root=evidence_root,
         output_schema=Path(args.output_schema).resolve(strict=True),
         output_file=Path(args.output_file).resolve(),
         provider=provider,
     )
+    command_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    if evidence_root is not None:
+        command_env["REVIEW_CRAFT_EVAL_EVIDENCE_ROOT"] = str(evidence_root)
     completed = subprocess.run(
         command,
         input=prompt,
         text=True,
         capture_output=True,
+        env=command_env,
     )
     sys.stdout.write(completed.stdout)
     sys.stderr.write(completed.stderr)
     write_usage_output(parse_codex_jsonl(completed.stdout))
+    replacements = {
+        str(fixture_root): "$FIXTURE",
+        str(skill_root): "$SKILL",
+    }
+    if evidence_root is not None:
+        replacements[str(evidence_root)] = "$EVIDENCE"
+    write_tool_trace_output(parse_tool_trace(completed.stdout, replacements))
     return completed.returncode
 
 

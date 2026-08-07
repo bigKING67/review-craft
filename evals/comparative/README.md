@@ -18,6 +18,18 @@ output are reported subcounts and are not added again. Aggregate `reportedUsage`
 `reportedCases`. `PARTIAL` and `UNAVAILABLE` results retain fixed unavailable reasons and
 use `null`, never fabricated zeroes, for unknown costs.
 
+The separate eval run v4 four-arm ablation tests ordinary review, adversarial review,
+risk-lens-guided adversarial review, and a Review Craft evidence loop over six matched
+positive/negative fixture pairs. It uses a Latin-square treatment order, content-bound
+sanitized tool traces, hidden behavioral verifiers, treatment-blinded adjudication, and
+fixed A-to-B, B-to-C, C-to-D, and A-to-D comparisons. This is an evaluation harness
+capability, not an installable runtime feature. See `../ablation-results/README.md` for its
+execution, export, and claim boundaries.
+
+Codex real-host runs require `HOME` and `CODEX_HOME` to resolve to the same auth-only
+directory. This prevents `$HOME/.agents` skills or plugins from contaminating a nominally
+ordinary prompt while retaining authentication.
+
 Run `REVIEW_CRAFT` and `ORDINARY_PROMPT` as separate full-suite runs with the same host,
 version, model, reasoning profile, revision, case timeout, and case selection. Do not call
 the result matched if any of those fields differ. Provider and Codex-home isolation metadata

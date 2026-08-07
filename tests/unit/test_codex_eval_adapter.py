@@ -26,11 +26,69 @@ class CodexEvalAdapterTests(unittest.TestCase):
             args=args,
             fixture_root=Path("/tmp/fixture"),
             skill_root=Path("/tmp/skill"),
+            evidence_root=None,
             output_schema=Path("/tmp/output.schema.json"),
             output_file=Path("/tmp/output.json"),
             provider=adapter.provider_metadata(args),
         )
         self.assertIn("--json", command)
+
+    def test_ablation_resources_are_exposed_only_to_the_evidence_loop(self) -> None:
+        ordinary = adapter.parse_args(
+            [
+                "--model",
+                "gpt-test",
+                "--reasoning",
+                "high",
+                "--treatment",
+                "ORDINARY_PROMPT",
+            ]
+        )
+        ordinary_command = adapter.build_codex_command(
+            executable="codex",
+            args=ordinary,
+            fixture_root=Path("/tmp/fixture"),
+            skill_root=Path("/tmp/skill"),
+            evidence_root=None,
+            output_schema=Path("/tmp/output.schema.json"),
+            output_file=Path("/tmp/output.json"),
+            provider=adapter.provider_metadata(ordinary),
+        )
+        self.assertNotIn("/tmp/skill", ordinary_command)
+        self.assertNotIn("/tmp/evidence", ordinary_command)
+        adapter.validate_treatment_resources("ORDINARY_PROMPT", None)
+        with self.assertRaisesRegex(adapter.AdapterError, "cannot access verifiers"):
+            adapter.validate_treatment_resources(
+                "ORDINARY_PROMPT", Path("/tmp/evidence")
+            )
+
+        evidence_loop = adapter.parse_args(
+            [
+                "--model",
+                "gpt-test",
+                "--reasoning",
+                "high",
+                "--treatment",
+                "REVIEW_CRAFT_EVIDENCE_LOOP",
+            ]
+        )
+        evidence_command = adapter.build_codex_command(
+            executable="codex",
+            args=evidence_loop,
+            fixture_root=Path("/tmp/fixture"),
+            skill_root=Path("/tmp/skill"),
+            evidence_root=Path("/tmp/evidence"),
+            output_schema=Path("/tmp/output.schema.json"),
+            output_file=Path("/tmp/output.json"),
+            provider=adapter.provider_metadata(evidence_loop),
+        )
+        self.assertIn("/tmp/skill", evidence_command)
+        self.assertIn("/tmp/evidence", evidence_command)
+        adapter.validate_treatment_resources(
+            "REVIEW_CRAFT_EVIDENCE_LOOP", Path("/tmp/evidence")
+        )
+        with self.assertRaisesRegex(adapter.AdapterError, "requires verifier access"):
+            adapter.validate_treatment_resources("REVIEW_CRAFT_EVIDENCE_LOOP", None)
 
     def test_codex_jsonl_usage_and_tool_calls_are_structured(self) -> None:
         events = [
@@ -194,7 +252,10 @@ class CodexEvalAdapterTests(unittest.TestCase):
             skill = home / "skills/demo/SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text("# Demo\n", encoding="utf-8")
-            with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(home), "HOME": str(home)},
+            ):
                 with self.assertRaisesRegex(adapter.AdapterError, "isolated auth-only"):
                     adapter.codex_home_extension_state(allow_extensions=False)
                 state = adapter.codex_home_extension_state(allow_extensions=True)
@@ -207,8 +268,12 @@ class CodexEvalAdapterTests(unittest.TestCase):
             system_skill = home / "skills/.system/review-agent/SKILL.md"
             system_skill.parent.mkdir(parents=True)
             system_skill.write_text("# Managed system skill\n", encoding="utf-8")
-            with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(home), "HOME": str(home)},
+            ):
                 state = adapter.codex_home_extension_state(allow_extensions=False)
+            self.assertTrue(state["homeMatchesCodexHome"])
             self.assertEqual(state["codexHomeSystemFileCount"], 1)
             self.assertNotEqual(state["codexHomeSystemTreeSha256"], "0" * 64)
             self.assertEqual(state["codexHomeExtensionFileCount"], 0)
@@ -216,6 +281,62 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 state["codexHomeExtensionTreeSha256"],
                 hashlib.sha256(b"[]").hexdigest(),
             )
+
+    def test_codex_home_isolation_requires_home_and_scans_dot_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(home), "HOME": "/tmp/different-home"},
+            ), self.assertRaisesRegex(adapter.AdapterError, "HOME and CODEX_HOME"):
+                adapter.codex_home_extension_state(allow_extensions=False)
+
+            extension = home / ".agents/skills/demo/SKILL.md"
+            extension.parent.mkdir(parents=True)
+            extension.write_text("# Demo\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(home), "HOME": str(home)},
+            ), self.assertRaisesRegex(adapter.AdapterError, "isolated auth-only"):
+                adapter.codex_home_extension_state(allow_extensions=False)
+
+    def test_tool_trace_normalizes_paths_and_hashes_without_raw_output(self) -> None:
+        output = "verification result\n"
+        events = [
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "command-1",
+                    "type": "command_execution",
+                    "command": (
+                        "python3 /private/evidence/verify_case.py --target "
+                        "/private/fixture"
+                    ),
+                    "aggregated_output": output,
+                    "exit_code": 7,
+                    "status": "failed",
+                },
+            }
+        ]
+        trace = adapter.parse_tool_trace(
+            "\n".join(json.dumps(event) for event in events) + "\n",
+            {
+                "/private/evidence": "$EVIDENCE",
+                "/private/fixture": "$FIXTURE",
+            },
+        )
+        self.assertEqual(trace["schema"], "review-craft.eval-tool-trace.v1")
+        self.assertEqual(
+            trace["items"][0]["command"],
+            "python3 $EVIDENCE/verify_case.py --target $FIXTURE",
+        )
+        self.assertEqual(trace["items"][0]["exitCode"], 7)
+        self.assertEqual(trace["items"][0]["outputBytes"], len(output.encode("utf-8")))
+        self.assertEqual(
+            trace["items"][0]["outputSha256"],
+            hashlib.sha256(output.encode("utf-8")).hexdigest(),
+        )
+        self.assertNotIn(output, json.dumps(trace))
 
 
 if __name__ == "__main__":

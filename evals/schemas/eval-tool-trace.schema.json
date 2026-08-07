@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-tool-trace.schema.json",
+  "title": "Sanitized tool trace for one evaluation case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "items"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-tool-trace.v1"},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "type", "status"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 0},
+          "type": {"enum": ["commandExecution", "fileChange", "mcpToolCall", "collabToolCall", "webSearch"]},
+          "status": {"type": "string", "minLength": 1},
+          "command": {"type": "string", "minLength": 1},
+          "exitCode": {"type": ["integer", "null"]},
+          "outputBytes": {"type": "integer", "minimum": 0},
+          "outputSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    }
+  }
+}

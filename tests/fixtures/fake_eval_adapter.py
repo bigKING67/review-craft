@@ -13,10 +13,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--describe", action="store_true")
     parser.add_argument("--fixture-root")
     parser.add_argument("--skill-root")
+    parser.add_argument("--evidence-root")
     parser.add_argument("--prompt-file")
     parser.add_argument("--output-schema")
     parser.add_argument("--output-file")
     parser.add_argument("--treatment")
+    parser.add_argument("--case-id")
     parser.add_argument(
         "--mode",
         choices=(
@@ -67,6 +69,20 @@ def main() -> int:
             )
         )
         return 0
+    ablation_treatments = {
+        "ORDINARY_PROMPT",
+        "ADVERSARIAL_PROMPT",
+        "RISK_LENS_ADVERSARIAL",
+        "REVIEW_CRAFT_EVIDENCE_LOOP",
+    }
+    if args.treatment in ablation_treatments:
+        skill_entries = list(Path(args.skill_root).iterdir())
+        evidence_expected = args.treatment == "REVIEW_CRAFT_EVIDENCE_LOOP"
+        if evidence_expected:
+            if args.evidence_root is None or not (Path(args.skill_root) / "VERSION").is_file():
+                return 4
+        elif args.evidence_root is not None or skill_entries:
+            return 4
     if args.mode == "mutate-source":
         (Path.cwd() / ".eval-source-mutation-test").write_text(
             "mutated\n", encoding="utf-8"
@@ -116,6 +132,38 @@ def main() -> int:
             ],
             "confidence": "HIGH",
             "summary": "Synthetic clean-negative contract output.",
+        }
+    elif args.case_id and args.case_id.endswith("-positive"):
+        source = next(path for path in fixture.glob("*.py"))
+        output = {
+            "schema": "review-craft.eval-host-output.v1",
+            "findingDetected": True,
+            "decisions": ["CLEAN_UP"],
+            "locations": [{"path": source.name, "lineStart": 1, "lineEnd": 20}],
+            "evidence": [
+                {
+                    "claim": "Synthetic positive ablation output.",
+                    "locations": [{"path": source.name, "lineStart": 1, "lineEnd": 20}],
+                }
+            ],
+            "confidence": "HIGH",
+            "summary": "Synthetic positive ablation output.",
+        }
+    elif args.case_id and args.case_id.endswith("-negative"):
+        source = next(path for path in fixture.glob("*.py"))
+        output = {
+            "schema": "review-craft.eval-host-output.v1",
+            "findingDetected": False,
+            "decisions": ["KEEP"],
+            "locations": [{"path": source.name, "lineStart": 1, "lineEnd": 20}],
+            "evidence": [
+                {
+                    "claim": "Synthetic negative ablation output.",
+                    "locations": [{"path": source.name, "lineStart": 1, "lineEnd": 20}],
+                }
+            ],
+            "confidence": "HIGH",
+            "summary": "Synthetic negative ablation output.",
         }
     else:
         return 3
@@ -181,6 +229,31 @@ def main() -> int:
         )
     elif usage_output and args.mode == "invalid-usage":
         Path(usage_output).write_text("{}\n", encoding="utf-8")
+    tool_trace_output = os.environ.get("REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT")
+    if tool_trace_output:
+        verification = args.treatment == "REVIEW_CRAFT_EVIDENCE_LOOP"
+        case_id = args.case_id or fixture.name
+        trace = {
+            "schema": "review-craft.eval-tool-trace.v1",
+            "items": (
+                [
+                    {
+                        "sequence": 0,
+                        "type": "commandExecution",
+                        "status": "completed",
+                        "command": f"python3 $EVIDENCE/verify_case.py --case {case_id} --target .",
+                        "exitCode": 0,
+                        "outputBytes": 2,
+                        "outputSha256": hashlib.sha256(b"{} ").hexdigest(),
+                    }
+                ]
+                if verification
+                else []
+            ),
+        }
+        Path(tool_trace_output).write_text(
+            json.dumps(trace, sort_keys=True) + "\n", encoding="utf-8"
+        )
     print("synthetic adapter completed")
     return 0
 
