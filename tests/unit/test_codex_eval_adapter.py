@@ -34,6 +34,11 @@ class CodexEvalAdapterTests(unittest.TestCase):
         self.assertIn("--json", command)
 
     def test_ablation_resources_are_exposed_only_to_the_evidence_loop(self) -> None:
+        fixture_root = Path("/tmp/fixture")
+        skill_root = Path("/tmp/skill")
+        evidence_root = Path("/tmp/evidence")
+        output_schema = Path("/tmp/output.schema.json")
+        output_file = Path("/tmp/output.json")
         ordinary = adapter.parse_args(
             [
                 "--model",
@@ -47,20 +52,18 @@ class CodexEvalAdapterTests(unittest.TestCase):
         ordinary_command = adapter.build_codex_command(
             executable="codex",
             args=ordinary,
-            fixture_root=Path("/tmp/fixture"),
-            skill_root=Path("/tmp/skill"),
+            fixture_root=fixture_root,
+            skill_root=skill_root,
             evidence_root=None,
-            output_schema=Path("/tmp/output.schema.json"),
-            output_file=Path("/tmp/output.json"),
+            output_schema=output_schema,
+            output_file=output_file,
             provider=adapter.provider_metadata(ordinary),
         )
-        self.assertNotIn("/tmp/skill", ordinary_command)
-        self.assertNotIn("/tmp/evidence", ordinary_command)
+        self.assertNotIn(str(skill_root), ordinary_command)
+        self.assertNotIn(str(evidence_root), ordinary_command)
         adapter.validate_treatment_resources("ORDINARY_PROMPT", None)
         with self.assertRaisesRegex(adapter.AdapterError, "cannot access verifiers"):
-            adapter.validate_treatment_resources(
-                "ORDINARY_PROMPT", Path("/tmp/evidence")
-            )
+            adapter.validate_treatment_resources("ORDINARY_PROMPT", evidence_root)
 
         evidence_loop = adapter.parse_args(
             [
@@ -75,18 +78,16 @@ class CodexEvalAdapterTests(unittest.TestCase):
         evidence_command = adapter.build_codex_command(
             executable="codex",
             args=evidence_loop,
-            fixture_root=Path("/tmp/fixture"),
-            skill_root=Path("/tmp/skill"),
-            evidence_root=Path("/tmp/evidence"),
-            output_schema=Path("/tmp/output.schema.json"),
-            output_file=Path("/tmp/output.json"),
+            fixture_root=fixture_root,
+            skill_root=skill_root,
+            evidence_root=evidence_root,
+            output_schema=output_schema,
+            output_file=output_file,
             provider=adapter.provider_metadata(evidence_loop),
         )
-        self.assertIn("/tmp/skill", evidence_command)
-        self.assertIn("/tmp/evidence", evidence_command)
-        adapter.validate_treatment_resources(
-            "REVIEW_CRAFT_EVIDENCE_LOOP", Path("/tmp/evidence")
-        )
+        self.assertIn(str(skill_root), evidence_command)
+        self.assertIn(str(evidence_root), evidence_command)
+        adapter.validate_treatment_resources("REVIEW_CRAFT_EVIDENCE_LOOP", evidence_root)
         with self.assertRaisesRegex(adapter.AdapterError, "requires verifier access"):
             adapter.validate_treatment_resources("REVIEW_CRAFT_EVIDENCE_LOOP", None)
 
@@ -255,7 +256,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {"CODEX_HOME": str(home), "HOME": str(home)},
-            ):
+            ), patch.object(Path, "home", return_value=home.parent / "ambient-home"):
                 with self.assertRaisesRegex(adapter.AdapterError, "isolated auth-only"):
                     adapter.codex_home_extension_state(allow_extensions=False)
                 state = adapter.codex_home_extension_state(allow_extensions=True)

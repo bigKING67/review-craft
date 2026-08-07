@@ -276,8 +276,18 @@ def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
 
 
 def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
-    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
-    process_home = Path.home().expanduser()
+    configured_process_home = os.environ.get("HOME")
+    process_home = (
+        Path(configured_process_home).expanduser()
+        if configured_process_home is not None
+        else Path.home().expanduser()
+    )
+    configured_codex_home = os.environ.get("CODEX_HOME")
+    home = (
+        Path(configured_codex_home).expanduser()
+        if configured_codex_home is not None
+        else process_home / ".codex"
+    )
     if process_home.resolve() != home.resolve():
         raise AdapterError(
             "HOME and CODEX_HOME must point to the same isolated auth-only directory"
