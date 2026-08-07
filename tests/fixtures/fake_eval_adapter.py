@@ -71,8 +71,7 @@ def main() -> int:
         return 0
     ablation_treatments = {
         "ORDINARY_PROMPT",
-        "ADVERSARIAL_PROMPT",
-        "RISK_LENS_ADVERSARIAL",
+        "RISK_LENS_REVIEW",
         "REVIEW_CRAFT_EVIDENCE_LOOP",
     }
     if args.treatment in ablation_treatments:

@@ -36,9 +36,11 @@ or publishes. Canonical run, fix, delivery, and eval artifacts are written outsi
 target repository by default. A sanitized matched real-host Golden snapshot from v0.3
 remains tracked under `evals/golden-results/705dbac-gpt-5.6-sol/`.
 
-The repository also contains an independent four-arm self-correction eval harness under
-`evals/`. It compares ordinary, adversarial, risk-lens-guided, and external-evidence-loop
-review treatments without changing the installable runtime. A single complete ablation is
+The repository also contains an independent three-arm review-feedback eval harness under
+`evals/`. Its active protocol compares ordinary review, project-specific risk-lens review,
+and the complete Review Craft evidence loop without changing the installable runtime. The earlier
+four-arm v1 snapshot is frozen historical evidence: its adversarial-only arm is a negative
+control, not an active treatment or product recommendation. A single complete ablation is
 only narrow evidence for its bound suite and environment; it is not a general product claim.
 
 Preflight creates `review-craft.run.v4`. Its `evidence-registry.json` and
@@ -585,14 +587,17 @@ attestations. The runner binds their metadata and artifacts, records start/compl
 source parity, and rejects Golden eligibility when the source changes during a run, but
 operators must still review and trust any third-party adapter they execute.
 
-For the separate four-arm self-correction experiment, use `run-ablation`, blinded
+For the separate three-arm review-feedback experiment, use `run-ablation`, blinded
 `prepare-ablation-adjudication` / `adjudicate-ablation`, `compare-ablation`, and the
 fail-closed `export-ablation` command. Raw artifacts remain outside the repository; only a
 full-suite, clean-source, real-host, usage-complete, fully adjudicated sanitized snapshot may
-be tracked. The ordinary, adversarial, and risk-lens arms receive neither the Review Craft
-skill tree nor verifier access; the evidence-loop arm must execute every bound verifier
-successfully. Treatment labels and raw prompts are withheld from adjudication, although
-observable output and tool-use differences can still reveal intervention characteristics.
+be tracked. The ordinary and risk-lens arms receive neither the Review Craft skill tree nor
+verifier access; the evidence-loop arm must execute every bound verifier successfully.
+Treatment labels and raw prompts are withheld from adjudication, although observable output
+and tool-use differences can still reveal intervention characteristics. A-to-B isolates the
+active risk-lens prompt relative to ordinary review. B-to-C adds both Review Craft skill
+instructions and verifier feedback, so it measures the complete evidence loop rather than
+the independent effect of either addition.
 See `evals/ablation-results/README.md` for the exact boundary.
 
 The run's recall, precision, false-positive, location, and evidence-presence fields are

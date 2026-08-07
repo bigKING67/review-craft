@@ -15,10 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from eval_contracts import (
+    ABLATION_TREATMENTS,
     ADAPTER_SCHEMA,
     HOST_OUTPUT_SCHEMA,
     SCHEMA_ROOT,
     EvalError,
+    ablation_protocol,
     build_ablation_adjudication_result,
     build_ablation_adjudication_template,
     build_adjudication_result,
@@ -61,37 +63,43 @@ TOOL_TRACE_SCHEMA = SCHEMA_ROOT / "eval-tool-trace.schema.json"
 PROMPTS = {
     "REVIEW_CRAFT": ROOT / "evals/prompts/review-craft.md",
     "ORDINARY_PROMPT": ROOT / "evals/prompts/ordinary-review.md",
-    "ADVERSARIAL_PROMPT": ROOT / "evals/prompts/adversarial-review.md",
-    "RISK_LENS_ADVERSARIAL": ROOT / "evals/prompts/risk-lens-adversarial.md",
+    "RISK_LENS_REVIEW": ROOT / "evals/prompts/risk-lens-review.md",
     "REVIEW_CRAFT_EVIDENCE_LOOP": ROOT / "evals/prompts/review-craft-evidence-loop.md",
 }
-ABLATION_TREATMENTS = (
-    "ORDINARY_PROMPT",
-    "ADVERSARIAL_PROMPT",
-    "RISK_LENS_ADVERSARIAL",
-    "REVIEW_CRAFT_EVIDENCE_LOOP",
-)
-ABLATION_DELTA_PAIRS = (
-    ("A_TO_B", "ORDINARY_PROMPT", "ADVERSARIAL_PROMPT"),
-    ("B_TO_C", "ADVERSARIAL_PROMPT", "RISK_LENS_ADVERSARIAL"),
-    ("C_TO_D", "RISK_LENS_ADVERSARIAL", "REVIEW_CRAFT_EVIDENCE_LOOP"),
-    ("A_TO_D", "ORDINARY_PROMPT", "REVIEW_CRAFT_EVIDENCE_LOOP"),
-)
-ABLATION_LIMITATIONS = (
-    (
-        "This snapshot reports one matched four-arm run over the bound suite; it does not "
-        "establish stability across reruns, models, repositories, or environments."
+ABLATION_LIMITATIONS = {
+    "v1": (
+        (
+            "This snapshot reports one matched four-arm run over the bound suite; it does not "
+            "establish stability across reruns, models, repositories, or environments."
+        ),
+        (
+            "The percentage-point deltas are narrow observations for the bound prompts, "
+            "fixtures, host, and adjudication protocol, not a general causal claim."
+        ),
+        (
+            "The fixtures are controlled evaluation cases. Adjudication withholds treatment "
+            "labels and raw prompts, but outputs or tool traces may still reveal intervention "
+            "characteristics; this is not guaranteed evaluator blinding."
+        ),
     ),
-    (
-        "The percentage-point deltas are narrow observations for the bound prompts, "
-        "fixtures, host, and adjudication protocol, not a general causal claim."
+    "v2": (
+        (
+            "This snapshot reports one matched three-arm run over the bound suite; it does not "
+            "establish stability across reruns, models, repositories, or environments."
+        ),
+        (
+            "The percentage-point deltas are narrow observations for the bound prompts, "
+            "fixtures, host, and adjudication protocol, not a general causal claim; the "
+            "B-to-C delta adds both Review Craft skill instructions and verifier feedback, "
+            "so it does not isolate either contribution."
+        ),
+        (
+            "The fixtures are controlled evaluation cases. Adjudication withholds treatment "
+            "labels and raw prompts, but outputs or tool traces may still reveal intervention "
+            "characteristics; this is not guaranteed evaluator blinding."
+        ),
     ),
-    (
-        "The fixtures are controlled evaluation cases. Adjudication withholds treatment "
-        "labels and raw prompts, but outputs or tool traces may still reveal intervention "
-        "characteristics; this is not guaranteed evaluator blinding."
-    ),
-)
+}
 SENSITIVE_ARGUMENT = re.compile(
     r"^--?(?:api[-_]?key|password|secret|token)(?:=|$)", re.IGNORECASE
 )
@@ -137,7 +145,7 @@ def _render_case_prompt(template: bytes, case: dict[str, Any], treatment: str) -
     text = template.decode("utf-8")
     lens_marker = "{{RISK_LENS_JSON}}"
     verification_marker = "{{VERIFICATION_JSON}}"
-    if treatment in {"RISK_LENS_ADVERSARIAL", "REVIEW_CRAFT_EVIDENCE_LOOP"}:
+    if treatment in {"RISK_LENS_REVIEW", "REVIEW_CRAFT_EVIDENCE_LOOP"}:
         lens = case.get("riskLens")
         if not isinstance(lens, dict):
             raise EvalError(f"case {case['id']}: treatment requires a risk lens")
@@ -426,7 +434,7 @@ def _assert_prompt_no_answer_leak(
             raise EvalError(f"case {case['id']}: generated prompt leaks hidden evaluation data")
     lens_prompt = case["riskLens"]["prompt"]
     lens_expected = treatment in {
-        "RISK_LENS_ADVERSARIAL",
+        "RISK_LENS_REVIEW",
         "REVIEW_CRAFT_EVIDENCE_LOOP",
     }
     if (lens_prompt in text) != lens_expected:
@@ -491,7 +499,7 @@ def command_run_ablation(args: argparse.Namespace) -> int:
     schedule_artifact = ablation_dir / "schedule.json"
     shutil.copyfile(suite_path, suite_artifact)
     schedule = {
-        "schema": "review-craft.eval-ablation-schedule.v1",
+        "schema": "review-craft.eval-ablation-schedule.v2",
         "ablationId": ablation_id,
         "treatments": list(ABLATION_TREATMENTS),
         "cases": [
@@ -621,7 +629,7 @@ def command_run_ablation(args: argparse.Namespace) -> int:
             }
         )
     manifest = {
-        "schema": "review-craft.eval-ablation-run.v1",
+        "schema": "review-craft.eval-ablation-run.v2",
         "ablationId": ablation_id,
         "status": overall_status(
             [{"status": summary["status"]} for summary in treatment_summaries]
@@ -763,8 +771,9 @@ def _ablation_runs(
         )
         for summary in manifest["treatments"]
     }
-    if list(runs) != list(ABLATION_TREATMENTS):
-        raise EvalError("ablation treatments are not in canonical A/B/C/D order")
+    _, protocol = ablation_protocol(manifest["schema"])
+    if list(runs) != list(protocol["treatments"]):
+        raise EvalError("ablation treatments are not in canonical protocol order")
     return manifest, runs
 
 
@@ -814,6 +823,8 @@ def build_ablation_comparison(
     adjudication: dict[str, Any],
 ) -> dict[str, Any]:
     manifest, runs = _ablation_runs(ablation_dir)
+    version, protocol = ablation_protocol(manifest["schema"])
+    treatments = protocol["treatments"]
     adjudication_errors = validate_ablation_adjudication_result(
         ablation_dir, bundle, adjudication
     )
@@ -821,8 +832,8 @@ def build_ablation_comparison(
         raise EvalError(
             "ablation adjudication is invalid: " + "; ".join(adjudication_errors)
         )
-    reference_fields = _comparison_fields(runs[ABLATION_TREATMENTS[0]])
-    for treatment in ABLATION_TREATMENTS[1:]:
+    reference_fields = _comparison_fields(runs[treatments[0]])
+    for treatment in treatments[1:]:
         fields = _comparison_fields(runs[treatment])
         mismatches = [
             field for field in reference_fields if fields[field] != reference_fields[field]
@@ -834,10 +845,12 @@ def build_ablation_comparison(
     adjudication_by_treatment = {
         row["treatment"]: row for row in adjudication["treatments"]
     }
-    if list(adjudication_by_treatment) != list(ABLATION_TREATMENTS):
-        raise EvalError("ablation adjudication treatments are not in canonical A/B/C/D order")
+    if list(adjudication_by_treatment) != list(treatments):
+        raise EvalError(
+            "ablation adjudication treatments are not in canonical protocol order"
+        )
     arms = []
-    for treatment in ABLATION_TREATMENTS:
+    for treatment in treatments:
         run = runs[treatment]
         semantic = adjudication_by_treatment[treatment]
         if (
@@ -857,7 +870,7 @@ def build_ablation_comparison(
             }
         )
     deltas = []
-    for delta_id, from_treatment, to_treatment in ABLATION_DELTA_PAIRS:
+    for delta_id, from_treatment, to_treatment in protocol["deltas"]:
         from_run = runs[from_treatment]
         to_run = runs[to_treatment]
         deltas.append(
@@ -876,7 +889,7 @@ def build_ablation_comparison(
             }
         )
     payload = {
-        "schema": "review-craft.eval-ablation-comparison.v1",
+        "schema": f"review-craft.eval-ablation-comparison.{version}",
         "matched": True,
         "comparativeEligible": bool(
             all(arm["goldenEligible"] for arm in arms)
@@ -912,14 +925,16 @@ def build_ablation_snapshot(
     comparison = build_ablation_comparison(ablation_dir, bundle, adjudication)
     if not comparison["comparativeEligible"]:
         raise EvalError(
-            "ablation export requires four matched Golden-eligible runs and complete adjudication"
+            "ablation export requires all matched child runs to be Golden-eligible "
+            "with complete adjudication"
         )
     manifest, runs = _ablation_runs(ablation_dir)
-    reference = runs[ABLATION_TREATMENTS[0]]
+    version, protocol = ablation_protocol(manifest["schema"])
+    reference = runs[protocol["treatments"][0]]
     description = reference["adapter"]["description"]
     provider = description["provider"]
     snapshot = {
-        "schema": "review-craft.eval-ablation-snapshot.v1",
+        "schema": f"review-craft.eval-ablation-snapshot.{version}",
         "source": {
             "revision": reference["source"]["revision"],
             "treeSha256": reference["source"]["treeSha256"],
@@ -961,7 +976,7 @@ def build_ablation_snapshot(
         },
         "arms": comparison["arms"],
         "deltas": comparison["deltas"],
-        "limitations": list(ABLATION_LIMITATIONS),
+        "limitations": list(ABLATION_LIMITATIONS[version]),
         "contentSha256": "0" * 64,
     }
     snapshot["contentSha256"] = sha256_json(
@@ -1547,7 +1562,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_ablation = subparsers.add_parser(
         "run-ablation",
-        help="Run the balanced four-arm self-correction ablation",
+        help="Run the balanced three-arm risk-lens and evidence-loop ablation",
     )
     run_ablation.add_argument("--suite", default=str(DEFAULT_ABLATION_SUITE))
     run_ablation.add_argument("--skill-root", default=str(DEFAULT_SKILL))
@@ -1571,7 +1586,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(handler=command_validate)
 
     validate_ablation = subparsers.add_parser(
-        "validate-ablation", help="Validate a four-arm ablation and all child runs"
+        "validate-ablation", help="Validate a supported ablation and all child runs"
     )
     validate_ablation.add_argument("--ablation-dir", required=True)
     validate_ablation.set_defaults(handler=command_validate_ablation)
@@ -1603,7 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_ablation_adjudication = subparsers.add_parser(
         "validate-ablation-adjudication",
-        help="Validate an unblinded adjudication against the four bound runs",
+        help="Validate an unblinded adjudication against all bound runs",
     )
     validate_ablation_adjudication.add_argument("--ablation-dir", required=True)
     validate_ablation_adjudication.add_argument("--bundle", required=True)
@@ -1614,7 +1629,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     compare_ablation = subparsers.add_parser(
         "compare-ablation",
-        help="Compare the four matched ablation arms with bound semantic adjudication",
+        help="Compare matched ablation arms with bound semantic adjudication",
     )
     compare_ablation.add_argument("--ablation-dir", required=True)
     compare_ablation.add_argument("--bundle", required=True)

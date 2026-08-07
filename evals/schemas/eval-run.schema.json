@@ -52,6 +52,7 @@
         "CODEX_NATIVE_REVIEW",
         "ADVERSARIAL_PROMPT",
         "RISK_LENS_ADVERSARIAL",
+        "RISK_LENS_REVIEW",
         "REVIEW_CRAFT_EVIDENCE_LOOP"
       ]
     },
@@ -430,6 +431,7 @@
               "ORDINARY_PROMPT",
               "ADVERSARIAL_PROMPT",
               "RISK_LENS_ADVERSARIAL",
+              "RISK_LENS_REVIEW",
               "REVIEW_CRAFT_EVIDENCE_LOOP"
             ]
           },

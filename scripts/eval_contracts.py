@@ -23,21 +23,52 @@ COMPARISON_SCHEMA = SCHEMA_ROOT / "eval-comparison.schema.json"
 GOLDEN_SNAPSHOT_SCHEMA = SCHEMA_ROOT / "eval-golden-snapshot.schema.json"
 USAGE_SCHEMA = SCHEMA_ROOT / "eval-usage.schema.json"
 TOOL_TRACE_SCHEMA = SCHEMA_ROOT / "eval-tool-trace.schema.json"
-ABLATION_SCHEDULE_SCHEMA = SCHEMA_ROOT / "eval-ablation-schedule.schema.json"
-ABLATION_RUN_SCHEMA = SCHEMA_ROOT / "eval-ablation-run.schema.json"
-ABLATION_BLIND_BUNDLE_SCHEMA = SCHEMA_ROOT / "eval-ablation-blind-bundle.schema.json"
-ABLATION_ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-ablation-adjudication.schema.json"
-ABLATION_ADJUDICATION_RESULT_SCHEMA = (
-    SCHEMA_ROOT / "eval-ablation-adjudication-result.schema.json"
-)
-ABLATION_COMPARISON_SCHEMA = SCHEMA_ROOT / "eval-ablation-comparison.schema.json"
-ABLATION_SNAPSHOT_SCHEMA = SCHEMA_ROOT / "eval-ablation-snapshot.schema.json"
-ABLATION_TREATMENTS = (
+LEGACY_ABLATION_TREATMENTS = (
     "ORDINARY_PROMPT",
     "ADVERSARIAL_PROMPT",
     "RISK_LENS_ADVERSARIAL",
     "REVIEW_CRAFT_EVIDENCE_LOOP",
 )
+ABLATION_TREATMENTS = (
+    "ORDINARY_PROMPT",
+    "RISK_LENS_REVIEW",
+    "REVIEW_CRAFT_EVIDENCE_LOOP",
+)
+ABLATION_PROTOCOLS = {
+    "v1": {
+        "treatments": LEGACY_ABLATION_TREATMENTS,
+        "deltas": (
+            ("A_TO_B", "ORDINARY_PROMPT", "ADVERSARIAL_PROMPT"),
+            ("B_TO_C", "ADVERSARIAL_PROMPT", "RISK_LENS_ADVERSARIAL"),
+            ("C_TO_D", "RISK_LENS_ADVERSARIAL", "REVIEW_CRAFT_EVIDENCE_LOOP"),
+            ("A_TO_D", "ORDINARY_PROMPT", "REVIEW_CRAFT_EVIDENCE_LOOP"),
+        ),
+    },
+    "v2": {
+        "treatments": ABLATION_TREATMENTS,
+        "deltas": (
+            ("A_TO_B", "ORDINARY_PROMPT", "RISK_LENS_REVIEW"),
+            ("B_TO_C", "RISK_LENS_REVIEW", "REVIEW_CRAFT_EVIDENCE_LOOP"),
+            ("A_TO_C", "ORDINARY_PROMPT", "REVIEW_CRAFT_EVIDENCE_LOOP"),
+        ),
+    },
+}
+ABLATION_SCHEMAS = {
+    kind: {
+        version: SCHEMA_ROOT
+        / f"eval-ablation-{kind}{'-v2' if version == 'v2' else ''}.schema.json"
+        for version in ABLATION_PROTOCOLS
+    }
+    for kind in (
+        "schedule",
+        "run",
+        "blind-bundle",
+        "adjudication",
+        "adjudication-result",
+        "comparison",
+        "snapshot",
+    )
+}
 USAGE_COUNT_FIELDS = (
     "inputTokens",
     "cachedInputTokens",
@@ -66,6 +97,21 @@ IGNORED_TREE_PARTS = {
 
 class EvalError(RuntimeError):
     pass
+
+
+def ablation_protocol(schema: str) -> tuple[str, dict[str, Any]]:
+    version = schema.rsplit(".", 1)[-1]
+    protocol = ABLATION_PROTOCOLS.get(version)
+    if protocol is None:
+        raise EvalError(f"unsupported ablation schema: {schema}")
+    return version, protocol
+
+
+def ablation_schema(kind: str, version: str) -> Path:
+    try:
+        return ABLATION_SCHEMAS[kind][version]
+    except KeyError as error:
+        raise EvalError(f"unsupported ablation {kind} schema version: {version}") from error
 
 
 def utc_now() -> str:
@@ -289,10 +335,16 @@ def validate_eval_suite(payload: dict[str, Any]) -> list[str]:
 
 
 def validate_ablation_schedule(payload: dict[str, Any]) -> list[str]:
-    errors = schema_errors(payload, ABLATION_SCHEDULE_SCHEMA)
+    try:
+        version, protocol = ablation_protocol(payload.get("schema", ""))
+    except EvalError as error:
+        return [str(error)]
+    errors = schema_errors(payload, ablation_schema("schedule", version))
     if errors:
         return errors
     treatments = payload["treatments"]
+    if treatments != list(protocol["treatments"]):
+        errors.append("treatments must use the canonical protocol order")
     for index, case in enumerate(payload["cases"]):
         expected = treatments[index % len(treatments) :] + treatments[: index % len(treatments)]
         if case["order"] != expected:
@@ -307,11 +359,23 @@ def validate_ablation_run(ablation_dir: Path) -> list[str]:
         payload = read_json(manifest_path)
     except (OSError, json.JSONDecodeError) as error:
         return [f"ablation.json: {error}"]
+    try:
+        version, protocol = ablation_protocol(payload.get("schema", ""))
+    except EvalError as error:
+        return [f"ablation.json:{error}"]
     errors.extend(
-        f"ablation.json:{error}" for error in schema_errors(payload, ABLATION_RUN_SCHEMA)
+        f"ablation.json:{error}"
+        for error in schema_errors(payload, ablation_schema("run", version))
     )
     if errors:
         return errors
+    if [row["treatment"] for row in payload["treatments"]] != list(
+        protocol["treatments"]
+    ):
+        errors.append("ablation.json:treatments must use the canonical protocol order")
+    suite = None
+    schedule = None
+    schedule_path = None
     for binding_name in ("suite", "schedule"):
         binding = payload[binding_name]
         try:
@@ -322,17 +386,70 @@ def validate_ablation_run(ablation_dir: Path) -> list[str]:
             continue
         if actual != binding["sha256"]:
             errors.append(f"{binding_name}: sha256 mismatch")
-        if binding_name == "schedule":
+        if binding_name == "suite":
+            try:
+                suite = read_json(path)
+            except (OSError, json.JSONDecodeError) as error:
+                errors.append(f"suite: {error}")
+            else:
+                if not isinstance(suite, dict):
+                    errors.append("suite: expected a JSON object")
+                    suite = None
+                    continue
+                errors.extend(
+                    f"suite:{error}" for error in validate_eval_suite(suite)
+                )
+        else:
+            schedule_path = path
             try:
                 schedule = read_json(path)
             except (OSError, json.JSONDecodeError) as error:
                 errors.append(f"schedule: {error}")
             else:
-                errors.extend(f"schedule:{error}" for error in validate_ablation_schedule(schedule))
+                if not isinstance(schedule, dict):
+                    errors.append("schedule: expected a JSON object")
+                    schedule = None
+                    continue
+                errors.extend(
+                    f"schedule:{error}"
+                    for error in validate_ablation_schedule(schedule)
+                )
+                try:
+                    schedule_version, _ = ablation_protocol(schedule.get("schema", ""))
+                except EvalError:
+                    schedule_version = None
+                if schedule_version != version:
+                    errors.append("schedule schema version does not match the manifest")
                 if schedule.get("ablationId") != payload["ablationId"]:
                     errors.append("schedule.ablationId does not match the manifest")
+                if schedule.get("treatments") != [
+                    row["treatment"] for row in payload["treatments"]
+                ]:
+                    errors.append("schedule treatments do not match the manifest")
+    schedule_case_ids = None
+    if isinstance(schedule, dict) and isinstance(schedule.get("cases"), list):
+        case_ids = [
+            case.get("id")
+            for case in schedule["cases"]
+            if isinstance(case, dict)
+        ]
+        if len(case_ids) == len(schedule["cases"]) and all(
+            isinstance(case_id, str) for case_id in case_ids
+        ):
+            schedule_case_ids = case_ids
+            if len(set(case_ids)) != len(case_ids):
+                errors.append("schedule case ids must be unique")
+            if isinstance(suite, dict) and isinstance(suite.get("cases"), list):
+                suite_case_ids = {
+                    case.get("id")
+                    for case in suite["cases"]
+                    if isinstance(case, dict)
+                }
+                if any(case_id not in suite_case_ids for case_id in case_ids):
+                    errors.append("schedule case ids contain an unknown suite case")
     seen = set()
     statuses = []
+    schedule_selection_mismatch_reported = False
     for treatment in payload["treatments"]:
         name = treatment["treatment"]
         if name in seen:
@@ -364,6 +481,60 @@ def validate_ablation_run(ablation_dir: Path) -> list[str]:
             errors.append(f"treatment {name}: summary does not match the bound run")
         if run.get("ablation", {}).get("id") != payload["ablationId"]:
             errors.append(f"treatment {name}: ablation id mismatch")
+        selected_case_ids = run.get("suite", {}).get("selectedCaseIds")
+        if schedule_case_ids is not None and selected_case_ids != schedule_case_ids:
+            if not schedule_selection_mismatch_reported:
+                errors.append("schedule case ids do not match suite selected case ids")
+                schedule_selection_mismatch_reported = True
+            errors.append(f"treatment {name}: selected case ids do not match schedule")
+        child_schedule_binding = run.get("ablation", {})
+        try:
+            child_schedule_path = safe_artifact(
+                run_dir, child_schedule_binding["scheduleArtifact"]
+            )
+            child_schedule_hash = file_hash(child_schedule_path)
+        except (EvalError, KeyError, TypeError) as error:
+            errors.append(f"treatment {name}: schedule: {error}")
+            continue
+        if child_schedule_hash != child_schedule_binding.get("scheduleSha256"):
+            errors.append(f"treatment {name}: schedule sha256 mismatch")
+        if schedule_path is not None:
+            try:
+                matches_manifest_schedule = (
+                    child_schedule_path.read_bytes() == schedule_path.read_bytes()
+                )
+            except OSError as error:
+                errors.append(f"treatment {name}: schedule: {error}")
+            else:
+                if not matches_manifest_schedule:
+                    errors.append(
+                        f"treatment {name}: schedule does not match manifest schedule"
+                    )
+        try:
+            child_schedule = read_json(child_schedule_path)
+        except (OSError, json.JSONDecodeError) as error:
+            errors.append(f"treatment {name}: schedule: {error}")
+            continue
+        if not isinstance(child_schedule, dict):
+            errors.append(f"treatment {name}: schedule: expected a JSON object")
+            continue
+        child_schedule_errors = validate_ablation_schedule(child_schedule)
+        errors.extend(
+            f"treatment {name}: schedule:{error}"
+            for error in child_schedule_errors
+        )
+        try:
+            child_schedule_version, _ = ablation_protocol(
+                child_schedule.get("schema", "")
+            )
+        except (AttributeError, EvalError):
+            child_schedule_version = None
+        if child_schedule_version != version:
+            errors.append(
+                f"treatment {name}: schedule schema version does not match manifest"
+            )
+        if child_schedule.get("ablationId") != payload["ablationId"]:
+            errors.append(f"treatment {name}: schedule ablation id mismatch")
     expected_status = overall_status([{"status": status} for status in statuses])
     if payload["status"] != expected_status:
         errors.append("ablation status does not match treatment runs")
@@ -544,7 +715,11 @@ def _verification_treatment_valid(payload: dict[str, Any]) -> bool:
                 for record in records
             )
         )
-    if treatment in set(ABLATION_TREATMENTS) - {"REVIEW_CRAFT_EVIDENCE_LOOP"}:
+    non_evidence_treatments = set(ABLATION_TREATMENTS) | set(
+        LEGACY_ABLATION_TREATMENTS
+    )
+    non_evidence_treatments.remove("REVIEW_CRAFT_EVIDENCE_LOOP")
+    if treatment in non_evidence_treatments:
         return all(
             record.get("verificationExecuted") is False
             and record.get("verificationExitCode") is None
@@ -774,28 +949,27 @@ def validate_golden_snapshot(payload: dict[str, Any]) -> list[str]:
 
 
 def validate_ablation_comparison(payload: dict[str, Any]) -> list[str]:
+    try:
+        version, protocol = ablation_protocol(payload.get("schema", ""))
+    except EvalError as error:
+        return [str(error)]
     errors = validate_content_bound_payload(
         payload,
-        ABLATION_COMPARISON_SCHEMA,
+        ablation_schema("comparison", version),
         label="ablation comparison",
     )
     if errors:
         return errors
     arms = payload["arms"]
     treatments = [arm["treatment"] for arm in arms]
-    if treatments != list(ABLATION_TREATMENTS):
-        errors.append("ablation comparison:arms must use canonical A/B/C/D order")
-    expected_deltas = [
-        ("A_TO_B", ABLATION_TREATMENTS[0], ABLATION_TREATMENTS[1]),
-        ("B_TO_C", ABLATION_TREATMENTS[1], ABLATION_TREATMENTS[2]),
-        ("C_TO_D", ABLATION_TREATMENTS[2], ABLATION_TREATMENTS[3]),
-        ("A_TO_D", ABLATION_TREATMENTS[0], ABLATION_TREATMENTS[3]),
-    ]
+    if treatments != list(protocol["treatments"]):
+        errors.append("ablation comparison:arms must use canonical protocol order")
+    expected_deltas = list(protocol["deltas"])
     actual_deltas = [
         (row["id"], row["from"], row["to"]) for row in payload["deltas"]
     ]
     if actual_deltas != expected_deltas:
-        errors.append("ablation comparison:deltas must use canonical A->B, B->C, C->D, A->D order")
+        errors.append("ablation comparison:deltas must use canonical protocol order")
     adjudication_hashes = {arm["adjudicationContentSha256"] for arm in arms}
     if len(adjudication_hashes) != 1:
         errors.append("ablation comparison:all arms must bind one adjudication result")
@@ -859,17 +1033,21 @@ def _snapshot_sanitization_errors(value: Any, *, location: str = "<root>") -> li
 
 
 def validate_ablation_snapshot(payload: dict[str, Any]) -> list[str]:
+    try:
+        version, protocol = ablation_protocol(payload.get("schema", ""))
+    except EvalError as error:
+        return [str(error)]
     errors = validate_content_bound_payload(
         payload,
-        ABLATION_SNAPSHOT_SCHEMA,
+        ablation_schema("snapshot", version),
         label="ablation snapshot",
     )
     if errors:
         return errors
     errors.extend(_snapshot_sanitization_errors(payload))
     treatments = [arm["treatment"] for arm in payload["arms"]]
-    if treatments != list(ABLATION_TREATMENTS):
-        errors.append("ablation snapshot:arms must use canonical A/B/C/D order")
+    if treatments != list(protocol["treatments"]):
+        errors.append("ablation snapshot:arms must use canonical protocol order")
     if not all(arm["goldenEligible"] for arm in payload["arms"]):
         errors.append("ablation snapshot:all arms must be Golden-eligible")
     if not all(
@@ -1156,7 +1334,7 @@ def _ablation_context(
         run = read_json(run_dir / "result.json")
         if run["status"] != "COMPLETED":
             raise EvalError(
-                "ablation adjudication requires four completed child runs; "
+                "ablation adjudication requires all child runs to be completed; "
                 f"{treatment} is {run['status']}"
             )
         for record in run["cases"]:
@@ -1189,8 +1367,9 @@ def build_ablation_adjudication_template(
     protocol: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     manifest, _, samples = _ablation_context(ablation_dir)
+    version, _ = ablation_protocol(manifest["schema"])
     bundle = {
-        "schema": "review-craft.eval-ablation-blind-bundle.v1",
+        "schema": f"review-craft.eval-ablation-blind-bundle.{version}",
         "ablationId": manifest["ablationId"],
         "ablationContentSha256": manifest["contentSha256"],
         "samples": [
@@ -1213,13 +1392,13 @@ def build_ablation_adjudication_template(
     )
     bundle_errors = validate_content_bound_payload(
         bundle,
-        ABLATION_BLIND_BUNDLE_SCHEMA,
+        ablation_schema("blind-bundle", version),
         label="ablation blind bundle",
     )
     if bundle_errors:
         raise EvalError("generated blind bundle is invalid: " + "; ".join(bundle_errors))
     template = {
-        "schema": "review-craft.eval-ablation-adjudication.v1",
+        "schema": f"review-craft.eval-ablation-adjudication.{version}",
         "ablationId": manifest["ablationId"],
         "ablationContentSha256": manifest["contentSha256"],
         "bundleContentSha256": bundle["contentSha256"],
@@ -1237,7 +1416,7 @@ def build_ablation_adjudication_template(
             for sample_id in sorted(samples)
         ],
     }
-    errors = schema_errors(template, ABLATION_ADJUDICATION_SCHEMA)
+    errors = schema_errors(template, ablation_schema("adjudication", version))
     if errors:
         raise EvalError("generated ablation adjudication template is invalid: " + "; ".join(errors))
     return bundle, template
@@ -1327,17 +1506,29 @@ def build_ablation_adjudication_result(
     bundle: dict[str, Any],
     adjudication: dict[str, Any],
 ) -> dict[str, Any]:
+    try:
+        bundle_version, _ = ablation_protocol(bundle.get("schema", ""))
+        input_version, _ = ablation_protocol(adjudication.get("schema", ""))
+    except EvalError as error:
+        raise EvalError(str(error)) from error
+    if bundle_version != input_version:
+        raise EvalError("ablation bundle and adjudication schema versions do not match")
     bundle_errors = validate_content_bound_payload(
         bundle,
-        ABLATION_BLIND_BUNDLE_SCHEMA,
+        ablation_schema("blind-bundle", bundle_version),
         label="ablation blind bundle",
     )
     if bundle_errors:
         raise EvalError("blind bundle is invalid: " + "; ".join(bundle_errors))
-    input_errors = schema_errors(adjudication, ABLATION_ADJUDICATION_SCHEMA)
+    input_errors = schema_errors(
+        adjudication, ablation_schema("adjudication", input_version)
+    )
     if input_errors:
         raise EvalError("ablation adjudication input is invalid: " + "; ".join(input_errors))
     manifest, _, contexts = _ablation_context(ablation_dir)
+    manifest_version, _ = ablation_protocol(manifest["schema"])
+    if manifest_version != bundle_version:
+        raise EvalError("ablation evidence schema version does not match the run")
     if adjudication["ablationId"] != manifest["ablationId"]:
         raise EvalError("ablation adjudication id does not match the run")
     if adjudication["ablationContentSha256"] != manifest["contentSha256"]:
@@ -1387,7 +1578,7 @@ def build_ablation_adjudication_result(
             }
         )
     result = {
-        "schema": "review-craft.eval-ablation-adjudication-result.v1",
+        "schema": f"review-craft.eval-ablation-adjudication-result.{manifest_version}",
         "ablation": {
             "id": manifest["ablationId"],
             "contentSha256": manifest["contentSha256"],
@@ -1403,7 +1594,7 @@ def build_ablation_adjudication_result(
     )
     errors = validate_content_bound_payload(
         result,
-        ABLATION_ADJUDICATION_RESULT_SCHEMA,
+        ablation_schema("adjudication-result", manifest_version),
         label="ablation adjudication result",
     )
     if errors:
@@ -1416,9 +1607,13 @@ def validate_ablation_adjudication_result(
     bundle: dict[str, Any],
     payload: dict[str, Any],
 ) -> list[str]:
+    try:
+        version, _ = ablation_protocol(payload.get("schema", ""))
+    except EvalError as error:
+        return [str(error)]
     errors = validate_content_bound_payload(
         payload,
-        ABLATION_ADJUDICATION_RESULT_SCHEMA,
+        ablation_schema("adjudication-result", version),
         label="ablation adjudication result",
     )
     if errors:
@@ -1438,7 +1633,7 @@ def validate_ablation_adjudication_result(
                 }
             )
     adjudication = {
-        "schema": "review-craft.eval-ablation-adjudication.v1",
+        "schema": f"review-craft.eval-ablation-adjudication.{version}",
         "ablationId": payload["ablation"]["id"],
         "ablationContentSha256": payload["ablation"]["contentSha256"],
         "bundleContentSha256": payload["bundleContentSha256"],

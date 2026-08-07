@@ -11,6 +11,10 @@ from jsonschema import Draft202012Validator
 
 from tests.support import ROOT
 
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import eval_contracts  # noqa: E402
+
 
 class EvalContractTests(unittest.TestCase):
     def test_matched_prompts_require_evidence_for_no_finding_dispositions(self) -> None:
@@ -107,12 +111,60 @@ class EvalContractTests(unittest.TestCase):
         for schema_name in (
             "eval-host-output.schema.json",
             "eval-ablation-adjudication.schema.json",
+            "eval-ablation-adjudication-v2.schema.json",
         ):
             with self.subTest(schema=schema_name):
                 schema = json.loads(
                     (ROOT / "evals/schemas" / schema_name).read_text(encoding="utf-8")
                 )
                 visit(schema)
+
+    def test_active_ablation_excludes_adversarial_only_treatments(self) -> None:
+        prompt_root = ROOT / "evals/prompts"
+        risk_lens_prompt = (prompt_root / "risk-lens-review.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertFalse((prompt_root / "adversarial-review.md").exists())
+        self.assertFalse((prompt_root / "risk-lens-adversarial.md").exists())
+        self.assertNotIn("adversarial", risk_lens_prompt.lower())
+        self.assertNotIn("challenge the implementation", risk_lens_prompt.lower())
+        self.assertNotIn("falsify", risk_lens_prompt.lower())
+        self.assertNotIn("strongest credible failure path", risk_lens_prompt.lower())
+        self.assertEqual(
+            list(eval_contracts.ABLATION_TREATMENTS),
+            [
+                "ORDINARY_PROMPT",
+                "RISK_LENS_REVIEW",
+                "REVIEW_CRAFT_EVIDENCE_LOOP",
+            ],
+        )
+
+    def test_three_arm_docs_do_not_claim_external_evidence_isolation(self) -> None:
+        result_readme = (
+            ROOT / "evals/ablation-results/README.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(result_readme.split())
+        self.assertNotIn(
+            "isolates project-specific attention guidance from external evidence",
+            normalized,
+        )
+        self.assertIn(
+            "does not isolate the independent effect of external evidence",
+            normalized,
+        )
+
+    def test_historical_four_arm_snapshot_remains_validation_only_evidence(self) -> None:
+        snapshot = json.loads(
+            (
+                ROOT
+                / "evals/ablation-results/13ad6f2-gpt-5.6-sol/snapshot.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(snapshot["schema"], "review-craft.eval-ablation-snapshot.v1")
+        self.assertEqual(snapshot["host"]["adapterVersion"], "0.6.0")
+        self.assertEqual(eval_contracts.validate_ablation_snapshot(snapshot), [])
 
     def test_eval_suite_has_six_positive_and_six_negative_cases(self) -> None:
         payload = json.loads((ROOT / "evals/specs/cases.json").read_text(encoding="utf-8"))

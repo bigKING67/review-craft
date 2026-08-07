@@ -18,13 +18,19 @@ output are reported subcounts and are not added again. Aggregate `reportedUsage`
 `reportedCases`. `PARTIAL` and `UNAVAILABLE` results retain fixed unavailable reasons and
 use `null`, never fabricated zeroes, for unknown costs.
 
-The separate eval run v4 four-arm ablation tests ordinary review, adversarial review,
-risk-lens-guided adversarial review, and a Review Craft evidence loop over six matched
-positive/negative fixture pairs. It uses a Latin-square treatment order, content-bound
-sanitized tool traces, hidden behavioral verifiers, treatment-blinded adjudication, and
-fixed A-to-B, B-to-C, C-to-D, and A-to-D comparisons. This is an evaluation harness
+The active eval run v4 ablation uses the three-arm v2 protocol: ordinary review,
+project-specific risk-lens review without generic adversarial wording, and a Review Craft
+evidence loop over six matched positive/negative fixture pairs. It uses a Latin-square
+treatment order, content-bound sanitized tool traces, hidden behavioral verifiers,
+treatment-blinded adjudication, and fixed A-to-B, B-to-C, and A-to-C comparisons. The
+four-arm v1 protocol remains validation-only historical evidence because its
+adversarial-only treatment regressed in the published run. This is an evaluation harness
 capability, not an installable runtime feature. See `../ablation-results/README.md` for its
 execution, export, and claim boundaries.
+
+A-to-B isolates the project-specific risk lens relative to ordinary review. B-to-C adds
+both Review Craft skill instructions and verifier feedback, so it compares the complete
+evidence loop with lens-only review and does not isolate either added contribution.
 
 Codex real-host runs require `HOME` and `CODEX_HOME` to resolve to the same auth-only
 directory. This prevents `$HOME/.agents` skills or plugins from contaminating a nominally

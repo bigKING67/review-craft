@@ -5,6 +5,12 @@ four-arm evaluation over 12 controlled fixtures on 2026-08-07. It does not conta
 prompts, fixture copies, host output, logs, tool output, adapter argv, provider URLs,
 credentials, or machine-local paths.
 
+This v1 result is frozen historical evidence. `ADVERSARIAL_PROMPT` is retained only as a
+negative control because it regressed against ordinary review in this run. Neither it nor
+the combined `RISK_LENS_ADVERSARIAL` treatment is an active prompt, default experiment arm,
+or product recommendation. The active v2 protocol tests `RISK_LENS_REVIEW` without generic
+adversarial wording so the risk lens can be evaluated independently.
+
 ## Bound environment
 
 - source revision: `13ad6f29562f3371444d0458c8f901d24d746af8`;

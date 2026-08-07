@@ -202,7 +202,14 @@ class EvalRunnerTests(unittest.TestCase):
         eval_contracts.write_json(manifest_path, manifest)
         self.assertEqual(eval_contracts.validate_ablation_run(ablation_dir), [])
 
-    def test_four_arm_ablation_schedule_prompt_boundaries_and_trace_binding(self) -> None:
+    @staticmethod
+    def _write_rehashed_payload(path: Path, payload: dict) -> None:
+        payload["contentSha256"] = eval_contracts.sha256_json(
+            {key: value for key, value in payload.items() if key != "contentSha256"}
+        )
+        eval_contracts.write_json(path, payload)
+
+    def test_three_arm_ablation_schedule_prompt_boundaries_and_trace_binding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ablation_dir = self._synthetic_ablation(Path(directory))
             manifest = json.loads(
@@ -240,7 +247,7 @@ class EvalRunnerTests(unittest.TestCase):
                         encoding="utf-8"
                     )
                     lens_expected = summary["treatment"] in {
-                        "RISK_LENS_ADVERSARIAL",
+                        "RISK_LENS_REVIEW",
                         "REVIEW_CRAFT_EVIDENCE_LOOP",
                     }
                     self.assertEqual(case["riskLens"]["prompt"] in prompt, lens_expected)
@@ -408,6 +415,108 @@ class EvalRunnerTests(unittest.TestCase):
                     )
                     self.assertEqual(validated.returncode, 2)
 
+    def test_ablation_schedule_cases_must_match_suite_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = self._synthetic_ablation(root / "source")
+            for mutation in ("unknown", "duplicate", "missing", "out-of-order"):
+                with self.subTest(mutation=mutation):
+                    target = root / mutation
+                    shutil.copytree(original, target)
+                    manifest_path = target / "ablation.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    schedule_path = target / manifest["schedule"]["artifact"]
+                    schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+                    if mutation == "unknown":
+                        schedule["cases"][0]["id"] = "case-not-present-in-suite"
+                    elif mutation == "duplicate":
+                        schedule["cases"][1]["id"] = schedule["cases"][0]["id"]
+                    elif mutation == "missing":
+                        schedule["cases"].pop()
+                    else:
+                        schedule["cases"][0]["id"], schedule["cases"][1]["id"] = (
+                            schedule["cases"][1]["id"],
+                            schedule["cases"][0]["id"],
+                        )
+                    eval_contracts.write_json(schedule_path, schedule)
+                    manifest["schedule"]["sha256"] = eval_contracts.file_hash(
+                        schedule_path
+                    )
+                    self._write_rehashed_payload(manifest_path, manifest)
+
+                    errors = eval_contracts.validate_ablation_run(target)
+                    self.assertIn(
+                        "schedule case ids do not match suite selected case ids",
+                        errors,
+                    )
+
+    def test_ablation_child_schedule_must_match_manifest_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = self._synthetic_ablation(root / "source")
+            for mutation in ("invalid-schema", "byte-drift"):
+                with self.subTest(mutation=mutation):
+                    target = root / mutation
+                    shutil.copytree(original, target)
+                    manifest_path = target / "ablation.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    summary = manifest["treatments"][0]
+                    run_dir = target / summary["runDir"]
+                    result_path = run_dir / "result.json"
+                    run = json.loads(result_path.read_text(encoding="utf-8"))
+                    child_schedule_path = run_dir / run["ablation"]["scheduleArtifact"]
+                    if mutation == "invalid-schema":
+                        eval_contracts.write_json(child_schedule_path, {"forged": True})
+                    else:
+                        child_schedule_path.write_text(
+                            child_schedule_path.read_text(encoding="utf-8") + "\n",
+                            encoding="utf-8",
+                        )
+                    run["ablation"]["scheduleSha256"] = eval_contracts.file_hash(
+                        child_schedule_path
+                    )
+                    self._write_rehashed_payload(result_path, run)
+                    summary["runContentSha256"] = run["contentSha256"]
+                    self._write_rehashed_payload(manifest_path, manifest)
+
+                    errors = eval_contracts.validate_ablation_run(target)
+                    self.assertTrue(
+                        any(
+                            error.startswith("treatment ") and "schedule" in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
+
+    def test_ablation_child_selection_must_match_manifest_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ablation_dir = self._synthetic_ablation(root)
+            manifest_path = ablation_dir / "ablation.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            summary = manifest["treatments"][0]
+            run_dir = ablation_dir / summary["runDir"]
+            result_path = run_dir / "result.json"
+            run = json.loads(result_path.read_text(encoding="utf-8"))
+            run["suite"]["selectedCaseIds"][0:2] = reversed(
+                run["suite"]["selectedCaseIds"][0:2]
+            )
+            run["cases"][0:2] = reversed(run["cases"][0:2])
+            self._write_rehashed_payload(result_path, run)
+            summary["runContentSha256"] = run["contentSha256"]
+            self._write_rehashed_payload(manifest_path, manifest)
+
+            errors = eval_contracts.validate_ablation_run(ablation_dir)
+            self.assertIn(
+                f"treatment {summary['treatment']}: selected case ids do not match schedule",
+                errors,
+            )
+
+    def test_active_ablation_cli_help_is_protocol_neutral(self) -> None:
+        completed = run_eval("--help")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("four bound runs", completed.stdout)
+
     def test_ablation_comparison_and_sanitized_export_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -431,10 +540,10 @@ class EvalRunnerTests(unittest.TestCase):
             self.assertTrue(comparison["comparativeEligible"])
             self.assertEqual(
                 [row["id"] for row in comparison["deltas"]],
-                ["A_TO_B", "B_TO_C", "C_TO_D", "A_TO_D"],
+                ["A_TO_B", "B_TO_C", "A_TO_C"],
             )
             self.assertEqual(
-                comparison["deltas"][2]["semanticPercentagePoints"][
+                comparison["deltas"][1]["semanticPercentagePoints"][
                     "semanticDecisiveExternalFeedbackPercent"
                 ],
                 100.0,

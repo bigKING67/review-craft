@@ -17,6 +17,43 @@ import codex_eval_adapter as adapter
 
 
 class CodexEvalAdapterTests(unittest.TestCase):
+    def test_adapter_version_identifies_the_three_arm_protocol(self) -> None:
+        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.1")
+        self.assertEqual(adapter.USAGE_COLLECTOR["version"], adapter.ADAPTER_VERSION)
+        self.assertEqual(
+            adapter.ABLATION_TREATMENTS,
+            {
+                "ORDINARY_PROMPT",
+                "RISK_LENS_REVIEW",
+                "REVIEW_CRAFT_EVIDENCE_LOOP",
+            },
+        )
+        isolation = {
+            "homeMatchesCodexHome": True,
+            "ignoreUserConfig": True,
+            "ignoreRules": True,
+            "allowCodexHomeExtensions": False,
+            "systemResourceCount": 0,
+            "systemResourceSha256": hashlib.sha256(b"").hexdigest(),
+            "extensionResourceCount": 0,
+            "extensionResourceSha256": hashlib.sha256(b"").hexdigest(),
+        }
+        with (
+            patch.object(adapter, "codex_version", return_value="codex-cli test"),
+            patch.object(
+                adapter,
+                "codex_home_extension_state",
+                return_value=isolation,
+            ),
+            patch("builtins.print") as print_mock,
+        ):
+            status = adapter.main(
+                ["--model", "gpt-test", "--reasoning", "high", "--describe"]
+            )
+        self.assertEqual(status, 0)
+        description = json.loads(print_mock.call_args.args[0])
+        self.assertEqual(description["adapterVersion"], "0.6.1")
+
     def test_codex_command_enables_jsonl_for_structured_usage(self) -> None:
         args = adapter.parse_args(
             ["--model", "gpt-test", "--reasoning", "high"]
