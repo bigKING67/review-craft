@@ -210,12 +210,17 @@ def _git_paths(root: Path) -> list[str]:
     result = run_git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", errors="replace").strip())
+    paths = {
+        item.decode("utf-8", errors="surrogateescape")
+        for item in result.stdout.split(b"\0")
+        if item
+    }
+    # Full-review identity follows the current filesystem. Diff mode supplies
+    # deleted paths explicitly so it can preserve their base-revision content.
     return sorted(
-        {
-            item.decode("utf-8", errors="surrogateescape")
-            for item in result.stdout.split(b"\0")
-            if item
-        }
+        path
+        for path in paths
+        if (root / path).exists() or (root / path).is_symlink()
     )
 
 

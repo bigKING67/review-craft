@@ -169,6 +169,32 @@ class RepositoryTests(unittest.TestCase):
                     before,
                 )
 
+    def test_review_fingerprint_is_stable_when_a_deletion_is_committed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+            removed = root / "removed.py"
+            removed.write_text("REMOVE = True\n", encoding="utf-8")
+            git_init(root)
+            repository.run_git(root, "add", "--", ".", check=True)
+            repository.run_git(root, "commit", "-m", "fixture", check=True)
+
+            removed.unlink()
+            diff_records, _, _ = repository.inventory_for_mode(
+                root,
+                mode="diff",
+                diff_base="HEAD",
+            )
+            self.assertEqual(
+                [(row["path"], row["kind"], row["diffStatus"]) for row in diff_records],
+                [("removed.py", "deleted", "D")],
+            )
+            before_commit = worktree_fingerprint(root)
+
+            repository.run_git(root, "add", "--", removed.name, check=True)
+            repository.run_git(root, "commit", "-m", "remove fixture", check=True)
+            self.assertEqual(worktree_fingerprint(root), before_commit)
+
     def test_repository_maps_capture_local_python_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
