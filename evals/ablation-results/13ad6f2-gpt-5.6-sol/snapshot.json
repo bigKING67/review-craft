@@ -1,0 +1,476 @@
+{
+  "ablation": {
+    "contentSha256": "e8a7dbe9fdb4e3bd5b5c0b2a09f93ed9a62dc647b5d52cf1337fcb1f91284762",
+    "id": "rca-20260807T084925Z-7139cbdc0378",
+    "scheduleSha256": "278339dddc7268f8929c269028c9f96d37cf9ee63dac54e2abc015ef44b90a1c"
+  },
+  "arms": [
+    {
+      "adjudicationContentSha256": "d118f455c63c2af5bbf54ee7b80454e04fae32d5e3ae74f9e90ce572242be319",
+      "goldenEligible": true,
+      "runContentSha256": "f0c63540fda05218084aab86845db67717b535d4322dffdc19ff977cd45a29fc",
+      "runId": "rce-20260807T084925Z-31e1ef737e67",
+      "semanticMetrics": {
+        "contaminatedNegativeCases": 2,
+        "falsePositiveFindings": 2,
+        "missedSeededIssues": 1,
+        "negativeCases": 6,
+        "positiveCases": 6,
+        "resolvedCases": 12,
+        "seededIssueMatches": 5,
+        "semanticDecisionAccuracyPercent": 66.67,
+        "semanticDecisiveExternalFeedbackPercent": 16.67,
+        "semanticEvidenceAdequacyPercent": 58.33,
+        "semanticEvidenceValidation": "ADJUDICATED",
+        "semanticFalsePositiveRatePercent": 50.0,
+        "semanticFalsificationAdequacyPercent": 45.45,
+        "semanticFindingPrecisionPercent": 80.0,
+        "semanticSeededRecallPercent": 83.33,
+        "totalCases": 12,
+        "unresolvedCases": 0,
+        "validFindings": 8
+      },
+      "structuralMetrics": {
+        "candidateRecallPercent": 100.0,
+        "completedCases": 12,
+        "decisionAccuracyPercent": 58.33,
+        "evidencePresencePercent": 100.0,
+        "executionCoveragePercent": 100.0,
+        "failedCases": 0,
+        "falsePositiveRatePercent": 66.67,
+        "findingPrecisionPercent": 60.0,
+        "locationAccuracyPercent": 100.0,
+        "rewriteRestraintPercent": 100.0,
+        "semanticEvidenceValidation": "NOT_AUTOMATED",
+        "totalCases": 12,
+        "totalDurationMs": 553999,
+        "unavailableCases": 0,
+        "usage": {
+          "availability": "COMPLETE",
+          "reportedCases": 12,
+          "reportedUsage": {
+            "cacheWriteInputTokens": 0,
+            "cachedInputTokens": 329216,
+            "inputTokens": 494707,
+            "outputTokens": 16245,
+            "reasoningOutputTokens": 8321,
+            "toolCalls": {
+              "byType": {
+                "collabToolCall": 0,
+                "commandExecution": 37,
+                "fileChange": 0,
+                "mcpToolCall": 0,
+                "webSearch": 0
+              },
+              "total": 37
+            },
+            "totalTokens": 510952,
+            "turnCount": 12
+          },
+          "unavailableCases": 0,
+          "unavailableReasons": {}
+        },
+        "verificationExecutionPercent": 0.0
+      },
+      "treatment": "ORDINARY_PROMPT"
+    },
+    {
+      "adjudicationContentSha256": "d118f455c63c2af5bbf54ee7b80454e04fae32d5e3ae74f9e90ce572242be319",
+      "goldenEligible": true,
+      "runContentSha256": "6e2cd05007950321bda4bca8f6c0996ca9cc64cc9239afccc606c4396a286919",
+      "runId": "rce-20260807T084925Z-c560def66361",
+      "semanticMetrics": {
+        "contaminatedNegativeCases": 3,
+        "falsePositiveFindings": 3,
+        "missedSeededIssues": 2,
+        "negativeCases": 6,
+        "positiveCases": 6,
+        "resolvedCases": 12,
+        "seededIssueMatches": 4,
+        "semanticDecisionAccuracyPercent": 50.0,
+        "semanticDecisiveExternalFeedbackPercent": 16.67,
+        "semanticEvidenceAdequacyPercent": 58.33,
+        "semanticEvidenceValidation": "ADJUDICATED",
+        "semanticFalsePositiveRatePercent": 66.67,
+        "semanticFalsificationAdequacyPercent": 41.67,
+        "semanticFindingPrecisionPercent": 72.73,
+        "semanticSeededRecallPercent": 66.67,
+        "totalCases": 12,
+        "unresolvedCases": 0,
+        "validFindings": 8
+      },
+      "structuralMetrics": {
+        "candidateRecallPercent": 100.0,
+        "completedCases": 12,
+        "decisionAccuracyPercent": 41.67,
+        "evidencePresencePercent": 100.0,
+        "executionCoveragePercent": 100.0,
+        "failedCases": 0,
+        "falsePositiveRatePercent": 83.33,
+        "findingPrecisionPercent": 54.55,
+        "locationAccuracyPercent": 100.0,
+        "rewriteRestraintPercent": 83.33,
+        "semanticEvidenceValidation": "NOT_AUTOMATED",
+        "totalCases": 12,
+        "totalDurationMs": 526532,
+        "unavailableCases": 0,
+        "usage": {
+          "availability": "COMPLETE",
+          "reportedCases": 12,
+          "reportedUsage": {
+            "cacheWriteInputTokens": 0,
+            "cachedInputTokens": 335872,
+            "inputTokens": 466431,
+            "outputTokens": 16211,
+            "reasoningOutputTokens": 8453,
+            "toolCalls": {
+              "byType": {
+                "collabToolCall": 0,
+                "commandExecution": 37,
+                "fileChange": 0,
+                "mcpToolCall": 0,
+                "webSearch": 0
+              },
+              "total": 37
+            },
+            "totalTokens": 482642,
+            "turnCount": 12
+          },
+          "unavailableCases": 0,
+          "unavailableReasons": {}
+        },
+        "verificationExecutionPercent": 0.0
+      },
+      "treatment": "ADVERSARIAL_PROMPT"
+    },
+    {
+      "adjudicationContentSha256": "d118f455c63c2af5bbf54ee7b80454e04fae32d5e3ae74f9e90ce572242be319",
+      "goldenEligible": true,
+      "runContentSha256": "ced3c1a56eef130577e4c5b0dd9cf638db8880187e10ff979327de9556fc9e2a",
+      "runId": "rce-20260807T084925Z-acacd6b588c5",
+      "semanticMetrics": {
+        "contaminatedNegativeCases": 1,
+        "falsePositiveFindings": 0,
+        "missedSeededIssues": 2,
+        "negativeCases": 6,
+        "positiveCases": 6,
+        "resolvedCases": 12,
+        "seededIssueMatches": 4,
+        "semanticDecisionAccuracyPercent": 83.33,
+        "semanticDecisiveExternalFeedbackPercent": 0.0,
+        "semanticEvidenceAdequacyPercent": 83.33,
+        "semanticEvidenceValidation": "ADJUDICATED",
+        "semanticFalsePositiveRatePercent": 0.0,
+        "semanticFalsificationAdequacyPercent": 66.67,
+        "semanticFindingPrecisionPercent": 100.0,
+        "semanticSeededRecallPercent": 66.67,
+        "totalCases": 12,
+        "unresolvedCases": 0,
+        "validFindings": 6
+      },
+      "structuralMetrics": {
+        "candidateRecallPercent": 83.33,
+        "completedCases": 12,
+        "decisionAccuracyPercent": 83.33,
+        "evidencePresencePercent": 83.33,
+        "executionCoveragePercent": 100.0,
+        "failedCases": 0,
+        "falsePositiveRatePercent": 16.67,
+        "findingPrecisionPercent": 83.33,
+        "locationAccuracyPercent": 83.33,
+        "rewriteRestraintPercent": 100.0,
+        "semanticEvidenceValidation": "NOT_AUTOMATED",
+        "totalCases": 12,
+        "totalDurationMs": 517390,
+        "unavailableCases": 0,
+        "usage": {
+          "availability": "COMPLETE",
+          "reportedCases": 12,
+          "reportedUsage": {
+            "cacheWriteInputTokens": 0,
+            "cachedInputTokens": 291328,
+            "inputTokens": 459941,
+            "outputTokens": 15893,
+            "reasoningOutputTokens": 7863,
+            "toolCalls": {
+              "byType": {
+                "collabToolCall": 0,
+                "commandExecution": 36,
+                "fileChange": 0,
+                "mcpToolCall": 0,
+                "webSearch": 0
+              },
+              "total": 36
+            },
+            "totalTokens": 475834,
+            "turnCount": 12
+          },
+          "unavailableCases": 0,
+          "unavailableReasons": {}
+        },
+        "verificationExecutionPercent": 0.0
+      },
+      "treatment": "RISK_LENS_ADVERSARIAL"
+    },
+    {
+      "adjudicationContentSha256": "d118f455c63c2af5bbf54ee7b80454e04fae32d5e3ae74f9e90ce572242be319",
+      "goldenEligible": true,
+      "runContentSha256": "77041d31f64845522cd381f426496059c743df1b43c7f85f1b0331f210794ccc",
+      "runId": "rce-20260807T084925Z-d000d407a3da",
+      "semanticMetrics": {
+        "contaminatedNegativeCases": 0,
+        "falsePositiveFindings": 0,
+        "missedSeededIssues": 0,
+        "negativeCases": 6,
+        "positiveCases": 6,
+        "resolvedCases": 12,
+        "seededIssueMatches": 6,
+        "semanticDecisionAccuracyPercent": 91.67,
+        "semanticDecisiveExternalFeedbackPercent": 100.0,
+        "semanticEvidenceAdequacyPercent": 100.0,
+        "semanticEvidenceValidation": "ADJUDICATED",
+        "semanticFalsePositiveRatePercent": 0.0,
+        "semanticFalsificationAdequacyPercent": 100.0,
+        "semanticFindingPrecisionPercent": 100.0,
+        "semanticSeededRecallPercent": 100.0,
+        "totalCases": 12,
+        "unresolvedCases": 0,
+        "validFindings": 6
+      },
+      "structuralMetrics": {
+        "candidateRecallPercent": 100.0,
+        "completedCases": 12,
+        "decisionAccuracyPercent": 91.67,
+        "evidencePresencePercent": 100.0,
+        "executionCoveragePercent": 100.0,
+        "failedCases": 0,
+        "falsePositiveRatePercent": 0.0,
+        "findingPrecisionPercent": 100.0,
+        "locationAccuracyPercent": 100.0,
+        "rewriteRestraintPercent": 100.0,
+        "semanticEvidenceValidation": "NOT_AUTOMATED",
+        "totalCases": 12,
+        "totalDurationMs": 727823,
+        "unavailableCases": 0,
+        "usage": {
+          "availability": "COMPLETE",
+          "reportedCases": 12,
+          "reportedUsage": {
+            "cacheWriteInputTokens": 0,
+            "cachedInputTokens": 632832,
+            "inputTokens": 877588,
+            "outputTokens": 23896,
+            "reasoningOutputTokens": 11765,
+            "toolCalls": {
+              "byType": {
+                "collabToolCall": 0,
+                "commandExecution": 57,
+                "fileChange": 0,
+                "mcpToolCall": 0,
+                "webSearch": 0
+              },
+              "total": 57
+            },
+            "totalTokens": 901484,
+            "turnCount": 12
+          },
+          "unavailableCases": 0,
+          "unavailableReasons": {}
+        },
+        "verificationExecutionPercent": 100.0
+      },
+      "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP"
+    }
+  ],
+  "comparison": {
+    "adjudicator": {
+      "kind": "AGENT_ASSISTED",
+      "protocol": "isolated-blind-full-v1"
+    },
+    "comparativeEligible": true,
+    "contentSha256": "da3311785c50f981eaa3a39506bd29b29252c604c73a97093c6706e24ff0015c",
+    "matched": true
+  },
+  "contentSha256": "c060c3b1a73cb7295dcc87b279aef299d73421656443a0d0a9426c7e12504eb1",
+  "deltas": [
+    {
+      "cost": {
+        "durationRatio": 0.9504,
+        "toolCallsRatio": 1.0,
+        "totalTokensRatio": 0.9446
+      },
+      "from": "ORDINARY_PROMPT",
+      "id": "A_TO_B",
+      "semanticPercentagePoints": {
+        "semanticDecisionAccuracyPercent": -16.67,
+        "semanticDecisiveExternalFeedbackPercent": 0.0,
+        "semanticEvidenceAdequacyPercent": 0.0,
+        "semanticFalsePositiveRatePercent": 16.67,
+        "semanticFalsificationAdequacyPercent": -3.78,
+        "semanticFindingPrecisionPercent": -7.27,
+        "semanticSeededRecallPercent": -16.66
+      },
+      "structuralPercentagePoints": {
+        "candidateRecallPercent": 0.0,
+        "decisionAccuracyPercent": -16.66,
+        "evidencePresencePercent": 0.0,
+        "executionCoveragePercent": 0.0,
+        "falsePositiveRatePercent": 16.66,
+        "findingPrecisionPercent": -5.45,
+        "locationAccuracyPercent": 0.0,
+        "rewriteRestraintPercent": -16.67,
+        "verificationExecutionPercent": 0.0
+      },
+      "to": "ADVERSARIAL_PROMPT"
+    },
+    {
+      "cost": {
+        "durationRatio": 0.9826,
+        "toolCallsRatio": 0.973,
+        "totalTokensRatio": 0.9859
+      },
+      "from": "ADVERSARIAL_PROMPT",
+      "id": "B_TO_C",
+      "semanticPercentagePoints": {
+        "semanticDecisionAccuracyPercent": 33.33,
+        "semanticDecisiveExternalFeedbackPercent": -16.67,
+        "semanticEvidenceAdequacyPercent": 25.0,
+        "semanticFalsePositiveRatePercent": -66.67,
+        "semanticFalsificationAdequacyPercent": 25.0,
+        "semanticFindingPrecisionPercent": 27.27,
+        "semanticSeededRecallPercent": 0.0
+      },
+      "structuralPercentagePoints": {
+        "candidateRecallPercent": -16.67,
+        "decisionAccuracyPercent": 41.66,
+        "evidencePresencePercent": -16.67,
+        "executionCoveragePercent": 0.0,
+        "falsePositiveRatePercent": -66.66,
+        "findingPrecisionPercent": 28.78,
+        "locationAccuracyPercent": -16.67,
+        "rewriteRestraintPercent": 16.67,
+        "verificationExecutionPercent": 0.0
+      },
+      "to": "RISK_LENS_ADVERSARIAL"
+    },
+    {
+      "cost": {
+        "durationRatio": 1.4067,
+        "toolCallsRatio": 1.5833,
+        "totalTokensRatio": 1.8945
+      },
+      "from": "RISK_LENS_ADVERSARIAL",
+      "id": "C_TO_D",
+      "semanticPercentagePoints": {
+        "semanticDecisionAccuracyPercent": 8.34,
+        "semanticDecisiveExternalFeedbackPercent": 100.0,
+        "semanticEvidenceAdequacyPercent": 16.67,
+        "semanticFalsePositiveRatePercent": 0.0,
+        "semanticFalsificationAdequacyPercent": 33.33,
+        "semanticFindingPrecisionPercent": 0.0,
+        "semanticSeededRecallPercent": 33.33
+      },
+      "structuralPercentagePoints": {
+        "candidateRecallPercent": 16.67,
+        "decisionAccuracyPercent": 8.34,
+        "evidencePresencePercent": 16.67,
+        "executionCoveragePercent": 0.0,
+        "falsePositiveRatePercent": -16.67,
+        "findingPrecisionPercent": 16.67,
+        "locationAccuracyPercent": 16.67,
+        "rewriteRestraintPercent": 0.0,
+        "verificationExecutionPercent": 100.0
+      },
+      "to": "REVIEW_CRAFT_EVIDENCE_LOOP"
+    },
+    {
+      "cost": {
+        "durationRatio": 1.3138,
+        "toolCallsRatio": 1.5405,
+        "totalTokensRatio": 1.7643
+      },
+      "from": "ORDINARY_PROMPT",
+      "id": "A_TO_D",
+      "semanticPercentagePoints": {
+        "semanticDecisionAccuracyPercent": 25.0,
+        "semanticDecisiveExternalFeedbackPercent": 83.33,
+        "semanticEvidenceAdequacyPercent": 41.67,
+        "semanticFalsePositiveRatePercent": -50.0,
+        "semanticFalsificationAdequacyPercent": 54.55,
+        "semanticFindingPrecisionPercent": 20.0,
+        "semanticSeededRecallPercent": 16.67
+      },
+      "structuralPercentagePoints": {
+        "candidateRecallPercent": 0.0,
+        "decisionAccuracyPercent": 33.34,
+        "evidencePresencePercent": 0.0,
+        "executionCoveragePercent": 0.0,
+        "falsePositiveRatePercent": -66.67,
+        "findingPrecisionPercent": 40.0,
+        "locationAccuracyPercent": 0.0,
+        "rewriteRestraintPercent": 0.0,
+        "verificationExecutionPercent": 100.0
+      },
+      "to": "REVIEW_CRAFT_EVIDENCE_LOOP"
+    }
+  ],
+  "host": {
+    "adapterVersion": "0.6.0",
+    "evidenceKind": "REAL_HOST",
+    "isolation": {
+      "allowCodexHomeExtensions": false,
+      "codexHomeExtensionFileCount": 0,
+      "codexHomeExtensionTreeSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "codexHomeSystemFileCount": 59,
+      "codexHomeSystemTreeSha256": "9d19157ea6357e0ed8ad3b8211e6e9b008a05e1be74f180f61b2c53704430652",
+      "homeMatchesCodexHome": true,
+      "ignoreRules": true,
+      "ignoreUserConfig": true
+    },
+    "model": "gpt-5.6-sol",
+    "name": "codex-cli",
+    "provider": {
+      "name": "codex",
+      "requiresOpenAIAuth": true,
+      "supportsWebsockets": false,
+      "wireApi": "responses"
+    },
+    "reasoning": "xhigh",
+    "version": "codex-cli 0.147.0"
+  },
+  "limitations": [
+    "This snapshot reports one matched four-arm run over the bound suite; it does not establish stability across reruns, models, repositories, or environments.",
+    "The percentage-point deltas are narrow observations for the bound prompts, fixtures, host, and adjudication protocol, not a general causal claim.",
+    "The fixtures are controlled evaluation cases. Adjudication withholds treatment labels and raw prompts, but outputs or tool traces may still reveal intervention characteristics; this is not guaranteed evaluator blinding."
+  ],
+  "schema": "review-craft.eval-ablation-snapshot.v1",
+  "skill": {
+    "treeSha256": "01ad0555f5d12784caccc40b79f168dabb1380fa1d09c24766ee19560d8172d0",
+    "version": "0.6.1"
+  },
+  "source": {
+    "dirty": false,
+    "revision": "13ad6f29562f3371444d0458c8f901d24d746af8",
+    "runnerSha256": "bc910ae4de4944bd42ddcd3248750a9c7750add6087df0dc14d6f25a822098dd",
+    "stableThroughoutRun": true,
+    "treeSha256": "dfd54a6b2b57e4c988f972dc5004dd2f50a41d62bdd27a1ec8e35a7b6b5b3d3e"
+  },
+  "suite": {
+    "fullSuite": true,
+    "selectedCaseIds": [
+      "failure-truthfulness-positive",
+      "failure-truthfulness-negative",
+      "retry-idempotency-positive",
+      "retry-idempotency-negative",
+      "ack-order-positive",
+      "ack-order-negative",
+      "cache-lifetime-positive",
+      "cache-lifetime-negative",
+      "compatibility-path-positive",
+      "compatibility-path-negative",
+      "io-multiplicity-positive",
+      "io-multiplicity-negative"
+    ],
+    "sha256": "0f55fa5194550c058c902112ba361053dd0372a22b29560219b8bd1491169473"
+  }
+}

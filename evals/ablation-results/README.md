@@ -13,6 +13,18 @@ injection, verifier execution, or automatic self-correction to the installable
 `skills/review-craft/` runtime. The tracked v0.3 two-arm Golden result remains a separate
 historical artifact under `../golden-results/705dbac-gpt-5.6-sol/`.
 
+## Published snapshot
+
+- [`13ad6f2-gpt-5.6-sol/`](13ad6f2-gpt-5.6-sol/) records one complete 4x12 real-host run
+  with treatment-label-blinded agent-assisted adjudication. In that bound run, the Review
+  Craft evidence loop had the strongest semantic metrics and the highest duration, token,
+  and tool-call cost. See the result README for exact metrics, attempt lineage, integrity
+  hashes, and limitations.
+
+An earlier full-suite attempt ended `PARTIAL` after a provider stream failure and was not
+adjudicated or exported. Published snapshots must not conceal, repair, or overwrite such
+failed attempts; a later run is a new independent attempt.
+
 Keep raw runs, prompts, fixture copies, stdout/stderr, tool traces, and adjudication working
 files outside the repository. A run must first validate as one content-bound four-arm
 ablation, then receive one treatment-blinded semantic adjudication:
