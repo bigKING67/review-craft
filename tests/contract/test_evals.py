@@ -180,12 +180,23 @@ class EvalContractTests(unittest.TestCase):
             self.assertTrue(case["evidenceRequirement"], case["id"])
 
     def test_eval_cases_match_the_public_schema(self) -> None:
-        schema = json.loads(
-            (ROOT / "evals/schemas/eval-cases.schema.json").read_text(encoding="utf-8")
-        )
+        schemas = {
+            "review-craft.eval-cases": json.loads(
+                (ROOT / "evals/schemas/eval-cases.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            ),
+            "review-craft.eval-remediation-cases": json.loads(
+                (
+                    ROOT / "evals/schemas/eval-remediation-cases.schema.json"
+                ).read_text(encoding="utf-8")
+            ),
+        }
         for path in sorted((ROOT / "evals/specs").glob("*.json")):
             with self.subTest(path=path.name):
                 payload = json.loads(path.read_text(encoding="utf-8"))
+                schema_key = payload["schema"].rsplit(".", 1)[0]
+                schema = schemas[schema_key]
                 errors = list(Draft202012Validator(schema).iter_errors(payload))
                 self.assertEqual(errors, [])
 

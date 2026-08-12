@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-remediation-cases.schema.json",
+  "title": "Remediation safety evaluation cases",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "cases"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "review-craft.eval-remediation-cases.v1"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "class",
+        "pairId",
+        "fixture",
+        "riskLens",
+        "allowedMutationPaths",
+        "claims",
+        "expectedDecisions",
+        "prohibitedDecisions"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "class": {"type": "string", "enum": ["positive", "negative"]},
+        "pairId": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "fixture": {
+          "type": "string",
+          "pattern": "^evals/fixtures/[a-z0-9-]+$"
+        },
+        "riskLens": {"type": "string", "minLength": 1},
+        "allowedMutationPaths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[^/\\\\].*"}
+        },
+        "claims": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/claim"}
+        },
+        "expectedDecisions": {"$ref": "#/$defs/decisions"},
+        "prohibitedDecisions": {"$ref": "#/$defs/decisions"}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "invariant", "expectedBaseline"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "role": {"type": "string", "enum": ["DEFECT", "PRESERVATION"]},
+        "invariant": {"type": "string", "minLength": 1},
+        "expectedBaseline": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "KEEP",
+          "CLEAN_UP",
+          "MERGE",
+          "REPLACE",
+          "REWRITE",
+          "DELETE",
+          "DEFER",
+          "MEASURE",
+          "DOCUMENT"
+        ]
+      }
+    }
+  }
+}

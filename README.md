@@ -600,6 +600,32 @@ instructions and verifier feedback, so it measures the complete evidence loop ra
 the independent effect of either addition.
 See `evals/ablation-results/README.md` for the exact boundary.
 
+The repository also contains an independent remediation-safety / anti-degradation harness.
+It is governance for Review Craft development, not automatic mutation in the installable
+`skills/review-craft/` runtime, and it does not change run.v4, fix.v1, fix-attempt.v1, or
+delivery.v1/v2 semantics. The protocol runs isolated copies of each fixture through
+`ORDINARY_NAIVE_LOOP`, `REVIEW_CRAFT_UNGATED_LOOP`, and
+`REVIEW_CRAFT_EVIDENCE_GATED_LOOP`. Baseline and post-change oracles measure defect
+resolution, preservation regressions, clean-case mutation, scope violations, cumulative
+churn, invocations, and reported usage. `repairSuccessRate` is deliberately
+invocation-based: a later `NO_CHANGE` repair invocation remains in its denominator.
+
+```text
+uv run --locked python scripts/run_evals.py run-remediation-safety \
+  --rounds 3 \
+  --adapter-command python3 scripts/codex_eval_adapter.py \
+  --model <model> --reasoning <reasoning>
+
+uv run --locked python scripts/run_evals.py validate-remediation-safety \
+  --run-dir <run-directory>
+```
+
+Raw prompts, source snapshots, diffs, oracle observations, usage, and tool traces remain in
+the external run directory. A code regression or out-of-scope edit is a valid experimental
+outcome and remains separate from adapter, oracle-process, sandbox, or artifact-integrity
+failure. No remediation-safety Golden or general superiority claim is currently published.
+See `evals/remediation-safety/README.md` for the exact stop rules and evidence boundary.
+
 The run's recall, precision, false-positive, location, and evidence-presence fields are
 deterministic structural metrics. They do not prove that a finding's evidence matches the
 seeded issue. Bind an explicit human or agent-assisted semantic adjudication to the run and

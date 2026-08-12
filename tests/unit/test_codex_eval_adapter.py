@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from jsonschema import Draft202012Validator
+
 from tests.support import ROOT
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -33,10 +35,10 @@ class CodexEvalAdapterTests(unittest.TestCase):
             "ignoreUserConfig": True,
             "ignoreRules": True,
             "allowCodexHomeExtensions": False,
-            "systemResourceCount": 0,
-            "systemResourceSha256": hashlib.sha256(b"").hexdigest(),
-            "extensionResourceCount": 0,
-            "extensionResourceSha256": hashlib.sha256(b"").hexdigest(),
+            "codexHomeSystemFileCount": 0,
+            "codexHomeSystemTreeSha256": hashlib.sha256(b"[]").hexdigest(),
+            "codexHomeExtensionFileCount": 0,
+            "codexHomeExtensionTreeSha256": hashlib.sha256(b"[]").hexdigest(),
         }
         with (
             patch.object(adapter, "codex_version", return_value="codex-cli test"),
@@ -53,6 +55,20 @@ class CodexEvalAdapterTests(unittest.TestCase):
         self.assertEqual(status, 0)
         description = json.loads(print_mock.call_args.args[0])
         self.assertEqual(description["adapterVersion"], "0.6.1")
+        self.assertEqual(description["schema"], "review-craft.eval-adapter.v5")
+        self.assertEqual(
+            description["capabilities"],
+            {
+                "operations": ["REVIEW", "REPAIR"],
+                "reviewSandbox": "read-only",
+                "repairSandbox": "workspace-write",
+                "fixtureMutationBoundary": "RUNNER_STAGED_ROOT",
+            },
+        )
+        schema = json.loads(
+            (ROOT / "evals/schemas/eval-adapter.schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(description)), [])
 
     def test_codex_command_enables_jsonl_for_structured_usage(self) -> None:
         args = adapter.parse_args(
@@ -69,6 +85,137 @@ class CodexEvalAdapterTests(unittest.TestCase):
             provider=adapter.provider_metadata(args),
         )
         self.assertIn("--json", command)
+        sandbox_index = command.index("--sandbox")
+        self.assertEqual(command[sandbox_index + 1], "read-only")
+
+        args.operation = "repair"
+        repair_command = adapter.build_codex_command(
+            executable="codex",
+            args=args,
+            fixture_root=Path("/tmp/fixture"),
+            skill_root=Path("/tmp/skill"),
+            evidence_root=None,
+            output_schema=Path("/tmp/output.schema.json"),
+            output_file=Path("/tmp/output.json"),
+            provider=adapter.provider_metadata(args),
+        )
+        sandbox_index = repair_command.index("--sandbox")
+        self.assertEqual(repair_command[sandbox_index + 1], "workspace-write")
+
+    def test_repair_workspace_marker_binds_target_case_arm_and_round(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            target = workspace / "target"
+            target.mkdir()
+            marker = workspace / ".review-craft-remediation-workspace.json"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema": "review-craft.eval-remediation-workspace.v1",
+                        "caseId": "bounded-saturating-add-positive",
+                        "arm": "REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+                        "round": 2,
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            key = hashlib.sha256(marker.read_bytes()).hexdigest()
+            adapter.validate_repair_workspace(
+                fixture_root=target,
+                marker_path=marker,
+                workspace_key=key,
+                case_id="bounded-saturating-add-positive",
+                treatment="REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+                round_number=2,
+            )
+            with self.assertRaisesRegex(adapter.AdapterError, "hash mismatch"):
+                adapter.validate_repair_workspace(
+                    fixture_root=target,
+                    marker_path=marker,
+                    workspace_key="0" * 64,
+                    case_id="bounded-saturating-add-positive",
+                    treatment="REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+                    round_number=2,
+                )
+            with self.assertRaisesRegex(adapter.AdapterError, "does not match"):
+                adapter.validate_repair_workspace(
+                    fixture_root=target,
+                    marker_path=marker,
+                    workspace_key=key,
+                    case_id="bounded-saturating-add-positive",
+                    treatment="REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+                    round_number=1,
+                )
+
+    def test_repair_rejects_missing_marker_and_repository_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            skill = root / "skill"
+            target.mkdir()
+            skill.mkdir()
+            prompt = root / "prompt.md"
+            schema = root / "schema.json"
+            prompt.write_text("repair\n", encoding="utf-8")
+            schema.write_text("{}\n", encoding="utf-8")
+            argv = [
+                "--model",
+                "gpt-test",
+                "--reasoning",
+                "high",
+                "--fixture-root",
+                str(target),
+                "--skill-root",
+                str(skill),
+                "--prompt-file",
+                str(prompt),
+                "--output-schema",
+                str(schema),
+                "--output-file",
+                str(root / "output.json"),
+                "--treatment",
+                "ORDINARY_NAIVE_LOOP",
+                "--case-id",
+                "bounded-saturating-add-positive",
+                "--operation",
+                "repair",
+            ]
+            with (
+                patch.object(adapter, "codex_home_extension_state", return_value={}),
+                patch.object(adapter.shutil, "which", return_value="/usr/bin/codex"),
+                self.assertRaisesRegex(adapter.AdapterError, "requires a runner workspace"),
+            ):
+                adapter.main(argv)
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            workspace = Path(directory)
+            target = workspace / "target"
+            target.mkdir()
+            marker = workspace / ".review-craft-remediation-workspace.json"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema": "review-craft.eval-remediation-workspace.v1",
+                        "caseId": "bounded-saturating-add-positive",
+                        "arm": "ORDINARY_NAIVE_LOOP",
+                        "round": 1,
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(adapter.AdapterError, "must not be inside"):
+                adapter.validate_repair_workspace(
+                    fixture_root=target,
+                    marker_path=marker,
+                    workspace_key=hashlib.sha256(marker.read_bytes()).hexdigest(),
+                    case_id="bounded-saturating-add-positive",
+                    treatment="ORDINARY_NAIVE_LOOP",
+                    round_number=1,
+                )
 
     def test_ablation_resources_are_exposed_only_to_the_evidence_loop(self) -> None:
         fixture_root = Path("/tmp/fixture")

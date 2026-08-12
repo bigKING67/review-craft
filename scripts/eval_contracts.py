@@ -246,9 +246,11 @@ def _git_output(*args: str) -> str | None:
 
 def source_metadata() -> dict[str, Any]:
     status = _git_output("status", "--porcelain=v1", "--untracked-files=all") or ""
+    runner_names = ("eval_contracts.py", "run_evals.py", "remediation_safety.py")
     runner_manifest = {
         name: sha256_bytes((ROOT / f"scripts/{name}").read_bytes())
-        for name in ("eval_contracts.py", "run_evals.py")
+        for name in runner_names
+        if (ROOT / f"scripts/{name}").is_file()
     }
     return {
         "revision": _git_output("rev-parse", "HEAD"),

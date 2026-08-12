@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 
@@ -19,6 +20,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-file")
     parser.add_argument("--treatment")
     parser.add_argument("--case-id")
+    parser.add_argument("--operation", choices=("review", "repair"), default="review")
+    parser.add_argument("--workspace-marker")
+    parser.add_argument("--workspace-key")
+    parser.add_argument("--round-number", type=int)
     parser.add_argument(
         "--mode",
         choices=(
@@ -29,6 +34,10 @@ def parse_args() -> argparse.Namespace:
             "negative-finding",
             "usage",
             "invalid-usage",
+            "remediation-claimed-mismatch",
+            "remediation-regression",
+            "remediation-scope-violation",
+            "timeout",
         ),
         default="valid",
     )
@@ -41,7 +50,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v2",
+                    "schema": "review-craft.eval-adapter.v5",
                     "name": "synthetic-contract-adapter",
                     "version": "test-only",
                     "model": "deterministic-fixture",
@@ -56,6 +65,7 @@ def main() -> int:
                         "supportsWebsockets": False,
                     },
                     "isolation": {
+                        "homeMatchesCodexHome": True,
                         "ignoreUserConfig": True,
                         "ignoreRules": True,
                         "allowCodexHomeExtensions": False,
@@ -63,6 +73,22 @@ def main() -> int:
                         "codexHomeSystemTreeSha256": hashlib.sha256(b"[]").hexdigest(),
                         "codexHomeExtensionFileCount": 0,
                         "codexHomeExtensionTreeSha256": hashlib.sha256(b"[]").hexdigest(),
+                    },
+                    "usage": {
+                        "protocol": "review-craft.eval-usage.v1",
+                        "transport": "ENV_PATH",
+                        "environmentVariable": "REVIEW_CRAFT_EVAL_USAGE_OUTPUT",
+                    },
+                    "toolTrace": {
+                        "protocol": "review-craft.eval-tool-trace.v1",
+                        "transport": "ENV_PATH",
+                        "environmentVariable": "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT",
+                    },
+                    "capabilities": {
+                        "operations": ["REVIEW", "REPAIR"],
+                        "reviewSandbox": "read-only",
+                        "repairSandbox": "workspace-write",
+                        "fixtureMutationBoundary": "RUNNER_STAGED_ROOT",
                     },
                 },
                 sort_keys=True,
@@ -74,6 +100,13 @@ def main() -> int:
         "RISK_LENS_REVIEW",
         "REVIEW_CRAFT_EVIDENCE_LOOP",
     }
+    remediation_treatments = {
+        "ORDINARY_NAIVE_LOOP",
+        "REVIEW_CRAFT_UNGATED_LOOP",
+        "REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+    }
+    if args.mode == "timeout":
+        time.sleep(2)
     if args.treatment in ablation_treatments:
         skill_entries = list(Path(args.skill_root).iterdir())
         evidence_expected = args.treatment == "REVIEW_CRAFT_EVIDENCE_LOOP"
@@ -82,12 +115,58 @@ def main() -> int:
                 return 4
         elif args.evidence_root is not None or skill_entries:
             return 4
+    if args.treatment in remediation_treatments:
+        skill_expected = args.treatment != "ORDINARY_NAIVE_LOOP"
+        if skill_expected != bool(list(Path(args.skill_root).iterdir())):
+            return 4
+    fixture = Path(args.fixture_root)
     if args.mode == "mutate-source":
-        (Path.cwd() / ".eval-source-mutation-test").write_text(
+        mutation_root = fixture if args.treatment in remediation_treatments else Path.cwd()
+        (mutation_root / ".eval-source-mutation-test").write_text(
             "mutated\n", encoding="utf-8"
         )
-    fixture = Path(args.fixture_root)
-    if (fixture / "storage.py").is_file():
+    if args.treatment in remediation_treatments and args.operation == "repair":
+        changed = False
+        source = fixture / "bounded_add.py"
+        if source.is_file():
+            content = source.read_text(encoding="utf-8")
+            if "> 0x100" in content:
+                source.write_text(content.replace("> 0x100", "> 0xFF"), encoding="utf-8")
+                changed = True
+            elif args.mode == "remediation-regression" and "> 0xFF" in content:
+                source.write_text(content.replace("> 0xFF", "> 0x100"), encoding="utf-8")
+                changed = True
+        claimed_paths = ["bounded_add.py"] if changed else []
+        if args.mode == "remediation-scope-violation":
+            (fixture / "unexpected.py").write_text("UNEXPECTED = True\n", encoding="utf-8")
+            changed = True
+            claimed_paths.append("unexpected.py")
+        if args.mode == "remediation-claimed-mismatch":
+            claimed_paths = []
+        output = {
+            "schema": "review-craft.eval-remediation-repair-output.v1",
+            "outcome": "CHANGED" if changed else "NO_CHANGE",
+            "claimedPaths": claimed_paths,
+            "summary": "Synthetic remediation repair output.",
+        }
+    elif args.treatment in remediation_treatments:
+        positive = bool(args.case_id and args.case_id.endswith("-positive"))
+        if args.mode == "remediation-regression":
+            positive = True
+        source = next(path for path in fixture.glob("*.py"))
+        output = {
+            "schema": "review-craft.eval-remediation-review-output.v1",
+            "findingDetected": positive,
+            "decision": "CLEAN_UP" if positive else "KEEP",
+            "hypothesis": "The risk surface may violate its declared invariant.",
+            "confirmCondition": "The bound behavior oracle observes an invariant violation.",
+            "falsifyCondition": "The bound behavior oracle passes every relevant claim.",
+            "locations": [{"path": source.name, "lineStart": 1, "lineEnd": 20}],
+            "evidence": ["Synthetic remediation review evidence."],
+            "confidence": "HIGH",
+            "summary": "Synthetic remediation review output.",
+        }
+    elif (fixture / "storage.py").is_file():
         output = {
             "schema": "review-craft.eval-host-output.v1",
             "findingDetected": True,

@@ -53,6 +53,19 @@ from eval_contracts import (
     write_bytes,
     write_json,
 )
+from remediation_safety import (
+    DEFAULT_OUTPUT_ROOT as DEFAULT_REMEDIATION_OUTPUT_ROOT,
+)
+from remediation_safety import (
+    DEFAULT_SKILL as DEFAULT_REMEDIATION_SKILL,
+)
+from remediation_safety import (
+    DEFAULT_SUITE as DEFAULT_REMEDIATION_SUITE,
+)
+from remediation_safety import (
+    run_remediation_safety,
+    validate_remediation_run,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUITE = ROOT / "evals/specs/cases.json"
@@ -133,6 +146,66 @@ def _describe_adapter(command: list[str]) -> dict[str, Any]:
     if errors:
         raise EvalError("adapter description is invalid: " + "; ".join(errors))
     return description
+
+
+def _adapter_command(args: argparse.Namespace) -> list[str]:
+    command = list(args.adapter_command)
+    if command and command[0] == "--":
+        command = command[1:]
+    _validate_adapter_command(command)
+    return command
+
+
+def command_run_remediation_safety(args: argparse.Namespace) -> int:
+    adapter_command = _adapter_command(args)
+    adapter = _describe_adapter(adapter_command)
+    run_dir, payload = run_remediation_safety(
+        suite_path=Path(args.suite).expanduser().resolve(strict=True),
+        skill_root=Path(args.skill_root).expanduser().resolve(strict=True),
+        output_root=Path(args.output_root).expanduser().resolve(),
+        requested_cases=args.case,
+        rounds=args.rounds,
+        timeout_seconds=args.case_timeout,
+        adapter_command=adapter_command,
+        adapter=adapter,
+    )
+    print(
+        json.dumps(
+            {
+                "runDir": str(run_dir),
+                "runId": payload["runId"],
+                "status": payload["status"],
+                "metrics": payload["metrics"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0 if payload["status"] == "COMPLETED" else 2
+
+
+def command_validate_remediation_safety(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
+    errors = validate_remediation_run(run_dir)
+    if errors:
+        print("review-craft remediation-safety validation failed:", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    payload = read_json(run_dir / "result.json")
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "runId": payload["runId"],
+                "status": payload["status"],
+                "contentSha256": payload["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def _prompt_for_treatment(treatment: str) -> Path:
@@ -1581,6 +1654,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_ablation.set_defaults(handler=command_run_ablation)
 
+    run_remediation = subparsers.add_parser(
+        "run-remediation-safety",
+        help="Run the isolated three-arm review-to-repair safety protocol",
+    )
+    run_remediation.add_argument("--suite", default=str(DEFAULT_REMEDIATION_SUITE))
+    run_remediation.add_argument("--skill-root", default=str(DEFAULT_REMEDIATION_SKILL))
+    run_remediation.add_argument(
+        "--output-root", default=str(DEFAULT_REMEDIATION_OUTPUT_ROOT)
+    )
+    run_remediation.add_argument("--case", action="append", help="Run one case id; repeatable")
+    run_remediation.add_argument("--rounds", type=int, default=3)
+    run_remediation.add_argument("--case-timeout", type=int, default=900)
+    run_remediation.add_argument(
+        "--adapter-command",
+        nargs=argparse.REMAINDER,
+        required=True,
+        help="Adapter argv; this option must be last",
+    )
+    run_remediation.set_defaults(handler=command_run_remediation_safety)
+
     validate = subparsers.add_parser("validate", help="Validate a completed eval run")
     validate.add_argument("--run-dir", required=True)
     validate.set_defaults(handler=command_validate)
@@ -1590,6 +1683,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_ablation.add_argument("--ablation-dir", required=True)
     validate_ablation.set_defaults(handler=command_validate_ablation)
+
+    validate_remediation = subparsers.add_parser(
+        "validate-remediation-safety",
+        help="Validate a remediation-safety run and all content-bound artifacts",
+    )
+    validate_remediation.add_argument("--run-dir", required=True)
+    validate_remediation.set_defaults(handler=command_validate_remediation_safety)
 
     prepare_ablation_adjudication = subparsers.add_parser(
         "prepare-ablation-adjudication",

@@ -62,7 +62,17 @@ ABLATION_TREATMENTS = {
     "RISK_LENS_REVIEW",
     "REVIEW_CRAFT_EVIDENCE_LOOP",
 }
-SKILL_TREATMENTS = {"REVIEW_CRAFT", "REVIEW_CRAFT_EVIDENCE_LOOP"}
+REMEDIATION_TREATMENTS = {
+    "ORDINARY_NAIVE_LOOP",
+    "REVIEW_CRAFT_UNGATED_LOOP",
+    "REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+}
+SKILL_TREATMENTS = {
+    "REVIEW_CRAFT",
+    "REVIEW_CRAFT_EVIDENCE_LOOP",
+    "REVIEW_CRAFT_UNGATED_LOOP",
+    "REVIEW_CRAFT_EVIDENCE_GATED_LOOP",
+}
 
 
 class AdapterError(RuntimeError):
@@ -108,6 +118,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-file")
     parser.add_argument("--treatment")
     parser.add_argument("--case-id")
+    parser.add_argument("--operation", choices=("review", "repair"), default="review")
+    parser.add_argument("--workspace-marker")
+    parser.add_argument("--workspace-key")
+    parser.add_argument("--round-number", type=int)
     return parser.parse_args(argv)
 
 
@@ -397,6 +411,44 @@ def validate_treatment_resources(
         raise AdapterError("non-evidence ablation treatments cannot access verifiers")
 
 
+def validate_repair_workspace(
+    *,
+    fixture_root: Path,
+    marker_path: Path,
+    workspace_key: str,
+    case_id: str,
+    treatment: str,
+    round_number: int,
+) -> None:
+    if round_number < 1:
+        raise AdapterError("repair workspace marker round is invalid")
+    marker_path = marker_path.resolve(strict=True)
+    fixture_root = fixture_root.resolve(strict=True)
+    if marker_path.parent != fixture_root.parent or fixture_root.name != "target":
+        raise AdapterError("repair target is not a runner-staged workspace")
+    try:
+        fixture_root.relative_to(Path(__file__).resolve().parents[1])
+    except ValueError:
+        pass
+    else:
+        raise AdapterError("repair target must not be inside the Review Craft repository")
+    marker_bytes = marker_path.read_bytes()
+    if hashlib.sha256(marker_bytes).hexdigest() != workspace_key:
+        raise AdapterError("repair workspace marker hash mismatch")
+    try:
+        marker = json.loads(marker_bytes)
+    except json.JSONDecodeError as error:
+        raise AdapterError("repair workspace marker is invalid JSON") from error
+    expected = {
+        "schema": "review-craft.eval-remediation-workspace.v1",
+        "caseId": case_id,
+        "arm": treatment,
+        "round": round_number,
+    }
+    if any(marker.get(field) != value for field, value in expected.items()):
+        raise AdapterError("repair workspace marker does not match the invocation")
+
+
 def build_codex_command(
     *,
     executable: str,
@@ -415,7 +467,7 @@ def build_codex_command(
         "--ignore-user-config",
         "--ignore-rules",
         "--sandbox",
-        "read-only",
+        "workspace-write" if args.operation == "repair" else "read-only",
         "--skip-git-repo-check",
         "--color",
         "never",
@@ -452,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v4",
+                    "schema": "review-craft.eval-adapter.v5",
                     "name": "codex-cli",
                     "version": codex_version(),
                     "model": args.model,
@@ -470,6 +522,12 @@ def main(argv: list[str] | None = None) -> int:
                         "protocol": "review-craft.eval-tool-trace.v1",
                         "transport": "ENV_PATH",
                         "environmentVariable": TOOL_TRACE_OUTPUT_ENV,
+                    },
+                    "capabilities": {
+                        "operations": ["REVIEW", "REPAIR"],
+                        "reviewSandbox": "read-only",
+                        "repairSandbox": "workspace-write",
+                        "fixtureMutationBoundary": "RUNNER_STAGED_ROOT",
                     },
                 },
                 sort_keys=True,
@@ -502,6 +560,21 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.evidence_root).resolve(strict=True) if args.evidence_root else None
     )
     validate_treatment_resources(args.treatment, evidence_root)
+    if args.operation == "repair":
+        if args.treatment not in REMEDIATION_TREATMENTS:
+            raise AdapterError("repair operation requires a remediation-safety treatment")
+        if not args.workspace_marker or not args.workspace_key or not args.round_number:
+            raise AdapterError("repair operation requires a runner workspace marker")
+        validate_repair_workspace(
+            fixture_root=fixture_root,
+            marker_path=Path(args.workspace_marker),
+            workspace_key=args.workspace_key,
+            case_id=args.case_id,
+            treatment=args.treatment,
+            round_number=args.round_number,
+        )
+    elif args.workspace_marker or args.workspace_key or args.round_number is not None:
+        raise AdapterError("review operation must not receive a repair workspace marker")
     prompt = Path(args.prompt_file).read_text(encoding="utf-8")
     command = build_codex_command(
         executable=executable,

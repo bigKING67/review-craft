@@ -78,6 +78,9 @@ REQUIRED_FILES = (
     "evals/prompts/review-craft.md",
     "evals/prompts/risk-lens-review.md",
     "evals/prompts/review-craft-evidence-loop.md",
+    "evals/prompts/remediation-ordinary-review.md",
+    "evals/prompts/remediation-review-craft.md",
+    "evals/prompts/remediation-repair.md",
     "evals/schemas/eval-adapter.schema.json",
     "evals/schemas/eval-ablation-adjudication-result.schema.json",
     "evals/schemas/eval-ablation-adjudication-result-v2.schema.json",
@@ -100,10 +103,18 @@ REQUIRED_FILES = (
     "evals/schemas/eval-golden-snapshot.schema.json",
     "evals/schemas/eval-host-output.schema.json",
     "evals/schemas/eval-run.schema.json",
+    "evals/schemas/eval-remediation-cases.schema.json",
+    "evals/schemas/eval-remediation-oracle.schema.json",
+    "evals/schemas/eval-remediation-repair-output.schema.json",
+    "evals/schemas/eval-remediation-review-output.schema.json",
+    "evals/schemas/eval-remediation-run.schema.json",
     "evals/schemas/eval-tool-trace.schema.json",
     "evals/schemas/eval-usage.schema.json",
     "evals/specs/self-correction-cases.json",
+    "evals/specs/remediation-safety-cases.json",
     "evals/verifiers/verify_case.py",
+    "evals/verifiers/verify_remediation_case.py",
+    "evals/remediation-safety/README.md",
     "evals/ablation-results/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
@@ -111,6 +122,7 @@ REQUIRED_FILES = (
     "scripts/benchmark_runtime.py",
     "scripts/complexity_budget.py",
     "scripts/eval_contracts.py",
+    "scripts/remediation_safety.py",
     "scripts/run_evals.py",
 )
 
@@ -199,12 +211,19 @@ def validate_schemas(errors: list[str]) -> None:
     if cases_schema_path.exists():
         schema = schemas.get("eval-cases.schema.json")
         from eval_contracts import validate_eval_suite
+        from remediation_safety import validate_remediation_suite
 
         for cases_path in sorted((ROOT / "evals/specs").glob("*.json")):
             cases = json.loads(cases_path.read_text(encoding="utf-8"))
-            if schema is not None:
+            remediation = cases.get("schema") == "review-craft.eval-remediation-cases.v1"
+            selected_schema = (
+                schemas.get("eval-remediation-cases.schema.json")
+                if remediation
+                else schema
+            )
+            if selected_schema is not None:
                 case_errors = sorted(
-                    Draft202012Validator(schema).iter_errors(cases),
+                    Draft202012Validator(selected_schema).iter_errors(cases),
                     key=lambda item: list(item.path),
                 )
                 for error in case_errors:
@@ -212,7 +231,8 @@ def validate_schemas(errors: list[str]) -> None:
                     errors.append(
                         f"{cases_path.relative_to(ROOT)}:{location}: {error.message}"
                     )
-            for error in validate_eval_suite(cases):
+            validator = validate_remediation_suite if remediation else validate_eval_suite
+            for error in validator(cases):
                 errors.append(f"{cases_path.relative_to(ROOT)}:{error}")
     from eval_contracts import validate_ablation_snapshot, validate_golden_snapshot
 

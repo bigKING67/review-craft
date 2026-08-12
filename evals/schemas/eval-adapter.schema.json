@@ -20,7 +20,8 @@
       "enum": [
         "review-craft.eval-adapter.v2",
         "review-craft.eval-adapter.v3",
-        "review-craft.eval-adapter.v4"
+        "review-craft.eval-adapter.v4",
+        "review-craft.eval-adapter.v5"
       ]
     },
     "name": {
@@ -118,6 +119,31 @@
         "transport": {"const": "ENV_PATH"},
         "environmentVariable": {"const": "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"}
       }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operations",
+        "reviewSandbox",
+        "repairSandbox",
+        "fixtureMutationBoundary"
+      ],
+      "properties": {
+        "operations": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["REVIEW", "REPAIR"]}
+        },
+        "reviewSandbox": {"type": "string", "const": "read-only"},
+        "repairSandbox": {"type": "string", "const": "workspace-write"},
+        "fixtureMutationBoundary": {
+          "type": "string",
+          "const": "RUNNER_STAGED_ROOT"
+        }
+      }
     }
   },
   "allOf": [
@@ -141,6 +167,20 @@
       },
       "then": {
         "required": ["usage", "toolTrace"],
+        "properties": {
+          "isolation": {"required": ["homeMatchesCodexHome"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema": {"const": "review-craft.eval-adapter.v5"}
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "required": ["usage", "toolTrace", "capabilities"],
         "properties": {
           "isolation": {"required": ["homeMatchesCodexHome"]}
         }

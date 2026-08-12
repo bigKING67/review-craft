@@ -1,0 +1,117 @@
+{
+  "schema": "review-craft.eval-remediation-cases.v1",
+  "cases": [
+    {
+      "id": "failure-truthfulness-positive",
+      "class": "positive",
+      "pairId": "failure-truthfulness",
+      "fixture": "evals/fixtures/failure-truthfulness-positive",
+      "riskLens": "Check whether durable write failures are reported truthfully without breaking the successful write path.",
+      "allowedMutationPaths": ["service.py"],
+      "claims": [
+        {"id": "durable-failure-visible", "role": "DEFECT", "invariant": "A durable write failure must not produce apparent success.", "expectedBaseline": "FAIL"},
+        {"id": "successful-write-preserved", "role": "PRESERVATION", "invariant": "A successful durable write returns success and the created identifier.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "failure-truthfulness-negative",
+      "class": "negative",
+      "pairId": "failure-truthfulness",
+      "fixture": "evals/fixtures/failure-truthfulness-negative",
+      "riskLens": "Check whether durable write failures are reported truthfully without breaking intentionally best-effort telemetry.",
+      "allowedMutationPaths": ["service.py"],
+      "claims": [
+        {"id": "durable-failure-visible", "role": "DEFECT", "invariant": "A durable write failure must not produce apparent success.", "expectedBaseline": "PASS"},
+        {"id": "best-effort-telemetry-preserved", "role": "PRESERVATION", "invariant": "Optional telemetry failure remains non-blocking after a successful durable write.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    },
+    {
+      "id": "retry-idempotency-positive",
+      "class": "positive",
+      "pairId": "retry-idempotency",
+      "fixture": "evals/fixtures/retry-idempotency-positive",
+      "riskLens": "Check whether ambiguous retries reuse stable operation identity without removing retry recovery.",
+      "allowedMutationPaths": ["payments.py"],
+      "claims": [
+        {"id": "stable-retry-identity", "role": "DEFECT", "invariant": "All retries for one request use one idempotency key and cause one charge.", "expectedBaseline": "FAIL"},
+        {"id": "timeout-recovery-preserved", "role": "PRESERVATION", "invariant": "A response-lost timeout is retried and eventually returns the committed result.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "retry-idempotency-negative",
+      "class": "negative",
+      "pairId": "retry-idempotency",
+      "fixture": "evals/fixtures/retry-idempotency-negative",
+      "riskLens": "Check whether ambiguous retries reuse stable operation identity without removing retry recovery.",
+      "allowedMutationPaths": ["payments.py"],
+      "claims": [
+        {"id": "stable-retry-identity", "role": "DEFECT", "invariant": "All retries for one request use one idempotency key and cause one charge.", "expectedBaseline": "PASS"},
+        {"id": "timeout-recovery-preserved", "role": "PRESERVATION", "invariant": "A response-lost timeout is retried and eventually returns the committed result.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    },
+    {
+      "id": "ack-order-positive",
+      "class": "positive",
+      "pairId": "ack-order",
+      "fixture": "evals/fixtures/ack-order-positive",
+      "riskLens": "Check whether durable persistence precedes externally visible acknowledgement.",
+      "allowedMutationPaths": ["jobs.py"],
+      "claims": [
+        {"id": "no-ack-before-persistence", "role": "DEFECT", "invariant": "A failed durable save must not acknowledge accepted work.", "expectedBaseline": "FAIL"},
+        {"id": "successful-order-preserved", "role": "PRESERVATION", "invariant": "On success, the job is saved, acknowledged, and its identifier is returned.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "ack-order-negative",
+      "class": "negative",
+      "pairId": "ack-order",
+      "fixture": "evals/fixtures/ack-order-negative",
+      "riskLens": "Check whether durable persistence precedes externally visible acknowledgement.",
+      "allowedMutationPaths": ["jobs.py"],
+      "claims": [
+        {"id": "no-ack-before-persistence", "role": "DEFECT", "invariant": "A failed durable save must not acknowledge accepted work.", "expectedBaseline": "PASS"},
+        {"id": "successful-order-preserved", "role": "PRESERVATION", "invariant": "On success, the job is saved, acknowledged, and its identifier is returned.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    },
+    {
+      "id": "bounded-saturating-add-positive",
+      "class": "positive",
+      "pairId": "bounded-saturating-add",
+      "fixture": "evals/fixtures/bounded-saturating-add-positive",
+      "riskLens": "Check the exact saturation boundary across the documented uint8 input domain without removing the branchless implementation constraint.",
+      "allowedMutationPaths": ["bounded_add.py"],
+      "claims": [
+        {"id": "exhaustive-saturation", "role": "DEFECT", "invariant": "Every uint8 pair returns min(255, left + right).", "expectedBaseline": "FAIL"},
+        {"id": "branchless-contract", "role": "PRESERVATION", "invariant": "The implementation contains no if statement, conditional expression, min call, or max call.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "bounded-saturating-add-negative",
+      "class": "negative",
+      "pairId": "bounded-saturating-add",
+      "fixture": "evals/fixtures/bounded-saturating-add-negative",
+      "riskLens": "Check the exact saturation boundary across the documented uint8 input domain without removing the branchless implementation constraint.",
+      "allowedMutationPaths": ["bounded_add.py"],
+      "claims": [
+        {"id": "exhaustive-saturation", "role": "DEFECT", "invariant": "Every uint8 pair returns min(255, left + right).", "expectedBaseline": "PASS"},
+        {"id": "branchless-contract", "role": "PRESERVATION", "invariant": "The implementation contains no if statement, conditional expression, min call, or max call.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    }
+  ]
+}
