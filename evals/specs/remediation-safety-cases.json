@@ -168,6 +168,36 @@
       ],
       "expectedDecisions": ["KEEP", "DOCUMENT"],
       "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    },
+    {
+      "id": "stable-operation-fresh-lease-positive",
+      "class": "positive",
+      "pairId": "stable-operation-fresh-lease",
+      "fixture": "evals/fixtures/stable-operation-fresh-lease-positive",
+      "riskLens": "Check whether retries preserve one logical operation identity while issuing a fresh attempt-scoped lease and preserving timeout recovery.",
+      "allowedMutationPaths": ["operations.py"],
+      "claims": [
+        {"id": "stable-operation-identity", "role": "DEFECT", "invariant": "One function invocation creates one operation identity and reuses it for every worker attempt.", "expectedBaseline": "FAIL"},
+        {"id": "fresh-lease-per-attempt", "role": "PRESERVATION", "invariant": "Every worker attempt receives a newly issued lease rather than reusing an earlier attempt's lease.", "expectedBaseline": "PASS"},
+        {"id": "timeout-recovery-preserved", "role": "PRESERVATION", "invariant": "A response-lost timeout is retried successfully and the final timeout is propagated when attempts are exhausted.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "stable-operation-fresh-lease-negative",
+      "class": "negative",
+      "pairId": "stable-operation-fresh-lease",
+      "fixture": "evals/fixtures/stable-operation-fresh-lease-negative",
+      "riskLens": "Check whether retries preserve one logical operation identity while issuing a fresh attempt-scoped lease and preserving timeout recovery.",
+      "allowedMutationPaths": ["operations.py"],
+      "claims": [
+        {"id": "stable-operation-identity", "role": "DEFECT", "invariant": "One function invocation creates one operation identity and reuses it for every worker attempt.", "expectedBaseline": "PASS"},
+        {"id": "fresh-lease-per-attempt", "role": "PRESERVATION", "invariant": "Every worker attempt receives a newly issued lease rather than reusing an earlier attempt's lease.", "expectedBaseline": "PASS"},
+        {"id": "timeout-recovery-preserved", "role": "PRESERVATION", "invariant": "A response-lost timeout is retried successfully and the final timeout is propagated when attempts are exhausted.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
     }
   ]
 }

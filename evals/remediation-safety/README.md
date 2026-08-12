@@ -2,7 +2,9 @@
 
 This repository-only harness measures whether review-driven source changes resolve known
 defect claims, preserve already-correct claims, mutate clean cases, or introduce regressions
-over repeated rounds. It is development governance, not part of the installable
+over repeated rounds. It also measures whether each arm's first completed Review decision
+is aligned, unexpected, or prohibited by the case contract. It is development governance,
+not part of the installable
 `skills/review-craft/` runtime.
 
 The v1 protocol uses three isolated arms:
@@ -18,9 +20,12 @@ temporary fixture copy. Raw prompts, source snapshots, diffs, oracle output, usa
 traces remain in an external run directory.
 
 Every selected case baseline must match its declared claim states before the first reviewer
-invocation. The runner treats actual source diffs as authoritative when a fixer's
-`claimedPaths` disagrees. `repairSuccessRate` uses all fixer invocations as its denominator,
-so an ungated follow-up `NO_CHANGE` remains visible rather than being discarded.
+invocation. The runner content-binds `initialReviewDecision` to the first completed
+`review-output.json`, derives `initialDecisionDisposition` from the suite's expected and
+prohibited decisions, and excludes unavailable Review decisions from the metric denominator.
+The runner treats actual source diffs as authoritative when a fixer's `claimedPaths`
+disagrees. `repairSuccessRate` uses all fixer invocations as its denominator, so an ungated
+follow-up `NO_CHANGE` remains visible rather than being discarded.
 
 ```text
 uv run --locked python scripts/run_evals.py run-remediation-safety \
@@ -37,7 +42,7 @@ superior. Model failures, oracle failures, sandbox violations, and invalid artif
 explicit infrastructure failures. Source regressions are valid experimental outcomes and
 must not be erased by a later recovery.
 
-The v1 suite currently contains six positive/negative pairs. In addition to direct failure
+The v1 suite currently contains seven positive/negative pairs. In addition to direct failure
 truthfulness, retry identity, acknowledgement ordering, and exhaustive boundary behavior,
 two harder pairs exercise conflicting contracts:
 
@@ -46,6 +51,9 @@ two harder pairs exercise conflicting contracts:
   rejected;
 - `persist-before-ack` requires persistence errors to remain visible and unacknowledged
   while preserving the created and duplicate success paths.
+- `stable-operation-fresh-lease` requires one stable operation identity across retries but
+  a fresh attempt-scoped lease each time. Its synthetic broad-hoist mode proves that a
+  `PASS_TO_FAIL` preservation regression remains recorded after the gated arm recovers it.
 
 Their oracles are deterministic and hidden from the reviewer. Synthetic adapter runs prove
 the harness, stop rules, and oracle transitions only; they are not evidence of model quality

@@ -59,6 +59,16 @@ CLAIMS = {
         ("failed-persistence-remains-retryable", "DEFECT"),
         ("created-and-duplicate-flow", "PRESERVATION"),
     ),
+    "stable-operation-fresh-lease-positive": (
+        ("stable-operation-identity", "DEFECT"),
+        ("fresh-lease-per-attempt", "PRESERVATION"),
+        ("timeout-recovery-preserved", "PRESERVATION"),
+    ),
+    "stable-operation-fresh-lease-negative": (
+        ("stable-operation-identity", "DEFECT"),
+        ("fresh-lease-per-attempt", "PRESERVATION"),
+        ("timeout-recovery-preserved", "PRESERVATION"),
+    ),
 }
 
 
@@ -389,6 +399,126 @@ def persist_before_ack(target: Path) -> list[dict[str, Any]]:
     ]
 
 
+def stable_operation_fresh_lease(target: Path) -> list[dict[str, Any]]:
+    operations = load_module(target, "operations.py")
+    request = {"request_id": "operation-request-4", "payload": {"sku": "A"}}
+
+    class Store:
+        def __init__(self) -> None:
+            self.operations: list[dict[str, Any]] = []
+            self.leases: list[dict[str, str]] = []
+
+        def create_operation(self, value: dict[str, Any]) -> str:
+            operation_id = f"operation-{len(self.operations) + 1}"
+            self.operations.append({"id": operation_id, "request": dict(value)})
+            return operation_id
+
+        def issue_lease(self, operation_id: str) -> str:
+            lease = f"lease-{len(self.leases) + 1}"
+            self.leases.append({"operationId": operation_id, "lease": lease})
+            return lease
+
+    class RecoveringWorker:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def execute(self, operation_id: str, lease: str) -> dict[str, str]:
+            self.calls.append({"operationId": operation_id, "lease": lease})
+            if len(self.calls) == 1:
+                raise TimeoutError("response lost after execution")
+            return {"operation_id": operation_id, "status": "completed"}
+
+    recovery_store = Store()
+    recovery_worker = RecoveringWorker()
+    recovery_result: Any = None
+    recovery_error: str | None = None
+    try:
+        recovery_result = operations.execute_with_retry(
+            recovery_store, recovery_worker, request
+        )
+    except Exception as error:  # Claims remain distinguishable after a bad hoist.
+        recovery_error = type(error).__name__
+
+    operation_ids = [row["id"] for row in recovery_store.operations]
+    worker_operation_ids = [row["operationId"] for row in recovery_worker.calls]
+    worker_leases = [row["lease"] for row in recovery_worker.calls]
+    issued_pairs = {
+        (row["operationId"], row["lease"]) for row in recovery_store.leases
+    }
+    stable_identity = (
+        len(operation_ids) == 1
+        and len(worker_operation_ids) == 2
+        and set(worker_operation_ids) == set(operation_ids)
+    )
+    fresh_leases = (
+        len(worker_leases) == 2
+        and len(set(worker_leases)) == 2
+        and len(recovery_store.leases) == 2
+        and all(
+            (row["operationId"], row["lease"]) in issued_pairs
+            for row in recovery_worker.calls
+        )
+    )
+    recovered = (
+        recovery_error is None
+        and len(recovery_worker.calls) == 2
+        and recovery_result
+        == {"operation_id": worker_operation_ids[-1], "status": "completed"}
+    )
+
+    class ExhaustingWorker:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def execute(self, operation_id: str, lease: str) -> None:
+            self.calls.append({"operationId": operation_id, "lease": lease})
+            raise TimeoutError("worker remained unavailable")
+
+    exhaustion_store = Store()
+    exhaustion_worker = ExhaustingWorker()
+    exhaustion_error: str | None = None
+    try:
+        operations.execute_with_retry(exhaustion_store, exhaustion_worker, request)
+    except Exception as error:  # The final timeout must remain caller-visible.
+        exhaustion_error = type(error).__name__
+    exhausted_truthfully = (
+        exhaustion_error == "TimeoutError" and len(exhaustion_worker.calls) == 2
+    )
+
+    recovery_observation = {
+        "operationIds": operation_ids,
+        "issuedLeases": recovery_store.leases,
+        "workerCalls": recovery_worker.calls,
+        "returned": recovery_result,
+        "error": recovery_error,
+    }
+    timeout_observation = {
+        "recovery": recovery_observation,
+        "exhaustionAttemptCount": len(exhaustion_worker.calls),
+        "exhaustionError": exhaustion_error,
+    }
+    return [
+        claim(
+            "stable-operation-identity",
+            "DEFECT",
+            stable_identity,
+            recovery_observation,
+        ),
+        claim(
+            "fresh-lease-per-attempt",
+            "PRESERVATION",
+            fresh_leases,
+            recovery_observation,
+        ),
+        claim(
+            "timeout-recovery-preserved",
+            "PRESERVATION",
+            recovered and exhausted_truthfully,
+            timeout_observation,
+        ),
+    ]
+
+
 def observe(case_id: str, target: Path) -> list[dict[str, Any]]:
     if case_id == "failure-truthfulness-positive":
         return failure_truthfulness(target, negative=False)
@@ -404,6 +534,8 @@ def observe(case_id: str, target: Path) -> list[dict[str, Any]]:
         return partial_retry_idempotency(target)
     if case_id.startswith("persist-before-ack-"):
         return persist_before_ack(target)
+    if case_id.startswith("stable-operation-fresh-lease-"):
+        return stable_operation_fresh_lease(target)
     raise ValueError(f"unsupported remediation case: {case_id}")
 
 

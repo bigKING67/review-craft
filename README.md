@@ -607,7 +607,9 @@ delivery.v1/v2 semantics. The protocol runs isolated copies of each fixture thro
 `ORDINARY_NAIVE_LOOP`, `REVIEW_CRAFT_UNGATED_LOOP`, and
 `REVIEW_CRAFT_EVIDENCE_GATED_LOOP`. Baseline and post-change oracles measure defect
 resolution, preservation regressions, clean-case mutation, scope violations, cumulative
-churn, invocations, and reported usage. `repairSuccessRate` is deliberately
+churn, first-decision alignment, invocations, and reported usage. Initial decision metrics
+bind to the first completed Review artifact and remain optional for legacy v1 runs.
+`repairSuccessRate` is deliberately
 invocation-based: a later `NO_CHANGE` repair invocation remains in its denominator.
 
 ```text

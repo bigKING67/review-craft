@@ -49,8 +49,8 @@
         }
       }
     },
-    "cases": {"type": "array", "items": {"type": "object"}},
-    "metrics": {"type": "object"},
+    "cases": {"type": "array", "items": {"$ref": "#/$defs/case"}},
+    "metrics": {"$ref": "#/$defs/metrics"},
     "artifacts": {
       "type": "array",
       "items": {
@@ -65,5 +65,176 @@
       }
     },
     "contentSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "required": ["id", "class", "pairId", "baselineClaims", "arms"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "class": {"type": "string", "enum": ["positive", "negative"]},
+        "pairId": {"type": "string", "minLength": 1},
+        "baselineClaims": {"type": "array"},
+        "arms": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/armResult"}
+        }
+      }
+    },
+    "armResult": {
+      "type": "object",
+      "required": [
+        "arm",
+        "status",
+        "stopReason",
+        "rounds",
+        "finalClaims",
+        "everRegressed",
+        "scopeViolation",
+        "sandboxBreach",
+        "sourceMutationRounds",
+        "cumulativeChangedPaths",
+        "cumulativeLineChurn",
+        "reviewInvocations",
+        "repairInvocations"
+      ],
+      "properties": {
+        "arm": {"type": "string"},
+        "rounds": {"type": "array"},
+        "initialReviewDecision": {"$ref": "#/$defs/nullableDecision"},
+        "initialDecisionDisposition": {
+          "type": ["string", "null"],
+          "enum": ["ALIGNED", "UNEXPECTED", "PROHIBITED", null]
+        }
+      },
+      "dependentRequired": {
+        "initialReviewDecision": ["initialDecisionDisposition"],
+        "initialDecisionDisposition": ["initialReviewDecision"]
+      }
+    },
+    "nullableDecision": {
+      "type": ["string", "null"],
+      "enum": [
+        "KEEP",
+        "CLEAN_UP",
+        "MERGE",
+        "REPLACE",
+        "REWRITE",
+        "DELETE",
+        "DEFER",
+        "MEASURE",
+        "DOCUMENT",
+        null
+      ]
+    },
+    "rate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator", "percent"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "percent": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "armMetrics": {
+      "type": "object",
+      "properties": {
+        "initialDecisionAlignmentRate": {"$ref": "#/$defs/rate"},
+        "initialUnexpectedDecisionRate": {"$ref": "#/$defs/rate"},
+        "initialProhibitedDecisionRate": {"$ref": "#/$defs/rate"}
+      },
+      "dependentRequired": {
+        "initialDecisionAlignmentRate": [
+          "initialUnexpectedDecisionRate",
+          "initialProhibitedDecisionRate"
+        ],
+        "initialUnexpectedDecisionRate": [
+          "initialDecisionAlignmentRate",
+          "initialProhibitedDecisionRate"
+        ],
+        "initialProhibitedDecisionRate": [
+          "initialDecisionAlignmentRate",
+          "initialUnexpectedDecisionRate"
+        ]
+      }
+    },
+    "percentagePointDeltas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cleanCaseMutationRate",
+        "claimRegressionRate",
+        "defectClaimResolutionRate",
+        "repairSuccessRate"
+      ],
+      "properties": {
+        "cleanCaseMutationRate": {"type": ["number", "null"]},
+        "claimRegressionRate": {"type": ["number", "null"]},
+        "defectClaimResolutionRate": {"type": ["number", "null"]},
+        "repairSuccessRate": {"type": ["number", "null"]},
+        "initialDecisionAlignmentRate": {"type": ["number", "null"]},
+        "initialUnexpectedDecisionRate": {"type": ["number", "null"]},
+        "initialProhibitedDecisionRate": {"type": ["number", "null"]}
+      },
+      "dependentRequired": {
+        "initialDecisionAlignmentRate": [
+          "initialUnexpectedDecisionRate",
+          "initialProhibitedDecisionRate"
+        ],
+        "initialUnexpectedDecisionRate": [
+          "initialDecisionAlignmentRate",
+          "initialProhibitedDecisionRate"
+        ],
+        "initialProhibitedDecisionRate": [
+          "initialDecisionAlignmentRate",
+          "initialUnexpectedDecisionRate"
+        ]
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "from", "to", "percentagePointDeltas"],
+      "properties": {
+        "label": {"type": "string"},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "percentagePointDeltas": {"$ref": "#/$defs/percentagePointDeltas"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arms", "comparisons"],
+      "properties": {
+        "arms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ORDINARY_NAIVE_LOOP",
+            "REVIEW_CRAFT_UNGATED_LOOP",
+            "REVIEW_CRAFT_EVIDENCE_GATED_LOOP"
+          ],
+          "properties": {
+            "ORDINARY_NAIVE_LOOP": {"$ref": "#/$defs/armMetrics"},
+            "REVIEW_CRAFT_UNGATED_LOOP": {"$ref": "#/$defs/armMetrics"},
+            "REVIEW_CRAFT_EVIDENCE_GATED_LOOP": {"$ref": "#/$defs/armMetrics"}
+          }
+        },
+        "comparisons": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/comparison"}
+        }
+      }
+    }
   }
 }

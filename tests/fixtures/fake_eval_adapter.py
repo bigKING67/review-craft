@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
             "usage",
             "invalid-usage",
             "remediation-claimed-mismatch",
+            "remediation-broad-hoist-regression",
             "remediation-regression",
             "remediation-scope-violation",
             "timeout",
@@ -183,6 +184,48 @@ def main() -> int:
                 consumer_source.write_text(repaired, encoding="utf-8")
                 changed = True
                 changed_path = consumer_source.name
+        operations_source = fixture / "operations.py"
+        if operations_source.is_file():
+            content = operations_source.read_text(encoding="utf-8")
+            defective = (
+                "def execute_with_retry(store, worker, request, attempts=2):\n"
+                "    for attempt in range(attempts):\n"
+                "        operation_id = store.create_operation(request)\n"
+                "        lease = store.issue_lease(operation_id)\n"
+            )
+            broad_hoist = (
+                "def execute_with_retry(store, worker, request, attempts=2):\n"
+                "    operation_id = store.create_operation(request)\n"
+                "    lease = store.issue_lease(operation_id)\n"
+                "    for attempt in range(attempts):\n"
+            )
+            repaired = (
+                "def execute_with_retry(store, worker, request, attempts=2):\n"
+                "    operation_id = store.create_operation(request)\n"
+                "    for attempt in range(attempts):\n"
+                "        lease = store.issue_lease(operation_id)\n"
+            )
+            replacement: str | None = None
+            if defective in content:
+                replacement = (
+                    broad_hoist
+                    if args.mode == "remediation-broad-hoist-regression"
+                    else repaired
+                )
+            elif (
+                args.mode == "remediation-broad-hoist-regression"
+                and args.round_number == 2
+                and args.treatment == "REVIEW_CRAFT_EVIDENCE_GATED_LOOP"
+                and broad_hoist in content
+            ):
+                replacement = repaired
+                defective = broad_hoist
+            if replacement is not None:
+                operations_source.write_text(
+                    content.replace(defective, replacement), encoding="utf-8"
+                )
+                changed = True
+                changed_path = operations_source.name
         claimed_paths = [changed_path] if changed_path is not None else []
         if args.mode == "remediation-scope-violation":
             (fixture / "unexpected.py").write_text("UNEXPECTED = True\n", encoding="utf-8")

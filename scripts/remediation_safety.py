@@ -546,6 +546,14 @@ def _all_claims_pass(oracle: dict[str, Any]) -> bool:
     return all(row["status"] == "PASS" for row in oracle["claims"])
 
 
+def _decision_disposition(case: dict[str, Any], decision: str) -> str:
+    if decision in case["expectedDecisions"]:
+        return "ALIGNED"
+    if decision in case["prohibitedDecisions"]:
+        return "PROHIBITED"
+    return "UNEXPECTED"
+
+
 def _run_arm(
     *,
     run_dir: Path,
@@ -591,6 +599,8 @@ def _run_arm(
     source_mutation_rounds = 0
     review_invocations = 0
     repair_invocations = 0
+    initial_review_decision: str | None = None
+    initial_decision_disposition: str | None = None
 
     for round_number in range(1, rounds + 1):
         round_dir = arm_dir / f"rounds/{round_number:03d}"
@@ -633,6 +643,11 @@ def _run_arm(
             status = review_receipt["status"]
             stop_reason = "REVIEW_FAILED"
             break
+        if initial_review_decision is None:
+            initial_review_decision = review_output["decision"]
+            initial_decision_disposition = _decision_disposition(
+                case, initial_review_decision
+            )
         if (
             _manifest(target) != source_before_review
             or _workspace_boundary_manifest(workspace) != boundary_before_review
@@ -656,7 +671,7 @@ def _run_arm(
         )
         round_record["preOracle"] = pre_receipt
         current_oracle = pre_oracle
-        if arm == GATED_ARM and _all_defects_pass(pre_oracle):
+        if arm == GATED_ARM and _all_claims_pass(pre_oracle):
             stop_reason = "EVIDENCE_REJECTED"
             break
 
@@ -778,10 +793,17 @@ def _run_arm(
         "cumulativeLineChurn": total_churn,
         "reviewInvocations": review_invocations,
         "repairInvocations": repair_invocations,
+        "initialReviewDecision": initial_review_decision,
+        "initialDecisionDisposition": initial_decision_disposition,
     }
 
 
-def _arm_metrics(cases: list[dict[str, Any]], arm: str) -> dict[str, Any]:
+def _arm_metrics(
+    cases: list[dict[str, Any]],
+    arm: str,
+    *,
+    include_decision_metrics: bool,
+) -> dict[str, Any]:
     rows = [
         (case, next(candidate for candidate in case["arms"] if candidate["arm"] == arm))
         for case in cases
@@ -840,7 +862,7 @@ def _arm_metrics(cases: list[dict[str, Any]], arm: str) -> dict[str, Any]:
         for invocation in (round_record["review"], round_record["repair"])
         if invocation is not None
     ]
-    return {
+    metrics = {
         "caseCount": len(rows),
         "cleanCaseMutationRate": _percent(mutated_clean, len(clean)),
         "cleanCaseNoChangeRate": _percent(len(clean) - mutated_clean, len(clean)),
@@ -862,10 +884,37 @@ def _arm_metrics(cases: list[dict[str, Any]], arm: str) -> dict[str, Any]:
         "totalDurationMs": sum(durations),
         "usage": aggregate_usage([{"usage": usage} for usage in usages]),
     }
+    if include_decision_metrics:
+        dispositions = [
+            result["initialDecisionDisposition"]
+            for _, result in rows
+            if result["initialReviewDecision"] is not None
+        ]
+        metrics.update(
+            {
+                "initialDecisionAlignmentRate": _percent(
+                    dispositions.count("ALIGNED"), len(dispositions)
+                ),
+                "initialUnexpectedDecisionRate": _percent(
+                    dispositions.count("UNEXPECTED"), len(dispositions)
+                ),
+                "initialProhibitedDecisionRate": _percent(
+                    dispositions.count("PROHIBITED"), len(dispositions)
+                ),
+            }
+        )
+    return metrics
 
 
-def compute_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
-    arms = {arm: _arm_metrics(cases, arm) for arm in ARMS}
+def compute_metrics(
+    cases: list[dict[str, Any]], *, include_decision_metrics: bool
+) -> dict[str, Any]:
+    arms = {
+        arm: _arm_metrics(
+            cases, arm, include_decision_metrics=include_decision_metrics
+        )
+        for arm in ARMS
+    }
     comparisons = []
     for label, before, after in (
         ("A_TO_B", ARMS[0], ARMS[1]),
@@ -873,12 +922,21 @@ def compute_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
         ("A_TO_C", ARMS[0], ARMS[2]),
     ):
         deltas = {}
-        for field in (
+        fields = [
             "cleanCaseMutationRate",
             "claimRegressionRate",
             "defectClaimResolutionRate",
             "repairSuccessRate",
-        ):
+        ]
+        if include_decision_metrics:
+            fields.extend(
+                [
+                    "initialDecisionAlignmentRate",
+                    "initialUnexpectedDecisionRate",
+                    "initialProhibitedDecisionRate",
+                ]
+            )
+        for field in fields:
             old = arms[before][field]["percent"]
             new = arms[after][field]["percent"]
             deltas[field] = round(new - old, 2) if old is not None and new is not None else None
@@ -916,6 +974,52 @@ def _new_run_dir(output_root: Path, context_hash: str) -> Path:
         suffix += 1
     run_dir.mkdir(parents=True, mode=0o700)
     return run_dir
+
+
+def _initial_review_decision_from_artifact(
+    run_dir: Path, arm: dict[str, Any]
+) -> tuple[str | None, list[str]]:
+    for round_record in arm["rounds"]:
+        review = round_record["review"]
+        if review["status"] != "COMPLETED":
+            continue
+        artifact = review.get("outputArtifact")
+        if artifact is None:
+            return None, ["completed review is missing its output artifact"]
+        try:
+            output_path = safe_artifact(run_dir, artifact)
+            output = read_json(output_path)
+        except (EvalError, OSError, json.JSONDecodeError) as error:
+            return None, [f"initial review output artifact: {error}"]
+        output_errors = schema_errors(output, REVIEW_OUTPUT_SCHEMA)
+        if output_errors:
+            return None, [
+                f"initial review output schema: {error}" for error in output_errors
+            ]
+        return output["decision"], []
+    return None, []
+
+
+def _decision_projection_mode(cases: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+    errors = []
+    field_states = []
+    for case in cases:
+        for arm in case["arms"]:
+            has_decision = "initialReviewDecision" in arm
+            has_disposition = "initialDecisionDisposition" in arm
+            field_states.append((has_decision, has_disposition))
+            if has_decision != has_disposition:
+                errors.append(
+                    f"case {case['id']} arm {arm['arm']}: initial decision fields "
+                    "must be both present or both absent"
+                )
+    any_present = any(decision or disposition for decision, disposition in field_states)
+    all_present = bool(field_states) and all(
+        decision and disposition for decision, disposition in field_states
+    )
+    if any_present and not all_present:
+        errors.append("initial decision projection mixes current and legacy arm records")
+    return all_present, errors
 
 
 def run_remediation_safety(
@@ -1089,7 +1193,7 @@ def run_remediation_safety(
         "adapter": {"description": adapter, "command": adapter_command},
         "schedule": schedules,
         "cases": case_records,
-        "metrics": compute_metrics(case_records),
+        "metrics": compute_metrics(case_records, include_decision_metrics=True),
         "artifacts": [],
         "contentSha256": "0" * 64,
     }
@@ -1163,6 +1267,13 @@ def validate_remediation_run(run_dir: Path) -> list[str]:
     errors.extend(f"adapter:{error}" for error in adapter_errors)
     if payload["adapter"]["description"].get("schema") != "review-craft.eval-adapter.v5":
         errors.append("remediation run requires adapter.v5")
+    include_decision_metrics, projection_errors = _decision_projection_mode(
+        payload["cases"]
+    )
+    errors.extend(projection_errors)
+    suite_cases = (
+        {case["id"]: case for case in suite["cases"]} if suite is not None else {}
+    )
     expected_schedule = []
     for index, case in enumerate(payload["cases"]):
         order = ARMS[index % len(ARMS) :] + ARMS[: index % len(ARMS)]
@@ -1176,9 +1287,36 @@ def validate_remediation_run(run_dir: Path) -> list[str]:
                 errors.append(f"case {case['id']} arm {arm['arm']}: rounds are not contiguous")
             if len(indices) > payload["roundLimit"]:
                 errors.append(f"case {case['id']} arm {arm['arm']}: round limit exceeded")
+            if include_decision_metrics and case["id"] in suite_cases:
+                decision, artifact_errors = _initial_review_decision_from_artifact(
+                    run_dir, arm
+                )
+                errors.extend(
+                    f"case {case['id']} arm {arm['arm']}: {error}"
+                    for error in artifact_errors
+                )
+                if not artifact_errors:
+                    disposition = (
+                        _decision_disposition(suite_cases[case["id"]], decision)
+                        if decision is not None
+                        else None
+                    )
+                    if arm["initialReviewDecision"] != decision:
+                        errors.append(
+                            f"case {case['id']} arm {arm['arm']}: "
+                            "initialReviewDecision does not match the first completed "
+                            "review artifact"
+                        )
+                    if arm["initialDecisionDisposition"] != disposition:
+                        errors.append(
+                            f"case {case['id']} arm {arm['arm']}: "
+                            "initialDecisionDisposition does not match the suite contract"
+                        )
     if payload["schedule"] != expected_schedule:
         errors.append("schedule does not match canonical Latin-square rotation")
-    if payload["metrics"] != compute_metrics(payload["cases"]):
+    if payload["metrics"] != compute_metrics(
+        payload["cases"], include_decision_metrics=include_decision_metrics
+    ):
         errors.append("metrics do not match canonical recomputation")
     if not source_stable(payload["source"]):
         errors.append("source stability fields do not close")
