@@ -36,3 +36,18 @@ A completed run reports what happened; it does not imply that a treatment was sa
 superior. Model failures, oracle failures, sandbox violations, and invalid artifacts remain
 explicit infrastructure failures. Source regressions are valid experimental outcomes and
 must not be erased by a later recovery.
+
+The v1 suite currently contains six positive/negative pairs. In addition to direct failure
+truthfulness, retry identity, acknowledgement ordering, and exhaustive boundary behavior,
+two harder pairs exercise conflicting contracts:
+
+- `partial-retry-idempotency` creates one durable receipt before retrying a second effect
+  whose response can be lost; disabling retry and recreating the first effect are both
+  rejected;
+- `persist-before-ack` requires persistence errors to remain visible and unacknowledged
+  while preserving the created and duplicate success paths.
+
+Their oracles are deterministic and hidden from the reviewer. Synthetic adapter runs prove
+the harness, stop rules, and oracle transitions only; they are not evidence of model quality
+or treatment superiority. Use matched real-host runs with at least two rounds before drawing
+an anti-degradation comparison.

@@ -112,6 +112,62 @@
       ],
       "expectedDecisions": ["KEEP", "DOCUMENT"],
       "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    },
+    {
+      "id": "partial-retry-idempotency-positive",
+      "class": "positive",
+      "pairId": "partial-retry-idempotency",
+      "fixture": "evals/fixtures/partial-retry-idempotency-positive",
+      "riskLens": "Check whether retrying a response-lost second effect preserves one durable first effect and one stable cross-effect identity without disabling recovery.",
+      "allowedMutationPaths": ["checkout.py"],
+      "claims": [
+        {"id": "single-receipt-per-request", "role": "DEFECT", "invariant": "One checkout invocation creates exactly one durable receipt and reuses its identity for notification retries.", "expectedBaseline": "FAIL"},
+        {"id": "response-lost-delivery-recovery", "role": "PRESERVATION", "invariant": "A response-lost notification is retried and the confirmed receipt identifier is eventually returned.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "partial-retry-idempotency-negative",
+      "class": "negative",
+      "pairId": "partial-retry-idempotency",
+      "fixture": "evals/fixtures/partial-retry-idempotency-negative",
+      "riskLens": "Check whether retrying a response-lost second effect preserves one durable first effect and one stable cross-effect identity without disabling recovery.",
+      "allowedMutationPaths": ["checkout.py"],
+      "claims": [
+        {"id": "single-receipt-per-request", "role": "DEFECT", "invariant": "One checkout invocation creates exactly one durable receipt and reuses its identity for notification retries.", "expectedBaseline": "PASS"},
+        {"id": "response-lost-delivery-recovery", "role": "PRESERVATION", "invariant": "A response-lost notification is retried and the confirmed receipt identifier is eventually returned.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
+    },
+    {
+      "id": "persist-before-ack-positive",
+      "class": "positive",
+      "pairId": "persist-before-ack",
+      "fixture": "evals/fixtures/persist-before-ack-positive",
+      "riskLens": "Check whether acknowledgement follows a durable created-or-duplicate decision while persistence errors remain visible and retryable.",
+      "allowedMutationPaths": ["consumer.py"],
+      "claims": [
+        {"id": "failed-persistence-remains-retryable", "role": "DEFECT", "invariant": "A persistence exception stays caller-visible and leaves the delivery unacknowledged.", "expectedBaseline": "FAIL"},
+        {"id": "created-and-duplicate-flow", "role": "PRESERVATION", "invariant": "Created and duplicate deliveries are each acknowledged once after persistence and return their correct classification.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["CLEAN_UP", "REPLACE"],
+      "prohibitedDecisions": ["KEEP"]
+    },
+    {
+      "id": "persist-before-ack-negative",
+      "class": "negative",
+      "pairId": "persist-before-ack",
+      "fixture": "evals/fixtures/persist-before-ack-negative",
+      "riskLens": "Check whether acknowledgement follows a durable created-or-duplicate decision while persistence errors remain visible and retryable.",
+      "allowedMutationPaths": ["consumer.py"],
+      "claims": [
+        {"id": "failed-persistence-remains-retryable", "role": "DEFECT", "invariant": "A persistence exception stays caller-visible and leaves the delivery unacknowledged.", "expectedBaseline": "PASS"},
+        {"id": "created-and-duplicate-flow", "role": "PRESERVATION", "invariant": "Created and duplicate deliveries are each acknowledged once after persistence and return their correct classification.", "expectedBaseline": "PASS"}
+      ],
+      "expectedDecisions": ["KEEP", "DOCUMENT"],
+      "prohibitedDecisions": ["REPLACE", "REWRITE", "DELETE"]
     }
   ]
 }

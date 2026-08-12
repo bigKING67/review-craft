@@ -127,16 +127,63 @@ def main() -> int:
         )
     if args.treatment in remediation_treatments and args.operation == "repair":
         changed = False
-        source = fixture / "bounded_add.py"
-        if source.is_file():
-            content = source.read_text(encoding="utf-8")
+        changed_path: str | None = None
+        bounded_source = fixture / "bounded_add.py"
+        if bounded_source.is_file():
+            content = bounded_source.read_text(encoding="utf-8")
             if "> 0x100" in content:
-                source.write_text(content.replace("> 0x100", "> 0xFF"), encoding="utf-8")
+                bounded_source.write_text(
+                    content.replace("> 0x100", "> 0xFF"), encoding="utf-8"
+                )
                 changed = True
+                changed_path = bounded_source.name
             elif args.mode == "remediation-regression" and "> 0xFF" in content:
-                source.write_text(content.replace("> 0xFF", "> 0x100"), encoding="utf-8")
+                bounded_source.write_text(
+                    content.replace("> 0xFF", "> 0x100"), encoding="utf-8"
+                )
                 changed = True
-        claimed_paths = ["bounded_add.py"] if changed else []
+                changed_path = bounded_source.name
+        checkout_source = fixture / "checkout.py"
+        if checkout_source.is_file():
+            content = checkout_source.read_text(encoding="utf-8")
+            defective = (
+                "def complete_checkout(store, notifier, request, attempts=2):\n"
+                "    for attempt in range(attempts):\n"
+                "        receipt_id = store.create_receipt(request)\n"
+            )
+            repaired = (
+                "def complete_checkout(store, notifier, request, attempts=2):\n"
+                "    receipt_id = store.create_receipt(request)\n"
+                "    for attempt in range(attempts):\n"
+            )
+            if defective in content:
+                checkout_source.write_text(
+                    content.replace(defective, repaired), encoding="utf-8"
+                )
+                changed = True
+                changed_path = checkout_source.name
+        consumer_source = fixture / "consumer.py"
+        if consumer_source.is_file():
+            content = consumer_source.read_text(encoding="utf-8")
+            defective = (
+                "def consume_delivery(store, broker, message):\n"
+                "    try:\n"
+                "        created = store.save_once(message[\"id\"], message[\"payload\"])\n"
+                "        return \"CREATED\" if created else \"DUPLICATE\"\n"
+                "    finally:\n"
+                "        broker.acknowledge(message[\"delivery_tag\"])\n"
+            )
+            repaired = (
+                "def consume_delivery(store, broker, message):\n"
+                "    created = store.save_once(message[\"id\"], message[\"payload\"])\n"
+                "    broker.acknowledge(message[\"delivery_tag\"])\n"
+                "    return \"CREATED\" if created else \"DUPLICATE\"\n"
+            )
+            if content == defective:
+                consumer_source.write_text(repaired, encoding="utf-8")
+                changed = True
+                changed_path = consumer_source.name
+        claimed_paths = [changed_path] if changed_path is not None else []
         if args.mode == "remediation-scope-violation":
             (fixture / "unexpected.py").write_text("UNEXPECTED = True\n", encoding="utf-8")
             changed = True

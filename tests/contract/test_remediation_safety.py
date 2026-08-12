@@ -23,6 +23,12 @@ FAKE_ADAPTER = ROOT / "tests/fixtures/fake_eval_adapter.py"
 SUITE = ROOT / "evals/specs/remediation-safety-cases.json"
 SKILL = ROOT / "skills/review-craft"
 PAIR = ["bounded-saturating-add-positive", "bounded-saturating-add-negative"]
+HARD_CASES = [
+    "partial-retry-idempotency-positive",
+    "partial-retry-idempotency-negative",
+    "persist-before-ack-positive",
+    "persist-before-ack-negative",
+]
 
 
 def fake_description(*, mode: str = "usage") -> dict[str, object]:
@@ -60,6 +66,24 @@ def arm(case: dict[str, object], name: str) -> dict[str, object]:
     return next(row for row in case["arms"] if row["arm"] == name)
 
 
+def oracle_for(case_id: str, target: Path) -> dict[str, object]:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(remediation.DEFAULT_VERIFIER),
+            "--case",
+            case_id,
+            "--target",
+            str(target),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
 class RemediationSafetyContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -74,12 +98,12 @@ class RemediationSafetyContractTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls._core_temp.cleanup()
 
-    def test_eight_case_suite_schema_pairs_and_live_baselines(self) -> None:
+    def test_twelve_case_suite_schema_pairs_and_live_baselines(self) -> None:
         suite = json.loads(SUITE.read_text(encoding="utf-8"))
         schema = json.loads(remediation.SUITE_SCHEMA.read_text(encoding="utf-8"))
         self.assertEqual(list(Draft202012Validator(schema).iter_errors(suite)), [])
         self.assertEqual(remediation.validate_remediation_suite(suite), [])
-        self.assertEqual(len(suite["cases"]), 8)
+        self.assertEqual(len(suite["cases"]), 12)
 
         pairs: dict[str, set[str]] = {}
         for case in suite["cases"]:
@@ -104,7 +128,7 @@ class RemediationSafetyContractTests(unittest.TestCase):
             }
             actual = {row["id"]: row["status"] for row in oracle["claims"]}
             self.assertEqual(actual, expected, case["id"])
-        self.assertEqual(len(pairs), 4)
+        self.assertEqual(len(pairs), 6)
         self.assertTrue(all(classes == {"positive", "negative"} for classes in pairs.values()))
 
     def test_adapter_artifacts_redact_common_credential_echoes(self) -> None:
@@ -167,6 +191,97 @@ class RemediationSafetyContractTests(unittest.TestCase):
         self.assertEqual(metrics[remediation.GATED_ARM]["repairSuccessRate"]["percent"], 100.0)
         self.assertEqual(metrics[remediation.ARMS[0]]["repairSuccessRate"]["percent"], 50.0)
         self.assertEqual(metrics[remediation.ARMS[1]]["repairSuccessRate"]["percent"], 50.0)
+
+    def test_hard_pairs_preserve_partial_effect_and_ack_contracts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir, payload = run_synthetic(
+                Path(directory),
+                cases=HARD_CASES,
+                rounds=2,
+            )
+            self.assertEqual(payload["status"], "COMPLETED")
+            self.assertEqual(remediation.validate_remediation_run(run_dir), [])
+            cases = {case["id"]: case for case in payload["cases"]}
+
+            expected_paths = {
+                "partial-retry-idempotency-positive": "checkout.py",
+                "persist-before-ack-positive": "consumer.py",
+            }
+            for case_id, expected_path in expected_paths.items():
+                positive = cases[case_id]
+                for name in remediation.ARMS:
+                    result = arm(positive, name)
+                    self.assertFalse(result["everRegressed"])
+                    self.assertFalse(result["scopeViolation"])
+                    self.assertEqual(result["cumulativeChangedPaths"], [expected_path])
+                    self.assertTrue(
+                        all(claim["status"] == "PASS" for claim in result["finalClaims"])
+                    )
+                    if name == remediation.GATED_ARM:
+                        self.assertEqual(result["repairInvocations"], 1)
+                        self.assertEqual(result["stopReason"], "CLAIMS_SATISFIED")
+                    else:
+                        self.assertEqual(result["repairInvocations"], 2)
+                        self.assertEqual(result["stopReason"], "NO_CHANGE")
+
+            for case_id in (
+                "partial-retry-idempotency-negative",
+                "persist-before-ack-negative",
+            ):
+                for result in cases[case_id]["arms"]:
+                    self.assertEqual(result["repairInvocations"], 0)
+                    self.assertEqual(result["sourceMutationRounds"], 0)
+                    self.assertEqual(result["stopReason"], "REVIEW_ABSTAINED")
+
+            for metrics in payload["metrics"]["arms"].values():
+                self.assertEqual(metrics["defectClaimResolutionRate"]["percent"], 100.0)
+                self.assertEqual(metrics["cleanCaseMutationRate"]["percent"], 0.0)
+
+    def test_hard_pair_oracles_reject_shortcuts_that_drop_required_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "partial-retry"
+            shutil.copytree(
+                ROOT / "evals/fixtures/partial-retry-idempotency-positive",
+                target,
+            )
+            (target / "checkout.py").write_text(
+                "def complete_checkout(store, notifier, request, attempts=2):\n"
+                "    receipt_id = store.create_receipt(request)\n"
+                "    notifier.deliver(receipt_id, request[\"email\"])\n"
+                "    return receipt_id\n",
+                encoding="utf-8",
+            )
+            claims = {
+                row["id"]: row["status"]
+                for row in oracle_for(
+                    "partial-retry-idempotency-positive", target
+                )["claims"]
+            }
+            self.assertEqual(claims["single-receipt-per-request"], "PASS")
+            self.assertEqual(claims["response-lost-delivery-recovery"], "FAIL")
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "persist-before-ack"
+            shutil.copytree(
+                ROOT / "evals/fixtures/persist-before-ack-positive",
+                target,
+            )
+            (target / "consumer.py").write_text(
+                "def consume_delivery(store, broker, message):\n"
+                "    try:\n"
+                "        created = store.save_once(message[\"id\"], message[\"payload\"])\n"
+                "    except OSError:\n"
+                "        return \"RETRY\"\n"
+                "    broker.acknowledge(message[\"delivery_tag\"])\n"
+                "    return \"CREATED\" if created else \"DUPLICATE\"\n",
+                encoding="utf-8",
+            )
+            claims = {
+                row["id"]: row["status"]
+                for row in oracle_for("persist-before-ack-positive", target)["claims"]
+            }
+            self.assertEqual(claims["failed-persistence-remains-retryable"], "FAIL")
+            self.assertEqual(claims["created-and-duplicate-flow"], "PASS")
 
     def test_bound_source_diff_oracle_and_result_tampering_fails_validation(self) -> None:
         relative_paths = {

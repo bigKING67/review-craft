@@ -43,6 +43,22 @@ CLAIMS = {
         ("exhaustive-saturation", "DEFECT"),
         ("branchless-contract", "PRESERVATION"),
     ),
+    "partial-retry-idempotency-positive": (
+        ("single-receipt-per-request", "DEFECT"),
+        ("response-lost-delivery-recovery", "PRESERVATION"),
+    ),
+    "partial-retry-idempotency-negative": (
+        ("single-receipt-per-request", "DEFECT"),
+        ("response-lost-delivery-recovery", "PRESERVATION"),
+    ),
+    "persist-before-ack-positive": (
+        ("failed-persistence-remains-retryable", "DEFECT"),
+        ("created-and-duplicate-flow", "PRESERVATION"),
+    ),
+    "persist-before-ack-negative": (
+        ("failed-persistence-remains-retryable", "DEFECT"),
+        ("created-and-duplicate-flow", "PRESERVATION"),
+    ),
 }
 
 
@@ -241,6 +257,138 @@ def bounded_saturating_add(target: Path) -> list[dict[str, Any]]:
     ]
 
 
+def partial_retry_idempotency(target: Path) -> list[dict[str, Any]]:
+    checkout = load_module(target, "checkout.py")
+
+    class Store:
+        def __init__(self) -> None:
+            self.receipts: list[dict[str, Any]] = []
+
+        def create_receipt(self, request: dict[str, Any]) -> str:
+            receipt_id = f"receipt-{len(self.receipts) + 1}"
+            self.receipts.append({"id": receipt_id, "request": dict(request)})
+            return receipt_id
+
+    class Notifier:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+            self.deliveries: set[str] = set()
+            self.first = True
+
+        def deliver(self, receipt_id: str, email: str) -> None:
+            self.calls.append({"receiptId": receipt_id, "email": email})
+            self.deliveries.add(receipt_id)
+            if self.first:
+                self.first = False
+                raise TimeoutError("response lost after notification delivery")
+
+    store = Store()
+    notifier = Notifier()
+    result: Any = None
+    delivery_error: str | None = None
+    try:
+        result = checkout.complete_checkout(
+            store,
+            notifier,
+            {"request_id": "checkout-9", "email": "buyer@example.test"},
+        )
+    except Exception as error:  # Recovery must remain caller-observable when exhausted.
+        delivery_error = type(error).__name__
+    receipt_ids = [row["id"] for row in store.receipts]
+    notification_ids = [row["receiptId"] for row in notifier.calls]
+    observation = {
+        "receiptCount": len(receipt_ids),
+        "receiptIds": receipt_ids,
+        "notificationAttemptCount": len(notification_ids),
+        "notificationReceiptIds": notification_ids,
+        "deliveryCount": len(notifier.deliveries),
+        "returned": result,
+        "error": delivery_error,
+    }
+    return [
+        claim(
+            "single-receipt-per-request",
+            "DEFECT",
+            len(receipt_ids) == 1
+            and len(set(notification_ids)) == 1
+            and notifier.deliveries == set(receipt_ids),
+            observation,
+        ),
+        claim(
+            "response-lost-delivery-recovery",
+            "PRESERVATION",
+            delivery_error is None
+            and len(notification_ids) == 2
+            and result == notification_ids[-1]
+            and result in receipt_ids,
+            observation,
+        ),
+    ]
+
+
+def persist_before_ack(target: Path) -> list[dict[str, Any]]:
+    consumer = load_module(target, "consumer.py")
+    message = {"id": "message-3", "payload": {"sku": "A"}, "delivery_tag": "tag-3"}
+    failed_events: list[str] = []
+
+    class FailingStore:
+        def save_once(self, message_id: str, payload: dict[str, Any]) -> bool:
+            failed_events.append("save-attempt")
+            raise OSError("durable store unavailable")
+
+    class FailedBroker:
+        def acknowledge(self, delivery_tag: str) -> None:
+            failed_events.append("acknowledge")
+
+    failure_error: str | None = None
+    try:
+        consumer.consume_delivery(FailingStore(), FailedBroker(), message)
+    except Exception as error:  # Caller-visible failure is part of the contract.
+        failure_error = type(error).__name__
+
+    def observe_success(created: bool, expected: str) -> dict[str, Any]:
+        label = expected.lower()
+        events: list[str] = []
+
+        class Store:
+            def save_once(self, message_id: str, payload: dict[str, Any]) -> bool:
+                events.append(f"save-{label}")
+                return created
+
+        class Broker:
+            def acknowledge(self, delivery_tag: str) -> None:
+                events.append(f"acknowledge-{label}")
+
+        returned = consumer.consume_delivery(Store(), Broker(), message)
+        return {
+            "classification": expected,
+            "events": events,
+            "returned": returned,
+            "passed": events == [f"save-{label}", f"acknowledge-{label}"]
+            and returned == expected,
+        }
+
+    success_observations = [
+        observe_success(True, "CREATED"),
+        observe_success(False, "DUPLICATE"),
+    ]
+
+    return [
+        claim(
+            "failed-persistence-remains-retryable",
+            "DEFECT",
+            failure_error == "OSError" and failed_events == ["save-attempt"],
+            {"events": failed_events, "error": failure_error},
+        ),
+        claim(
+            "created-and-duplicate-flow",
+            "PRESERVATION",
+            all(row["passed"] for row in success_observations),
+            {"flows": success_observations},
+        ),
+    ]
+
+
 def observe(case_id: str, target: Path) -> list[dict[str, Any]]:
     if case_id == "failure-truthfulness-positive":
         return failure_truthfulness(target, negative=False)
@@ -252,6 +400,10 @@ def observe(case_id: str, target: Path) -> list[dict[str, Any]]:
         return ack_order(target)
     if case_id.startswith("bounded-saturating-add-"):
         return bounded_saturating_add(target)
+    if case_id.startswith("partial-retry-idempotency-"):
+        return partial_retry_idempotency(target)
+    if case_id.startswith("persist-before-ack-"):
+        return persist_before_ack(target)
     raise ValueError(f"unsupported remediation case: {case_id}")
 
 
