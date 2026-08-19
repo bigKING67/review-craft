@@ -7,7 +7,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "jsonschema>=4.23,<5",
+  "jsonschema[format]>=4.23,<5",
   "ruff>=0.12,<1",
 ]
 

@@ -56,24 +56,16 @@ def _previous_verification(
     return verification
 
 
-def validate_fix_attempt_snapshot(
-    attempt_dir_value: str | Path, *, require_finalized: bool = True
-) -> dict[str, Any]:
-    attempt_dir, fix_dir, manifest, evidence = load_attempt(attempt_dir_value)
-    _, plan, state = load_fix(fix_dir)
-    validate_review_provenance(plan, state)
-    require_attempt_protocol_root(fix_dir)
-    receipts = validate_command_receipts(attempt_dir, state["commands"])
+def _capture_identity_errors(
+    *, plan: dict[str, Any], manifest: dict[str, Any], evidence: dict[str, Any]
+) -> tuple[list[str], str]:
     errors: list[str] = []
     plan_hash = sha256_json(plan)
     if manifest["fixId"] != plan["fixId"] or evidence["fixId"] != plan["fixId"]:
         errors.append("fix attempt fixId: does not match fix plan")
     if manifest["planSha256"] != plan_hash or evidence["planSha256"] != plan_hash:
         errors.append("fix attempt planSha256: does not match fix plan")
-    if (
-        manifest["commandConfigSha256"]
-        != plan["verification"]["commandConfigSha256"]
-    ):
+    if manifest["commandConfigSha256"] != plan["verification"]["commandConfigSha256"]:
         errors.append("fix-attempt-manifest.commandConfigSha256: plan mismatch")
     if manifest["commands"] != plan["verification"]["commands"]:
         errors.append("fix-attempt-manifest.commands: plan order mismatch")
@@ -85,7 +77,13 @@ def validate_fix_attempt_snapshot(
         parse_timestamp(manifest["capturedAt"], "fix-attempt-manifest.capturedAt")
     ):
         errors.append("fix-attempt-evidence.completedAt: precedes capture start")
+    return errors, plan_hash
 
+
+def _capture_source_errors(
+    *, plan: dict[str, Any], state: dict[str, Any], evidence: dict[str, Any]
+) -> tuple[list[str], bool]:
+    errors: list[str] = []
     current_files = evidence["currentFiles"]
     if len({row.get("path") for row in current_files}) != len(current_files):
         errors.append("fix-attempt-evidence.currentFiles: paths must be unique")
@@ -95,44 +93,61 @@ def validate_fix_attempt_snapshot(
     if evidence["changes"] != expected_changes:
         errors.append("fix-attempt-evidence.changes: current files mismatch")
     source_changed = (
-        evidence["current"]["sourceFingerprint"]
-        != plan["baseline"]["sourceFingerprint"]
+        evidence["current"]["sourceFingerprint"] != plan["baseline"]["sourceFingerprint"]
     )
     if evidence["sourceChanged"] != source_changed:
         errors.append("fix-attempt-evidence.sourceChanged: captured source mismatch")
+    return errors, source_changed
 
-    result_names = [row["name"] for row in evidence["commands"]]
-    if result_names + evidence["skippedCommands"] != plan["verification"]["commands"]:
-        errors.append("fix-attempt-evidence commands: planned order mismatch")
+
+def _capture_receipt_errors(
+    *, evidence: dict[str, Any], receipts: dict[str, dict[str, Any]]
+) -> list[str]:
+    errors: list[str] = []
     referenced = [row["receiptId"] for row in evidence["commands"]]
     if len(referenced) != len(receipts) or set(referenced) != set(receipts):
         errors.append("fix attempt receipt ledger must exactly match evidence references")
     for result in evidence["commands"]:
         receipt = receipts.get(result["receiptId"])
         if receipt is None or sha256_json(receipt) != result["receiptSha256"]:
-            errors.append(
-                f"fix-attempt-evidence command {result['name']}: receipt mismatch"
-            )
+            errors.append(f"fix-attempt-evidence command {result['name']}: receipt mismatch")
             continue
-        for field in (
-            "name",
-            "exitCode",
-            "timedOut",
-            "repositoryMutationDetected",
-        ):
+        for field in ("name", "exitCode", "timedOut", "repositoryMutationDetected"):
             if result[field] != receipt[field]:
                 errors.append(
                     f"fix-attempt-evidence command {result['name']}: "
                     f"{field} does not match receipt"
                 )
-        if result.get("semanticEvidenceValid") != receipt.get(
-            "semanticEvidenceValid"
-        ):
+        if result.get("semanticEvidenceValid") != receipt.get("semanticEvidenceValid"):
             errors.append(
                 f"fix-attempt-evidence command {result['name']}: "
                 "semanticEvidenceValid does not match receipt"
             )
-    ordered_receipts = [receipts[row["receiptId"]] for row in evidence["commands"]]
+    return errors
+
+
+def _capture_evidence_errors(
+    *,
+    attempt_dir: Path,
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    receipts: dict[str, dict[str, Any]],
+    source_changed: bool,
+) -> list[str]:
+    errors: list[str] = []
+    result_names = [row["name"] for row in evidence["commands"]]
+    if result_names + evidence["skippedCommands"] != plan["verification"]["commands"]:
+        errors.append("fix-attempt-evidence commands: planned order mismatch")
+    ordered_receipts = [
+        receipt
+        for row in evidence["commands"]
+        if (receipt := receipts.get(row["receiptId"])) is not None
+    ]
+    if len(ordered_receipts) != len(evidence["commands"]):
+        errors.append("fix-attempt-evidence.claimObservations: referenced receipt is missing")
+        return errors
     expected_observations = claim_observations(
         attempt_dir=attempt_dir,
         receipts=ordered_receipts,
@@ -140,15 +155,15 @@ def validate_fix_attempt_snapshot(
     )
     if evidence["claimObservations"] != expected_observations:
         errors.append("fix-attempt-evidence.claimObservations: receipt output mismatch")
-    expected_capture_reasons = capture_failure_reasons(
+    expected_reasons = capture_failure_reasons(
         source_changed=source_changed,
         command_results=evidence["commands"],
         skipped_commands=evidence["skippedCommands"],
     )
-    if evidence["failureReasons"] != expected_capture_reasons:
+    if evidence["failureReasons"] != expected_reasons:
         errors.append("fix-attempt-evidence.failureReasons: evidence mismatch")
     if evidence["captureStatus"] != capture_status(
-        source_changed=source_changed, failure_reasons=expected_capture_reasons
+        source_changed=source_changed, failure_reasons=expected_reasons
     ):
         errors.append("fix-attempt-evidence.captureStatus: evidence mismatch")
     if (
@@ -158,56 +173,58 @@ def validate_fix_attempt_snapshot(
         errors.append(
             "fix-attempt-evidence.current: changed during commands without mutation evidence"
         )
-    if errors:
-        raise ContractError(errors)
+    return errors
 
-    assessment_path = attempt_dir / "fix-assessment.json"
-    verification_path = attempt_dir / "attempt-verification.json"
-    if not assessment_path.exists() and not verification_path.exists():
+
+def _terminal_paths(attempt_dir: Path, *, require_finalized: bool) -> bool:
+    assessment_exists = (attempt_dir / "fix-assessment.json").exists()
+    verification_exists = (attempt_dir / "attempt-verification.json").exists()
+    if not assessment_exists and not verification_exists:
         if require_finalized:
             raise ContractError(["fix attempt is awaiting post-command assessment"])
-        return {
-            "fixDir": fix_dir,
-            "plan": plan,
-            "state": state,
-            "manifest": manifest,
-            "evidence": evidence,
-            "assessment": None,
-            "verification": None,
-        }
-    if not assessment_path.exists() or not verification_path.exists():
-        raise ContractError(
-            ["fix attempt assessment and verification artifacts must both exist"]
-        )
+        return False
+    if not assessment_exists or not verification_exists:
+        raise ContractError(["fix attempt assessment and verification artifacts must both exist"])
+    return True
 
-    assessment = read_json(session_file(attempt_dir, "fix-assessment.json"))
-    verification = read_json(session_file(attempt_dir, "attempt-verification.json"))
-    assessment_by_id = attempt_assessment_rows(assessment, plan)
-    validate_schema(verification, "fix-attempt-verification.schema.json")
-    terminal_errors: list[str] = []
+
+def _terminal_identity_errors(
+    *,
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+) -> tuple[list[str], str]:
+    errors: list[str] = []
     evidence_hash = sha256_json(evidence)
     if assessment["fixId"] != plan["fixId"]:
-        terminal_errors.append("fix-attempt-assessment.fixId: plan mismatch")
+        errors.append("fix-attempt-assessment.fixId: plan mismatch")
     if assessment["attemptId"] != manifest["attemptId"]:
-        terminal_errors.append("fix-attempt-assessment.attemptId: manifest mismatch")
+        errors.append("fix-attempt-assessment.attemptId: manifest mismatch")
     if assessment["evidenceSha256"] != evidence_hash:
-        terminal_errors.append("fix-attempt-assessment.evidenceSha256: evidence mismatch")
-    terminal_errors.extend(
+        errors.append("fix-attempt-assessment.evidenceSha256: evidence mismatch")
+    errors.extend(
         attempt_timestamp_errors(
             evidence=evidence,
             assessment=assessment,
             finalized_at=verification["finalizedAt"],
         )
     )
-    try:
-        validate_attempt_evidence_refs(assessment=assessment, evidence=evidence)
-        validate_measurements(
-            assessment=assessment, attempt_dir=attempt_dir, evidence=evidence
-        )
-    except ContractError as error:
-        terminal_errors.extend(error.errors)
+    return errors, evidence_hash
 
-    for field, expected in (
+
+def _terminal_binding_errors(
+    *,
+    plan: dict[str, Any],
+    plan_hash: str,
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    evidence_hash: str,
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+) -> list[str]:
+    expected_fields = (
         ("fixId", plan["fixId"]),
         ("attemptId", manifest["attemptId"]),
         ("planSha256", plan_hash),
@@ -223,39 +240,55 @@ def validate_fix_attempt_snapshot(
         ("assessmentKind", assessment["kind"]),
         ("measurements", assessment["measurements"]),
         ("remainingRisks", assessment["remainingRisks"]),
-    ):
-        if verification[field] != expected:
-            terminal_errors.append(
-                f"fix-attempt-verification.{field}: terminal artifact mismatch"
-            )
+    )
+    return [
+        f"fix-attempt-verification.{field}: terminal artifact mismatch"
+        for field, expected in expected_fields
+        if verification[field] != expected
+    ]
+
+
+def _terminal_finding_errors(
+    *,
+    plan: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment_by_id: dict[str, dict[str, Any]],
+    verification: dict[str, Any],
+) -> list[str]:
+    result_ids = [row["findingId"] for row in verification["findingResults"]]
+    if len(result_ids) != len(set(result_ids)) or set(result_ids) != set(assessment_by_id):
+        return ["fix-attempt-verification.findingResults: assessment mismatch"]
+    errors: list[str] = []
     changed_paths = {row["path"] for row in evidence["changes"]}
     selections = {row["findingId"]: row for row in plan["selections"]}
-    result_ids = [row["findingId"] for row in verification["findingResults"]]
-    if len(result_ids) != len(set(result_ids)) or set(result_ids) != set(
-        assessment_by_id
-    ):
-        terminal_errors.append(
-            "fix-attempt-verification.findingResults: assessment mismatch"
-        )
-    else:
-        for result in verification["findingResults"]:
-            assessed = assessment_by_id[result["findingId"]]
-            for field in ("status", "rationale", "evidenceRefs"):
-                if result[field] != assessed[field]:
-                    terminal_errors.append(
-                        f"fix-attempt-verification finding {result['findingId']}: "
-                        f"{field} does not match assessment"
-                    )
-            expected_locations = sorted(
-                changed_paths.intersection(
-                    selections[result["findingId"]]["locationPaths"]
-                )
-            )
-            if result["locationPathsChanged"] != expected_locations:
-                terminal_errors.append(
+    for result in verification["findingResults"]:
+        assessed = assessment_by_id[result["findingId"]]
+        for field in ("status", "rationale", "evidenceRefs"):
+            if result[field] != assessed[field]:
+                errors.append(
                     f"fix-attempt-verification finding {result['findingId']}: "
-                    "changed locations mismatch"
+                    f"{field} does not match assessment"
                 )
+        expected_locations = sorted(
+            changed_paths.intersection(selections[result["findingId"]]["locationPaths"])
+        )
+        if result["locationPathsChanged"] != expected_locations:
+            errors.append(
+                f"fix-attempt-verification finding {result['findingId']}: "
+                "changed locations mismatch"
+            )
+    return errors
+
+
+def _terminal_conclusion_errors(
+    *,
+    fix_dir: Path,
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
     expected_status = verification_status(
         source_changed=evidence["sourceChanged"],
         command_results=evidence["commands"],
@@ -263,12 +296,10 @@ def validate_fix_attempt_snapshot(
         statuses=[row["status"] for row in verification["findingResults"]],
     )
     if verification["status"] != expected_status:
-        terminal_errors.append("fix-attempt-verification.status: evidence mismatch")
+        errors.append("fix-attempt-verification.status: evidence mismatch")
     expected_failures = final_failure_reasons(evidence, assessment)
     if verification["failureReasons"] != expected_failures:
-        terminal_errors.append(
-            "fix-attempt-verification.failureReasons: evidence mismatch"
-        )
+        errors.append("fix-attempt-verification.failureReasons: evidence mismatch")
     previous_verification = _previous_verification(fix_dir=fix_dir, manifest=manifest)
     expected_recovery = recovery_classification(
         sequence=manifest["sequence"],
@@ -276,11 +307,20 @@ def validate_fix_attempt_snapshot(
         previous_verification=previous_verification,
     )
     if verification["recoveryClassification"] != expected_recovery:
-        terminal_errors.append(
-            "fix-attempt-verification.recoveryClassification: lineage mismatch"
-        )
-    if terminal_errors:
-        raise ContractError(terminal_errors)
+        errors.append("fix-attempt-verification.recoveryClassification: lineage mismatch")
+    return errors
+
+
+def _attempt_data(
+    *,
+    fix_dir: Path,
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any] | None,
+    verification: dict[str, Any] | None,
+) -> dict[str, Any]:
     return {
         "fixDir": fix_dir,
         "plan": plan,
@@ -290,6 +330,105 @@ def validate_fix_attempt_snapshot(
         "assessment": assessment,
         "verification": verification,
     }
+
+
+def validate_fix_attempt_snapshot(
+    attempt_dir_value: str | Path, *, require_finalized: bool = True
+) -> dict[str, Any]:
+    attempt_dir, fix_dir, manifest, evidence = load_attempt(attempt_dir_value)
+    _, plan, state = load_fix(fix_dir)
+    validate_review_provenance(plan, state)
+    require_attempt_protocol_root(fix_dir)
+    receipts = validate_command_receipts(attempt_dir, state["commands"])
+    errors, plan_hash = _capture_identity_errors(
+        plan=plan, manifest=manifest, evidence=evidence
+    )
+    source_errors, source_changed = _capture_source_errors(
+        plan=plan, state=state, evidence=evidence
+    )
+    errors.extend(source_errors)
+    errors.extend(_capture_receipt_errors(evidence=evidence, receipts=receipts))
+    errors.extend(
+        _capture_evidence_errors(
+            attempt_dir=attempt_dir,
+            plan=plan,
+            state=state,
+            manifest=manifest,
+            evidence=evidence,
+            receipts=receipts,
+            source_changed=source_changed,
+        )
+    )
+    if errors:
+        raise ContractError(errors)
+    if not _terminal_paths(attempt_dir, require_finalized=require_finalized):
+        return _attempt_data(
+            fix_dir=fix_dir,
+            plan=plan,
+            state=state,
+            manifest=manifest,
+            evidence=evidence,
+            assessment=None,
+            verification=None,
+        )
+
+    assessment = read_json(session_file(attempt_dir, "fix-assessment.json"))
+    verification = read_json(session_file(attempt_dir, "attempt-verification.json"))
+    assessment_by_id = attempt_assessment_rows(assessment, plan)
+    validate_schema(verification, "fix-attempt-verification.schema.json")
+    terminal_errors, evidence_hash = _terminal_identity_errors(
+        plan=plan,
+        manifest=manifest,
+        evidence=evidence,
+        assessment=assessment,
+        verification=verification,
+    )
+    try:
+        validate_attempt_evidence_refs(assessment=assessment, evidence=evidence)
+        validate_measurements(
+            assessment=assessment, attempt_dir=attempt_dir, evidence=evidence
+        )
+    except ContractError as error:
+        terminal_errors.extend(error.errors)
+    terminal_errors.extend(
+        _terminal_binding_errors(
+            plan=plan,
+            plan_hash=plan_hash,
+            manifest=manifest,
+            evidence=evidence,
+            evidence_hash=evidence_hash,
+            assessment=assessment,
+            verification=verification,
+        )
+    )
+    terminal_errors.extend(
+        _terminal_finding_errors(
+            plan=plan,
+            evidence=evidence,
+            assessment_by_id=assessment_by_id,
+            verification=verification,
+        )
+    )
+    terminal_errors.extend(
+        _terminal_conclusion_errors(
+            fix_dir=fix_dir,
+            manifest=manifest,
+            evidence=evidence,
+            assessment=assessment,
+            verification=verification,
+        )
+    )
+    if terminal_errors:
+        raise ContractError(terminal_errors)
+    return _attempt_data(
+        fix_dir=fix_dir,
+        plan=plan,
+        state=state,
+        manifest=manifest,
+        evidence=evidence,
+        assessment=assessment,
+        verification=verification,
+    )
 
 
 def validate_fix_attempt(

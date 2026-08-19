@@ -33,7 +33,7 @@ from .repository import (
     worktree_fingerprint,
 )
 from .repository_analysis import build_dependency_map, build_module_map
-from .schema_validation import validate_instance
+from .schema_validation import validate_instance, validate_schema_definition
 from .score_validation import validate_scorecard
 from .semantic_evidence import receipt_identity_payload, receipt_semantic_errors
 
@@ -67,6 +67,9 @@ def _schema(name: str) -> dict[str, Any]:
     value = read_json(SCHEMA_ROOT / name)
     if not isinstance(value, dict):
         raise ValueError(f"schema {name}: expected an object")
+    errors = validate_schema_definition(value)
+    if errors:
+        raise ValueError(f"schema {name}: {'; '.join(errors)}")
     return value
 
 

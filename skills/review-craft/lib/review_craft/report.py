@@ -82,6 +82,15 @@ def _locations(row: dict[str, Any]) -> str:
     return ", ".join(rendered)
 
 
+def _eligible_inspection(files: list[dict[str, Any]]) -> tuple[int, int, float | None]:
+    inspected_dispositions = {"REVIEWED", "COVERED_BY_PARENT"}
+    eligible_dispositions = inspected_dispositions | {"PENDING", "DEFERRED", "UNREADABLE"}
+    inspected = sum(row["disposition"] in inspected_dispositions for row in files)
+    eligible = sum(row["disposition"] in eligible_dispositions for row in files)
+    percent = round(inspected * 100.0 / eligible, 2) if eligible else None
+    return inspected, eligible, percent
+
+
 def _finding_lines(row: dict[str, Any], decision_by_id: dict[str, str]) -> list[str]:
     return [
         f"### {row['id']} · {row['priority']} / {row['severity']} · {row['title']}",
@@ -157,6 +166,10 @@ def render_report(data: dict[str, Any]) -> str:
     coverage_counts: dict[str, int] = defaultdict(int)
     for row in coverage["files"]:
         coverage_counts[row["disposition"]] += 1
+    eligible_inspected, eligible_total, eligible_percent = _eligible_inspection(
+        coverage["files"]
+    )
+    eligible_display = f"{eligible_percent}%" if eligible_percent is not None else "N/A"
     summary_score, score_label, conclusion_score, score_limitation = _score_copy(
         review_scope["mode"]
     )
@@ -187,8 +200,13 @@ def render_report(data: dict[str, Any]) -> str:
         [
             f"- Source fingerprint: `{manifest['target']['sourceFingerprint']}`",
             f"- Evidence level: `{scorecard['evidenceLevel']}`",
-            f"- Coverage accounted: `{accounted_percent}%`",
-            f"- Coverage reviewed: `{reviewed_percent}%`",
+            f"- Inventory classified: `{accounted_percent}%`",
+            (
+                f"- Eligible files inspected: `{eligible_display}` "
+                f"(`{eligible_inspected}/{eligible_total}`)"
+            ),
+            f"- Reviewed inventory: `{reviewed_percent}%`",
+            f"- Hard evidence gaps: `{len(evidence_gaps)}`",
             f"- Score status: `{scorecard['status']}`",
             f"- Confidence: `{scorecard['confidence']}`",
             f"- Modules: `{len(module_map['modules'])}`",

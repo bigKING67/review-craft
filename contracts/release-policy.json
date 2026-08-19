@@ -16,7 +16,11 @@
     "schema-validation",
     "skill-validation",
     "plugin-validation",
+    "complexity-budget",
+    "routing-policy",
     "package-boundary",
+    "installed-canonical-e2e",
+    "installed-remediation-e2e",
     "deterministic-report"
   ],
   "automaticPublish": false

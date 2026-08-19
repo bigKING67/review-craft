@@ -110,6 +110,7 @@ class EvalContractTests(unittest.TestCase):
 
         for schema_name in (
             "eval-host-output.schema.json",
+            "eval-routing-output.schema.json",
             "eval-ablation-adjudication.schema.json",
             "eval-ablation-adjudication-v2.schema.json",
         ):
@@ -190,6 +191,11 @@ class EvalContractTests(unittest.TestCase):
                 (
                     ROOT / "evals/schemas/eval-remediation-cases.schema.json"
                 ).read_text(encoding="utf-8")
+            ),
+            "review-craft.eval-routing-cases": json.loads(
+                (ROOT / "evals/schemas/eval-routing-cases.schema.json").read_text(
+                    encoding="utf-8"
+                )
             ),
         }
         for path in sorted((ROOT / "evals/specs").glob("*.json")):

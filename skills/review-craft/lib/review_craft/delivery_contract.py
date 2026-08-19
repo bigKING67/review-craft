@@ -8,7 +8,7 @@ from typing import Any
 from .constants import ATTEMPT_DELIVERY_SCHEMA_VERSION, DELIVERY_SCHEMA_VERSION
 from .contracts import ContractError
 from .jsonio import read_json, sha256_bytes, sha256_json
-from .schema_validation import validate_instance
+from .schema_validation import validate_instance, validate_schema_definition
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
 DELIVERY_SCHEMA_FILES = {
@@ -31,6 +31,9 @@ def validate_delivery_schema(document: Any) -> None:
             [f"delivery attestation schemaVersion is unsupported: {schema_version!r}"]
         )
     schema = read_json(SCHEMA_ROOT / schema_name)
+    schema_errors = validate_schema_definition(schema)
+    if schema_errors:
+        raise ContractError([f"{schema_name}: {message}" for message in schema_errors])
     errors = [
         f"{schema_name}: {message}"
         for message in validate_instance(document, schema)

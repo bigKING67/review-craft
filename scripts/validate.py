@@ -17,6 +17,7 @@ from review_craft.constants import VERSION as CONSTANT_VERSION  # noqa: E402
 
 REQUIRED_FILES = (
     ".codex-plugin/plugin.json",
+    ".github/workflows/benchmark.yml",
     ".github/workflows/validate.yml",
     ".gitignore",
     ".review-craft.json",
@@ -31,6 +32,7 @@ REQUIRED_FILES = (
     "VERSION",
     "contracts/evidence-policy.json",
     "contracts/complexity-budget.json",
+    "contracts/package-check-receipt.schema.json",
     "contracts/package-boundary.json",
     "contracts/release-policy.json",
     "package.json",
@@ -108,13 +110,18 @@ REQUIRED_FILES = (
     "evals/schemas/eval-remediation-repair-output.schema.json",
     "evals/schemas/eval-remediation-review-output.schema.json",
     "evals/schemas/eval-remediation-run.schema.json",
+    "evals/schemas/eval-routing-cases.schema.json",
+    "evals/schemas/eval-routing-output.schema.json",
+    "evals/schemas/eval-routing-result.schema.json",
     "evals/schemas/eval-tool-trace.schema.json",
     "evals/schemas/eval-usage.schema.json",
     "evals/specs/self-correction-cases.json",
     "evals/specs/remediation-safety-cases.json",
+    "evals/specs/routing-cases.json",
     "evals/verifiers/verify_case.py",
     "evals/verifiers/verify_remediation_case.py",
     "evals/remediation-safety/README.md",
+    "evals/routing-results/README.md",
     "evals/ablation-results/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
@@ -122,7 +129,11 @@ REQUIRED_FILES = (
     "scripts/benchmark_runtime.py",
     "scripts/complexity_budget.py",
     "scripts/eval_contracts.py",
+    "scripts/package_check.py",
+    "scripts/package_e2e_fixture.py",
+    "scripts/release_gate.py",
     "scripts/remediation_safety.py",
+    "scripts/routing_eval.py",
     "scripts/run_evals.py",
 )
 
@@ -187,6 +198,7 @@ def validate_schemas(errors: list[str]) -> None:
         ROOT / "skills" / "review-craft" / "schemas",
         ROOT / "evals" / "schemas",
         ROOT / "benchmarks" / "schemas",
+        ROOT / "contracts",
     )
     schema_paths = sorted(path for root in schema_roots for path in root.glob("*.schema.json"))
     for path in schema_paths:
@@ -212,15 +224,21 @@ def validate_schemas(errors: list[str]) -> None:
         schema = schemas.get("eval-cases.schema.json")
         from eval_contracts import validate_eval_suite
         from remediation_safety import validate_remediation_suite
+        from routing_eval import validate_routing_suite
 
         for cases_path in sorted((ROOT / "evals/specs").glob("*.json")):
             cases = json.loads(cases_path.read_text(encoding="utf-8"))
             remediation = cases.get("schema") == "review-craft.eval-remediation-cases.v1"
-            selected_schema = (
-                schemas.get("eval-remediation-cases.schema.json")
-                if remediation
-                else schema
-            )
+            routing = cases.get("schema") == "review-craft.eval-routing-cases.v1"
+            if remediation:
+                selected_schema = schemas.get("eval-remediation-cases.schema.json")
+                validator = validate_remediation_suite
+            elif routing:
+                selected_schema = schemas.get("eval-routing-cases.schema.json")
+                validator = validate_routing_suite
+            else:
+                selected_schema = schema
+                validator = validate_eval_suite
             if selected_schema is not None:
                 case_errors = sorted(
                     Draft202012Validator(selected_schema).iter_errors(cases),
@@ -231,7 +249,6 @@ def validate_schemas(errors: list[str]) -> None:
                     errors.append(
                         f"{cases_path.relative_to(ROOT)}:{location}: {error.message}"
                     )
-            validator = validate_remediation_suite if remediation else validate_eval_suite
             for error in validator(cases):
                 errors.append(f"{cases_path.relative_to(ROOT)}:{error}")
     from eval_contracts import validate_ablation_snapshot, validate_golden_snapshot

@@ -66,6 +66,14 @@ from remediation_safety import (
     run_remediation_safety,
     validate_remediation_run,
 )
+from routing_eval import (
+    DEFAULT_SKILL as DEFAULT_ROUTING_SKILL,
+)
+from routing_eval import (
+    DEFAULT_SUITE as DEFAULT_ROUTING_SUITE,
+)
+from routing_eval import read_json as read_routing_json
+from routing_eval import run_routing, validate_routing_result
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUITE = ROOT / "evals/specs/cases.json"
@@ -1240,6 +1248,43 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_run_routing(args: argparse.Namespace) -> int:
+    adapter_command = list(args.adapter_command)
+    if adapter_command and adapter_command[0] == "--":
+        adapter_command = adapter_command[1:]
+    _validate_adapter_command(adapter_command)
+    result = run_routing(
+        suite_path=Path(args.suite).resolve(),
+        skill_root=Path(args.skill_root).resolve(),
+        output_root=Path(args.output_root).resolve(),
+        repetitions=args.repetitions,
+        timeout=args.case_timeout,
+        adapter_command=adapter_command,
+    )
+    print(json.dumps({"result": str(result), "status": "PASSED"}, sort_keys=True))
+    return 0
+
+
+def command_validate_routing(args: argparse.Namespace) -> int:
+    errors = validate_routing_result(
+        Path(args.result).resolve(), skill_root=Path(args.skill_root).resolve()
+    )
+    if errors:
+        raise EvalError("routing result is invalid: " + "; ".join(errors))
+    print(json.dumps({"result": str(Path(args.result).resolve()), "valid": True}, sort_keys=True))
+    return 0
+
+
+def command_summarize_routing(args: argparse.Namespace) -> int:
+    result_path = Path(args.result).resolve()
+    errors = validate_routing_result(result_path)
+    if errors:
+        raise EvalError("routing result is invalid: " + "; ".join(errors))
+    payload = read_routing_json(result_path)
+    print(json.dumps({"passed": payload["passed"], "metrics": payload["metrics"]}, sort_keys=True))
+    return 0
+
+
 def command_adjudicate(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
     adjudication_path = Path(args.adjudication).expanduser().resolve(strict=True)
@@ -1674,6 +1719,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_remediation.set_defaults(handler=command_run_remediation_safety)
 
+    run_routing_parser = subparsers.add_parser(
+        "run-routing",
+        help="Run the bilingual structured routing-decision evaluation",
+    )
+    run_routing_parser.add_argument("--suite", default=str(DEFAULT_ROUTING_SUITE))
+    run_routing_parser.add_argument("--skill-root", default=str(DEFAULT_ROUTING_SKILL))
+    run_routing_parser.add_argument(
+        "--output-root",
+        default=str(Path(tempfile.gettempdir()) / "review-craft-routing"),
+    )
+    run_routing_parser.add_argument("--repetitions", type=int, default=2)
+    run_routing_parser.add_argument("--case-timeout", type=int, default=600)
+    run_routing_parser.add_argument(
+        "--adapter-command",
+        nargs=argparse.REMAINDER,
+        required=True,
+        help="Adapter argv; this option must be last",
+    )
+    run_routing_parser.set_defaults(handler=command_run_routing)
+
     validate = subparsers.add_parser("validate", help="Validate a completed eval run")
     validate.add_argument("--run-dir", required=True)
     validate.set_defaults(handler=command_validate)
@@ -1690,6 +1755,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_remediation.add_argument("--run-dir", required=True)
     validate_remediation.set_defaults(handler=command_validate_remediation_safety)
+
+    validate_routing_parser = subparsers.add_parser(
+        "validate-routing", help="Validate a content-bound routing-decision result"
+    )
+    validate_routing_parser.add_argument("--result", required=True)
+    validate_routing_parser.add_argument("--skill-root", default=str(DEFAULT_ROUTING_SKILL))
+    validate_routing_parser.set_defaults(handler=command_validate_routing)
+
+    summarize_routing_parser = subparsers.add_parser(
+        "summarize-routing", help="Print validated routing metrics"
+    )
+    summarize_routing_parser.add_argument("--result", required=True)
+    summarize_routing_parser.set_defaults(handler=command_summarize_routing)
 
     prepare_ablation_adjudication = subparsers.add_parser(
         "prepare-ablation-adjudication",

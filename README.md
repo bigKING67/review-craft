@@ -96,6 +96,26 @@ Review Craft requires:
 Review Craft complements these tools. Version 0.6.2 does not claim to replace or
 outperform Codex Security.
 
+## Invocation and review depth
+
+Implicit invocation is currently disabled in `skills/review-craft/agents/openai.yaml`.
+Use `$review-craft` explicitly until a current real-host bilingual routing result is bound
+to the exact Skill metadata and passes every repetition. The routing gate fails closed if
+implicit invocation is enabled without that result. Quick PR, small diff, visual-design,
+deep exploit-validation, and direct implementation requests are explicit negative routes.
+
+The current product has two implemented depths:
+
+- `bounded`: one narrow evidence-backed `KEEP`, `CLEAN_UP`, `MEASURE`, or other decision;
+  it does not emit canonical artifacts or a numeric score;
+- canonical `review`, `diff`, or `focus`: inventory, candidate validation, deterministic
+  artifacts, scope-bound scoring, and final reporting.
+
+The repository's `REVIEW_CRAFT_EVIDENCE_LOOP` eval treatment is a development experiment,
+not a third runtime assurance profile. There is no `fast | standard | assured` configuration
+contract yet, and Review Craft does not claim independent multi-agent verification merely
+because an eval arm exists.
+
 ## Repository layout
 
 ```text
@@ -518,6 +538,16 @@ old run in place. Historical run.v3 scorecards without explicit accounted and re
 fields retain their original `coveragePercent` interpretation during validation. The
 legacy `review-craft.fix.v1` and `review-craft.delivery.v1` protocols remain available;
 no current protocol reinterprets or mutates their existing artifacts.
+
+| Workflow | Current protocol | Historical read/validation support | Write behavior |
+| --- | --- | --- | --- |
+| Review | `review-craft.run.v4` | sealed `run.v3` | writes v4 only |
+| Fix attempt | `review-craft.fix-attempt.v1` | n/a | immutable attempt directories |
+| Legacy fix | `review-craft.fix.v1` | `fix.v1` | compatibility path only |
+| Delivery | `review-craft.delivery.v2` | `delivery.v1` | writes v2 for attempt lineage |
+
+Unfinished run.v3 data must still be finalized by its matching runtime or restarted. The
+compatibility promise is validation and preservation, not silent migration.
 The deterministic report labels `focus` and `diff` scores as scope-limited rather than
 repository-wide, renders `CONFIRMED` and `LIKELY` findings in separate counts and sections,
 separates findings from evidence gaps and remaining risks, and lists verified command claims
@@ -540,6 +570,22 @@ python3 scripts/package_check.py
 python3 scripts/release_gate.py
 npm pack --dry-run --json
 ```
+
+`release_gate.py` now runs the global complexity ratchet, tests, routing policy, source and
+Schema validation, Ruff, and one exact installed-package E2E. It can preserve the same
+validated tarball and a content receipt for downstream host parity:
+
+```text
+uv run --locked python scripts/release_gate.py \
+  --package-output artifacts/review-craft.tgz \
+  --package-receipt artifacts/package-receipt.json
+```
+
+The package E2E installs the tarball in an isolated temporary home, proves the runtime was
+imported from that installation, executes `doctor`, completes canonical preflight through
+deterministic report finalization, captures and validates an immutable remediation attempt,
+and checks the target mutation boundary. CI builds this tarball once and revalidates those
+same bytes on Ubuntu, Windows, and macOS; source-tree tests remain a separate evidence layer.
 
 The eval runner does not invoke a model during CI. Contract tests use a synthetic adapter
 that is permanently ineligible for golden status. A real Codex CLI run is explicit and
@@ -568,6 +614,24 @@ Use an auth-only temporary `CODEX_HOME` for real evaluations. Codex-managed
 fails closed on other `skills/` or `plugins/`; both system and extension surfaces become
 matched provenance fields. Credentials remain external and must never be placed in
 adapter argv or run artifacts.
+
+Routing evaluation is separate from output-quality evaluation:
+
+```text
+uv run --locked python scripts/run_evals.py run-routing \
+  --output-root <external-directory> \
+  --repetitions 2 \
+  --adapter-command python3 scripts/codex_eval_adapter.py \
+  --model <model> --reasoning <reasoning>
+
+uv run --locked python scripts/run_evals.py validate-routing \
+  --result <routing-result.json>
+```
+
+The 60-case suite is bilingual and reports implicit precision and recall, explicit activation,
+workflow accuracy, and high-cost false-trigger rate. Its structured decision is not a stable
+native Skill-load receipt, and no real-host current result is published. See
+`evals/routing-results/README.md`.
 
 Eval run v3 also passes an optional `REVIEW_CRAFT_EVAL_USAGE_OUTPUT` sidecar path to every
 adapter. The Codex adapter uses `codex exec --json` and deterministically extracts
@@ -692,6 +756,13 @@ longer:
 uv run --locked python scripts/benchmark_runtime.py run
 uv run --locked python scripts/benchmark_runtime.py validate --result <result.json>
 ```
+
+The telemetry workflow runs a non-blocking 1k PR smoke, 1k/10k nightly samples with five
+repetitions, and a 100k weekly sample with three repetitions. It records p50/p95 timings and
+Python-process allocation peaks where observable. No release baseline or relative regression
+threshold is claimed yet; a threshold must be bound to an immutable clean-source baseline
+before it can become a failure gate. Runner-to-runner deltas are telemetry, not proof of a
+product regression by themselves.
 
 The package gate builds the npm tarball in a temporary directory and rejects tests,
 development tooling, caches, local paths, and real review runs from the public package.

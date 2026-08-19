@@ -6,7 +6,8 @@
 2. Diff review
 3. Focused review
 4. Project profiles
-5. Run schema compatibility
+5. Review depth
+6. Run schema compatibility
 
 ## Standard review
 
@@ -77,6 +78,17 @@ configuration authority and do not invoke auto detection.
 Profile detection is context, not proof. It must not overrule `ENGINEERING.md`, user
 requirements, runtime behavior, or explicit non-goals. Override an incorrect result
 through `.review-craft.json` rather than editing generated artifacts.
+
+## Review depth
+
+Use the bounded path for one narrow evidence-backed decision when canonical artifacts and
+scoring are unnecessary. Use canonical `review`, `diff`, or `focus` for complete inventory,
+candidate validation, scope-bound scoring, and deterministic reporting.
+
+`fast | standard | assured` is not a runtime configuration contract in version 0.6. Do not
+claim a high-assurance or independent-verifier execution unless the host actually performed
+and recorded those steps. The repository evidence-loop treatment is an eval protocol, not a
+runtime assurance switch.
 
 ## Run schema compatibility
 

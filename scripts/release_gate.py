@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-COMMANDS = (
+BASE_COMMANDS = (
     (
         "complexity budget",
         ["uv", "run", "--locked", "python", "scripts/complexity_budget.py"],
@@ -29,16 +30,33 @@ COMMANDS = (
             "test_*.py",
         ],
     ),
+    (
+        "routing policy",
+        ["uv", "run", "--locked", "python", "scripts/routing_eval.py", "gate"],
+    ),
     ("source validation", ["uv", "run", "--locked", "python", "scripts/validate.py"]),
     ("lint", ["uv", "run", "--locked", "ruff", "check", "."]),
-    ("package boundary", [sys.executable, "scripts/package_check.py"]),
 )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the Review Craft release contract")
+    parser.add_argument("--package-output", help="Preserve the exact validated npm tarball")
+    parser.add_argument("--package-receipt", help="Write the exact package validation receipt")
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
     environment = dict(os.environ)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    for name, command in COMMANDS:
+    package_command = [sys.executable, "scripts/package_check.py"]
+    if args.package_output:
+        package_command.extend(["--output-tarball", args.package_output])
+    if args.package_receipt:
+        package_command.extend(["--receipt", args.package_receipt])
+    commands = (*BASE_COMMANDS, ("exact installed package", package_command))
+    for name, command in commands:
         print(f"==> {name}", flush=True)
         completed = subprocess.run(command, cwd=ROOT, env=environment)
         if completed.returncode != 0:

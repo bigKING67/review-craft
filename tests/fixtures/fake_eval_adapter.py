@@ -126,7 +126,46 @@ def main() -> int:
         (mutation_root / ".eval-source-mutation-test").write_text(
             "mutated\n", encoding="utf-8"
         )
-    if args.treatment in remediation_treatments and args.operation == "repair":
+    if args.treatment == "ROUTING_DECISION":
+        identifier = args.case_id or ""
+        route = next(
+            (
+                value
+                for marker, value in (
+                    ("-rc-", "REVIEW_CRAFT"),
+                    ("-native-", "NATIVE_REVIEW"),
+                    ("-design-", "DESIGN_CRAFT"),
+                    ("-security-", "CODEX_SECURITY"),
+                    ("-direct-", "DIRECT_TASK"),
+                )
+                if marker in identifier
+            ),
+            "DIRECT_TASK",
+        )
+        workflow = "NONE"
+        if route == "REVIEW_CRAFT":
+            workflow = next(
+                (
+                    value
+                    for marker, value in (
+                        ("-bounded-", "BOUNDED"),
+                        ("-review-", "REVIEW"),
+                        ("-diff-", "DIFF"),
+                        ("-focus-", "FOCUS"),
+                        ("-remediation-", "REMEDIATION"),
+                        ("-delivery-", "DELIVERY"),
+                    )
+                    if marker in identifier
+                ),
+                "REVIEW",
+            )
+        output = {
+            "selectedRoute": route,
+            "selectedWorkflow": workflow,
+            "confidence": 1.0,
+            "rationale": "Synthetic routing contract output.",
+        }
+    elif args.treatment in remediation_treatments and args.operation == "repair":
         changed = False
         changed_path: str | None = None
         bounded_source = fixture / "bounded_add.py"

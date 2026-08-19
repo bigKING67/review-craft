@@ -14,7 +14,7 @@ from .repository import (
     source_inventory_configuration,
     worktree_fingerprint,
 )
-from .schema_validation import validate_instance
+from .schema_validation import validate_instance, validate_schema_definition
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
 
@@ -27,6 +27,9 @@ def schema(name: str) -> dict[str, Any]:
     value = read_json(SCHEMA_ROOT / name)
     if not isinstance(value, dict):
         raise ValueError(f"schema {name}: expected an object")
+    errors = validate_schema_definition(value)
+    if errors:
+        raise ValueError(f"schema {name}: {'; '.join(errors)}")
     return value
 
 

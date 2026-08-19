@@ -1,4 +1,6 @@
 interface:
   display_name: "Review Craft"
   short_description: "Evidence-driven review and immutable fix verification"
-  default_prompt: "Use $review-craft to review this repository, verify selected remediation with immutable attempt evidence, or export the matching legacy or attempt-lineage post-commit delivery attestation."
+  default_prompt: "Use $review-craft for evidence-driven repository review or explicitly authorized fix and delivery verification."
+policy:
+  allow_implicit_invocation: false

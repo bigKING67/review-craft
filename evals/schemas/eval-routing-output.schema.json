@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-routing-output.schema.json",
+  "title": "One host routing decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["selectedRoute", "selectedWorkflow", "confidence", "rationale"],
+  "properties": {
+    "selectedRoute": {
+      "type": "string",
+      "enum": [
+        "REVIEW_CRAFT",
+        "NATIVE_REVIEW",
+        "DESIGN_CRAFT",
+        "CODEX_SECURITY",
+        "DIRECT_TASK"
+      ]
+    },
+    "selectedWorkflow": {
+      "type": "string",
+      "enum": ["BOUNDED", "REVIEW", "DIFF", "FOCUS", "REMEDIATION", "DELIVERY", "NONE"]
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "rationale": {"type": "string", "minLength": 1, "maxLength": 500}
+  }
+}

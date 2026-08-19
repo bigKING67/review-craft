@@ -40,20 +40,17 @@ def _read_artifact(
     return document
 
 
-def _validate_attempt_documents(
+def _delivery_identity_errors(
     *,
     plan: dict[str, Any],
     manifest: dict[str, Any],
     evidence: dict[str, Any],
     assessment: dict[str, Any],
     verification: dict[str, Any],
-    previous: dict[str, Any] | None,
     sequence: int,
-) -> tuple[list[str], dict[str, Any]]:
-    errors: list[str] = []
-    plan_hash = sha256_json(plan)
+) -> tuple[list[str], str]:
     attempt_id = manifest["attemptId"]
-    assessment_rows = attempt_assessment_rows(assessment, plan)
+    errors: list[str] = []
     if manifest["sequence"] != sequence:
         errors.append(f"{attempt_id}: sequence must be contiguous from one")
     for document, label in (
@@ -66,6 +63,7 @@ def _validate_attempt_documents(
             errors.append(f"{attempt_id}: {label} fixId does not match fix plan")
         if label != "manifest" and document["attemptId"] != attempt_id:
             errors.append(f"{attempt_id}: {label} attemptId does not match manifest")
+    plan_hash = sha256_json(plan)
     if manifest["planSha256"] != plan_hash or evidence["planSha256"] != plan_hash:
         errors.append(f"{attempt_id}: plan hash does not match copied fix plan")
     if manifest["commandConfigSha256"] != plan["verification"]["commandConfigSha256"]:
@@ -80,30 +78,49 @@ def _validate_attempt_documents(
         evidence["completedAt"], f"{attempt_id}.evidence.completedAt"
     ) < parse_timestamp(manifest["capturedAt"], f"{attempt_id}.manifest.capturedAt"):
         errors.append(f"{attempt_id}: evidence completion precedes capture")
+    return errors, plan_hash
 
+
+def _delivery_predecessor_errors(
+    *,
+    manifest: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> list[str]:
+    attempt_id = manifest["attemptId"]
     if previous is None:
-        if manifest["previousAttempt"] is not None:
-            errors.append(f"{attempt_id}: first attempt must not name a predecessor")
-    else:
-        previous_manifest = previous["manifest"]
-        previous_verification = previous["verification"]
-        expected_previous = {
-            "attemptId": previous_manifest["attemptId"],
-            "verificationSha256": sha256_json(previous_verification),
-        }
-        if manifest["previousAttempt"] != expected_previous:
-            errors.append(f"{attempt_id}: predecessor binding mismatch")
-        if manifest["sourceBeforeCommands"] != previous_manifest["sourceBeforeCommands"]:
-            errors.append(f"{attempt_id}: retry source differs from predecessor")
+        return (
+            [f"{attempt_id}: first attempt must not name a predecessor"]
+            if manifest["previousAttempt"] is not None
+            else []
+        )
+    previous_manifest = previous["manifest"]
+    expected_previous = {
+        "attemptId": previous_manifest["attemptId"],
+        "verificationSha256": sha256_json(previous["verification"]),
+    }
+    errors = []
+    if manifest["previousAttempt"] != expected_previous:
+        errors.append(f"{attempt_id}: predecessor binding mismatch")
+    if manifest["sourceBeforeCommands"] != previous_manifest["sourceBeforeCommands"]:
+        errors.append(f"{attempt_id}: retry source differs from predecessor")
+    return errors
 
+
+def _delivery_capture_errors(
+    *,
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[list[str], bool]:
+    attempt_id = manifest["attemptId"]
+    errors: list[str] = []
     current_files = evidence["currentFiles"]
     if len({row["path"] for row in current_files}) != len(current_files):
         errors.append(f"{attempt_id}: current file paths must be unique")
     if fingerprint_inventory(current_files) != evidence["current"]["sourceFingerprint"]:
         errors.append(f"{attempt_id}: current file fingerprint mismatch")
     source_changed = (
-        evidence["current"]["sourceFingerprint"]
-        != plan["baseline"]["sourceFingerprint"]
+        evidence["current"]["sourceFingerprint"] != plan["baseline"]["sourceFingerprint"]
     )
     if evidence["sourceChanged"] != source_changed:
         errors.append(f"{attempt_id}: sourceChanged does not match source fingerprint")
@@ -127,7 +144,18 @@ def _validate_attempt_documents(
         and manifest["sourceBeforeCommands"] != evidence["current"]
     ):
         errors.append(f"{attempt_id}: source changed during commands without mutation evidence")
+    return errors, source_changed
 
+
+def _delivery_assessment_errors(
+    *,
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+) -> list[str]:
+    attempt_id = manifest["attemptId"]
+    errors: list[str] = []
     if assessment["attemptId"] != attempt_id:
         errors.append(f"{attempt_id}: assessment attemptId mismatch")
     if assessment["evidenceSha256"] != sha256_json(evidence):
@@ -140,7 +168,6 @@ def _validate_attempt_documents(
         validate_attempt_evidence_refs(assessment=assessment, evidence=evidence)
     except ContractError as error:
         errors.extend(f"{attempt_id}: {message}" for message in error.errors)
-
     finalized_at = parse_timestamp(
         verification["finalizedAt"], f"{attempt_id}.verification.finalizedAt"
     )
@@ -150,6 +177,17 @@ def _validate_attempt_documents(
         evidence["completedAt"], f"{attempt_id}.evidence.completedAt"
     ):
         errors.append(f"{attempt_id}: verification precedes evidence or assessment")
+    return errors
+
+
+def _delivery_binding_errors(
+    *,
+    plan_hash: str,
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+) -> list[str]:
     terminal_bindings = {
         "planSha256": plan_hash,
         "manifestSha256": sha256_json(manifest),
@@ -165,33 +203,56 @@ def _validate_attempt_documents(
         "measurements": assessment["measurements"],
         "remainingRisks": assessment["remainingRisks"],
     }
-    for field, expected in terminal_bindings.items():
-        if verification[field] != expected:
-            errors.append(f"{attempt_id}: verification {field} binding mismatch")
+    attempt_id = manifest["attemptId"]
+    return [
+        f"{attempt_id}: verification {field} binding mismatch"
+        for field, expected in terminal_bindings.items()
+        if verification[field] != expected
+    ]
 
-    changed_paths = {row["path"] for row in evidence["changes"]}
-    selections = {row["findingId"]: row for row in plan["selections"]}
+
+def _delivery_finding_errors(
+    *,
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment_rows: dict[str, dict[str, Any]],
+    verification: dict[str, Any],
+) -> list[str]:
+    attempt_id = manifest["attemptId"]
     result_ids = [row["findingId"] for row in verification["findingResults"]]
     if len(result_ids) != len(set(result_ids)) or set(result_ids) != set(assessment_rows):
-        errors.append(f"{attempt_id}: verification finding results mismatch assessment")
-    else:
-        for result in verification["findingResults"]:
-            assessed = assessment_rows[result["findingId"]]
-            for field in ("status", "rationale", "evidenceRefs"):
-                if result[field] != assessed[field]:
-                    errors.append(
-                        f"{attempt_id}: finding {result['findingId']} {field} mismatch"
-                    )
-            expected_locations = sorted(
-                changed_paths.intersection(
-                    selections[result["findingId"]]["locationPaths"]
-                )
+        return [f"{attempt_id}: verification finding results mismatch assessment"]
+    errors: list[str] = []
+    changed_paths = {row["path"] for row in evidence["changes"]}
+    selections = {row["findingId"]: row for row in plan["selections"]}
+    for result in verification["findingResults"]:
+        assessed = assessment_rows[result["findingId"]]
+        for field in ("status", "rationale", "evidenceRefs"):
+            if result[field] != assessed[field]:
+                errors.append(f"{attempt_id}: finding {result['findingId']} {field} mismatch")
+        expected_locations = sorted(
+            changed_paths.intersection(selections[result["findingId"]]["locationPaths"])
+        )
+        if result["locationPathsChanged"] != expected_locations:
+            errors.append(
+                f"{attempt_id}: finding {result['findingId']} changed locations mismatch"
             )
-            if result["locationPathsChanged"] != expected_locations:
-                errors.append(
-                    f"{attempt_id}: finding {result['findingId']} changed locations mismatch"
-                )
+    return errors
 
+
+def _delivery_outcome_errors(
+    *,
+    sequence: int,
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+    previous: dict[str, Any] | None,
+    source_changed: bool,
+) -> list[str]:
+    attempt_id = manifest["attemptId"]
+    errors: list[str] = []
     expected_status = verification_status(
         source_changed=source_changed,
         command_results=evidence["commands"],
@@ -200,8 +261,7 @@ def _validate_attempt_documents(
     )
     if verification["status"] != expected_status:
         errors.append(f"{attempt_id}: verification status does not match evidence")
-    expected_failures = final_failure_reasons(evidence, assessment)
-    if verification["failureReasons"] != expected_failures:
+    if verification["failureReasons"] != final_failure_reasons(evidence, assessment):
         errors.append(f"{attempt_id}: verification failure reasons mismatch")
     expected_recovery = recovery_classification(
         sequence=sequence,
@@ -210,8 +270,72 @@ def _validate_attempt_documents(
     )
     if verification["recoveryClassification"] != expected_recovery:
         errors.append(f"{attempt_id}: recovery classification mismatch")
+    return errors
+
+
+def _validate_attempt_documents(
+    *,
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    assessment: dict[str, Any],
+    verification: dict[str, Any],
+    previous: dict[str, Any] | None,
+    sequence: int,
+) -> tuple[list[str], dict[str, Any]]:
+    assessment_rows = attempt_assessment_rows(assessment, plan)
+    errors, plan_hash = _delivery_identity_errors(
+        plan=plan,
+        manifest=manifest,
+        evidence=evidence,
+        assessment=assessment,
+        verification=verification,
+        sequence=sequence,
+    )
+    errors.extend(_delivery_predecessor_errors(manifest=manifest, previous=previous))
+    capture_errors, source_changed = _delivery_capture_errors(
+        plan=plan, manifest=manifest, evidence=evidence
+    )
+    errors.extend(capture_errors)
+    errors.extend(
+        _delivery_assessment_errors(
+            manifest=manifest,
+            evidence=evidence,
+            assessment=assessment,
+            verification=verification,
+        )
+    )
+    errors.extend(
+        _delivery_binding_errors(
+            plan_hash=plan_hash,
+            manifest=manifest,
+            evidence=evidence,
+            assessment=assessment,
+            verification=verification,
+        )
+    )
+    errors.extend(
+        _delivery_finding_errors(
+            plan=plan,
+            manifest=manifest,
+            evidence=evidence,
+            assessment_rows=assessment_rows,
+            verification=verification,
+        )
+    )
+    errors.extend(
+        _delivery_outcome_errors(
+            sequence=sequence,
+            manifest=manifest,
+            evidence=evidence,
+            assessment=assessment,
+            verification=verification,
+            previous=previous,
+            source_changed=source_changed,
+        )
+    )
     projection = {
-        "attemptId": attempt_id,
+        "attemptId": manifest["attemptId"],
         "sequence": manifest["sequence"],
         "capturedAt": manifest["capturedAt"],
         "captureStatus": evidence["captureStatus"],

@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for evidence-driven engineering reviews and explicitly authorized remediation verification of a repository, Git diff, or selected quality dimensions. Review correctness, reliability, architecture, maintainability, code simplicity, performance, tests, delivery, dependencies, observability, repository structure, documentation, and developer experience. Produce explicit coverage, validated findings, proportional KEEP/CLEAN_UP/MERGE/REPLACE/REWRITE/DELETE/DEFER/MEASURE/DOCUMENT decisions, an evidence-calibrated score, immutable fix-attempt lineage with post-command assessment, and optional post-commit/push/CI delivery attestations. Prefer the host's normal review for a quick PR pass. Do not use for visual UI/UX critique or deep vulnerability discovery and exploit validation."
+description: "Use for repository-wide, module-level, large-diff, or high-assurance focused engineering review requiring explicit coverage, evidence-validated findings, proportional remediation decisions, and deterministic reporting, or to verify explicitly authorized fixes and delivery evidence. Prefer normal Codex Review for quick PR or small-diff checks. Do not use for visual UI/UX critique or deep exploit validation."
 ---
 
 # Review Craft

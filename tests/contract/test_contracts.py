@@ -19,7 +19,7 @@ from review_craft.constants import (
 )
 from review_craft.contracts import ContractError, load_run, validate_run
 from review_craft.jsonio import canonical_json, read_json, read_jsonl, write_json, write_jsonl
-from review_craft.report import render_report
+from review_craft.report import _eligible_inspection, render_report
 
 
 class ContractTests(unittest.TestCase):
@@ -337,10 +337,34 @@ class ContractTests(unittest.TestCase):
         finalized = run_cli("finalize", "--run-dir", str(self.run_dir))
         self.assertEqual(finalized.returncode, 0, finalized.stderr)
         report = (self.run_dir / "report.md").read_text(encoding="utf-8")
-        self.assertIn("Coverage accounted: `100.0%`", report)
-        self.assertIn("Coverage reviewed: `0.0%`", report)
+        self.assertIn("Inventory classified: `100.0%`", report)
+        self.assertIn("Eligible files inspected: `0.0%` (`0/1`)", report)
+        self.assertIn("Reviewed inventory: `0.0%`", report)
         self.assertIn("Score status: `provisional`", report)
         self.assertIn("DEFERRED: `1`", report)
+
+    def test_eligible_inspection_excludes_non_semantic_inventory_classes(self) -> None:
+        rows = [
+            {"disposition": "REVIEWED"},
+            {"disposition": "COVERED_BY_PARENT"},
+            {"disposition": "PENDING"},
+            {"disposition": "UNREADABLE"},
+            {"disposition": "GENERATED"},
+            {"disposition": "VENDORED"},
+            {"disposition": "BINARY"},
+        ]
+
+        self.assertEqual(_eligible_inspection(rows), (2, 4, 50.0))
+        self.assertEqual(
+            _eligible_inspection(
+                [
+                    {"disposition": "GENERATED"},
+                    {"disposition": "VENDORED"},
+                    {"disposition": "BINARY"},
+                ]
+            ),
+            (0, 0, None),
+        )
 
     def test_coverage_total_must_match_rows(self) -> None:
         coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
