@@ -3,7 +3,7 @@ from __future__ import annotations
 LEGACY_SCHEMA_VERSION = "review-craft.run.v3"
 SCHEMA_VERSION = "review-craft.run.v4"
 SUPPORTED_RUN_SCHEMA_VERSIONS = {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 FIX_SCHEMA_VERSION = "review-craft.fix.v1"
 FIX_ATTEMPT_SCHEMA_VERSION = "review-craft.fix-attempt.v1"
 DELIVERY_SCHEMA_VERSION = "review-craft.delivery.v1"

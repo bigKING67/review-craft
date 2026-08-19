@@ -20,7 +20,7 @@ import codex_eval_adapter as adapter
 
 class CodexEvalAdapterTests(unittest.TestCase):
     def test_adapter_version_identifies_the_three_arm_protocol(self) -> None:
-        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.2")
+        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.3")
         self.assertEqual(adapter.USAGE_COLLECTOR["version"], adapter.ADAPTER_VERSION)
         self.assertEqual(
             adapter.ABLATION_TREATMENTS,
@@ -54,7 +54,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
             )
         self.assertEqual(status, 0)
         description = json.loads(print_mock.call_args.args[0])
-        self.assertEqual(description["adapterVersion"], "0.6.2")
+        self.assertEqual(description["adapterVersion"], "0.6.3")
         self.assertEqual(description["schema"], "review-craft.eval-adapter.v5")
         self.assertEqual(
             description["capabilities"],
