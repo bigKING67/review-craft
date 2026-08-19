@@ -22,6 +22,16 @@ class PackageCheckError(RuntimeError):
     pass
 
 
+def _resolve_command(command: list[str]) -> list[str]:
+    executable = command[0]
+    if Path(executable).is_absolute():
+        return command
+    resolved = shutil.which(executable)
+    if resolved is None:
+        raise PackageCheckError(f"command not found: {executable}")
+    return [resolved, *command[1:]]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate the exact Review Craft npm package")
     parser.add_argument(
@@ -41,7 +51,7 @@ def _run(
     allowed_codes: set[int] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
-        command,
+        _resolve_command(command),
         cwd=cwd,
         env=environment,
         capture_output=True,
