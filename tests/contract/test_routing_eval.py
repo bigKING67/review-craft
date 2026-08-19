@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import run_evals as eval_runner  # noqa: E402
 from routing_eval import (  # noqa: E402
     DEFAULT_SKILL,
     DEFAULT_SUITE,
@@ -22,6 +27,53 @@ FAKE_ADAPTER = ROOT / "tests/fixtures/fake_eval_adapter.py"
 
 
 class RoutingEvalTests(unittest.TestCase):
+    def test_ambiguous_bounded_negatives_accept_only_low_cost_routes(self) -> None:
+        suite = json.loads(DEFAULT_SUITE.read_text(encoding="utf-8"))
+        ambiguous_ids = {
+            f"{language}-direct-none-{suffix}"
+            for language in ("zh", "en")
+            for suffix in ("quickscore", "scorepair", "fixpair", "perfpair")
+        }
+        cases = {case["id"]: case for case in suite["cases"]}
+
+        self.assertEqual(ambiguous_ids, ambiguous_ids & cases.keys())
+        for case_id in sorted(ambiguous_ids):
+            with self.subTest(case_id=case_id):
+                self.assertEqual(
+                    set(cases[case_id]["allowedRoutes"]),
+                    {"DIRECT_TASK", "NATIVE_REVIEW"},
+                )
+                self.assertIn("REVIEW_CRAFT", cases[case_id]["forbiddenRoutes"])
+
+    def test_run_command_fails_closed_when_thresholds_fail(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="review-craft-routing-command-") as directory:
+            result = Path(directory) / "result.json"
+            args = SimpleNamespace(
+                adapter_command=[sys.executable],
+                suite=str(DEFAULT_SUITE),
+                skill_root=str(DEFAULT_SKILL),
+                output_root=directory,
+                repetitions=2,
+                case_timeout=30,
+            )
+            for passed, expected_status, expected_exit in (
+                (True, "PASSED", 0),
+                (False, "FAILED", 2),
+            ):
+                with self.subTest(passed=passed):
+                    result.write_text(json.dumps({"passed": passed}), encoding="utf-8")
+                    output = io.StringIO()
+                    with (
+                        patch.object(eval_runner, "run_routing", return_value=result),
+                        redirect_stdout(output),
+                    ):
+                        exit_code = eval_runner.command_run_routing(args)
+
+                    payload = json.loads(output.getvalue())
+                    self.assertEqual(exit_code, expected_exit)
+                    self.assertEqual(payload["status"], expected_status)
+                    self.assertIs(payload["passed"], passed)
+
     def test_synthetic_routing_run_is_bound_and_recomputable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="review-craft-routing-") as directory:
             result = run_routing(

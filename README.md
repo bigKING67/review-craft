@@ -98,11 +98,12 @@ outperform Codex Security.
 
 ## Invocation and review depth
 
-Implicit invocation is currently disabled in `skills/review-craft/agents/openai.yaml`.
-Use `$review-craft` explicitly until a current real-host bilingual routing result is bound
-to the exact Skill metadata and passes every repetition. The routing gate fails closed if
-implicit invocation is enabled without that result. Quick PR, small diff, visual-design,
-deep exploit-validation, and direct implementation requests are explicit negative routes.
+Implicit invocation is enabled in `skills/review-craft/agents/openai.yaml` because the
+published real-host bilingual routing result is bound to the exact Skill metadata and every
+repetition passes the declared thresholds. The routing gate fails closed if that result is
+missing, stale, synthetic, or below threshold. Quick PR, small diff, casual scoring,
+visual-design, deep exploit-validation, and direct implementation requests remain explicit
+negative routes. Use `$review-craft` when deterministic routing is required.
 
 The current product has two implemented depths:
 
@@ -630,8 +631,9 @@ uv run --locked python scripts/run_evals.py validate-routing \
 
 The 60-case suite is bilingual and reports implicit precision and recall, explicit activation,
 workflow accuracy, and high-cost false-trigger rate. Its structured decision is not a stable
-native Skill-load receipt, and no real-host current result is published. See
-`evals/routing-results/README.md`.
+native Skill-load receipt. A content-bound real-host result is published under
+`evals/routing-results/current/`; see `evals/routing-results/README.md` for its scope and
+limitations.
 
 Eval run v3 also passes an optional `REVIEW_CRAFT_EVAL_USAGE_OUTPUT` sidecar path to every
 adapter. The Codex adapter uses `codex exec --json` and deterministically extracts

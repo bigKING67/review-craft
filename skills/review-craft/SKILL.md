@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for repository-wide, module-level, large-diff, or high-assurance focused engineering review requiring explicit coverage, evidence-validated findings, proportional remediation decisions, and deterministic reporting, or to verify explicitly authorized fixes and delivery evidence. Prefer normal Codex Review for quick PR or small-diff checks. Do not use for visual UI/UX critique or deep exploit validation."
+description: "Use for repository-wide or high-assurance engineering review requiring explicit coverage, evidence-validated findings, proportional remediation decisions, and deterministic reporting, or for explicitly authorized canonical fix and delivery verification. Prefer normal Codex Review for quick PR, diff, or local checks. Do not use for casual or approximate scoring, visual UI/UX critique, or deep exploit validation."
 ---
 
 # Review Craft

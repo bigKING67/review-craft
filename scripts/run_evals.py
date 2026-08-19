@@ -1261,8 +1261,18 @@ def command_run_routing(args: argparse.Namespace) -> int:
         timeout=args.case_timeout,
         adapter_command=adapter_command,
     )
-    print(json.dumps({"result": str(result), "status": "PASSED"}, sort_keys=True))
-    return 0
+    passed = read_routing_json(result)["passed"] is True
+    print(
+        json.dumps(
+            {
+                "passed": passed,
+                "result": str(result),
+                "status": "PASSED" if passed else "FAILED",
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if passed else 2
 
 
 def command_validate_routing(args: argparse.Namespace) -> int:
