@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -252,10 +253,17 @@ def write_usage_output(payload: dict[str, Any]) -> None:
     path = Path(output).expanduser()
     if not path.parent.is_dir():
         raise AdapterError("usage output parent directory does not exist")
-    path.write_text(
+    _write_json_sidecar(path, payload)
+
+
+def _write_json_sidecar(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
 
 
 def write_tool_trace_output(payload: dict[str, Any]) -> None:
@@ -265,10 +273,7 @@ def write_tool_trace_output(payload: dict[str, Any]) -> None:
     path = Path(output).expanduser()
     if not path.parent.is_dir():
         raise AdapterError("tool trace output parent directory does not exist")
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _write_json_sidecar(path, payload)
 
 
 def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
@@ -495,6 +500,87 @@ def build_codex_command(
     return command
 
 
+def run_codex_process(
+    command: list[str],
+    *,
+    prompt: str,
+    command_env: dict[str, str],
+    replacements: dict[str, str],
+) -> int:
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    reader_errors: list[BaseException] = []
+
+    def persist_stdout() -> None:
+        rendered = "".join(stdout_lines)
+        write_usage_output(parse_codex_jsonl(rendered))
+        write_tool_trace_output(parse_tool_trace(rendered, replacements))
+
+    def drain(
+        stream: Any,
+        sink: Any,
+        chunks: list[str],
+        *,
+        persist: bool,
+    ) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                chunks.append(line)
+                sink.write(line)
+                sink.flush()
+                if persist:
+                    persist_stdout()
+        except BaseException as error:  # pragma: no cover - defensive thread boundary.
+            reader_errors.append(error)
+        finally:
+            stream.close()
+
+    write_usage_output(unavailable_usage("HOST_OUTPUT_EMPTY"))
+    write_tool_trace_output({"schema": "review-craft.eval-tool-trace.v1", "items": []})
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=command_env,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        raise AdapterError("codex process pipes are unavailable")
+
+    stdout_thread = threading.Thread(
+        target=drain,
+        args=(process.stdout, sys.stdout, stdout_lines),
+        kwargs={"persist": True},
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=drain,
+        args=(process.stderr, sys.stderr, stderr_lines),
+        kwargs={"persist": False},
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    try:
+        process.stdin.write(prompt)
+        process.stdin.flush()
+    except BrokenPipeError:
+        pass
+    finally:
+        process.stdin.close()
+
+    returncode = process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    if reader_errors:
+        raise AdapterError(f"codex stream reader failed: {reader_errors[0]}")
+    persist_stdout()
+    return returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     provider = provider_metadata(args)
@@ -590,24 +676,18 @@ def main(argv: list[str] | None = None) -> int:
     command_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     if evidence_root is not None:
         command_env["REVIEW_CRAFT_EVAL_EVIDENCE_ROOT"] = str(evidence_root)
-    completed = subprocess.run(
-        command,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        env=command_env,
-    )
-    sys.stdout.write(completed.stdout)
-    sys.stderr.write(completed.stderr)
-    write_usage_output(parse_codex_jsonl(completed.stdout))
     replacements = {
         str(fixture_root): "$FIXTURE",
         str(skill_root): "$SKILL",
     }
     if evidence_root is not None:
         replacements[str(evidence_root)] = "$EVIDENCE"
-    write_tool_trace_output(parse_tool_trace(completed.stdout, replacements))
-    return completed.returncode
+    return run_codex_process(
+        command,
+        prompt=prompt,
+        command_env=command_env,
+        replacements=replacements,
+    )
 
 
 if __name__ == "__main__":

@@ -47,6 +47,22 @@ uv run --locked python scripts/real_repository_benchmark.py validate-campaign \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --campaign <campaign.json>
 
+uv run --locked python scripts/real_repository_benchmark.py prepare-adjudication \
+  --blind-suite evals/real-repositories/current/blind-suite.json \
+  --campaign <campaign.json> --output-dir <empty-adjudication-directory> \
+  --adjudicator human-a --adjudicator human-b
+
+# Give each reviewer only packet-<id>.json and submission-<id>.json. Keep the
+# coordinator mapping private. After each reviewer fills every label/rationale:
+uv run --locked python scripts/real_repository_benchmark.py \
+  finalize-adjudication-submission \
+  --packet <packet-human-a.json> --submission <submission-human-a.json>
+
+uv run --locked python scripts/real_repository_benchmark.py assemble-adjudication \
+  --campaign <campaign.json> --mapping <coordinator-mapping.json> \
+  --submission <submission-human-a.json> --submission <submission-human-b.json> \
+  --output <independent-adjudication.json>
+
 uv run --locked python scripts/real_repository_benchmark.py validate-adjudication \
   --campaign <campaign.json> --adjudication <independent-adjudication.json>
 
@@ -60,4 +76,15 @@ The full matrix is eight repositories by three treatments by at least two real-h
 configurations by three repetitions. `--repository`, `--treatment`, and `--repetitions` may
 produce a labeled partial smoke, but partial output is never Golden. The runner stores exact
 prompt/output hashes, usage, wall time, adapter provenance, completion state, and before/after
-Git state; any target mutation fails the sample.
+Git state; any target mutation fails the sample. Adapter processes run through the canonical
+process-lifecycle boundary, so timeout terminates the inherited process tree. The Codex adapter
+streams JSONL and atomically checkpoints sanitized tool traces and usage while it runs. A timed
+out sample therefore retains partial stdout and completed tool-call evidence when available;
+token counts remain null when no complete host usage event was emitted.
+
+Adjudication v2 covers every probe response plus every additional finding from completed
+samples. Reviewer packets use reviewer-specific opaque item IDs and omit sample, treatment,
+model, and repetition identities. Packet order is independently deterministic per reviewer.
+The coordinator-only mapping is required to assemble the two completed submissions; a blank
+template or a single reviewer cannot produce a valid v2 adjudication. Legacy v1 adjudication
+remains validation-compatible for historical campaigns, but it covers additional findings only.

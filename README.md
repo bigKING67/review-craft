@@ -758,7 +758,12 @@ Real Repository Benchmark v1 adds eight immutable upstream repositories across P
 Node.js, Electron, Go, Rust, and JVM. Each case contains a real upstream-fixed defect, a
 legitimate `KEEP`, a decoy, a measurement-only claim, and an evidence-gap claim. The
 oracle-free blind suite, verified source materialization, campaign runner, independent
-adjudication contract, and stability report are under `evals/real-repositories/`. A campaign
+adjudication contract, and stability report are under `evals/real-repositories/`. The v2
+adjudication workflow emits two separately ordered, opaque-ID packets covering all completed
+probe responses and additional findings, with a coordinator-only mapping and content-bound
+submission finalization. The runner preserves partial streamed stdout and sanitized tool-call
+checkpoints across timeouts while the canonical lifecycle boundary terminates the process tree.
+A campaign
 is Golden only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions
 matrix completes and independent adjudication validates; the checked-in materialization
 receipt alone makes no model-quality claim.

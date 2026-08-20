@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -387,6 +390,90 @@ class CodexEvalAdapterTests(unittest.TestCase):
             with patch.dict(os.environ, {adapter.USAGE_OUTPUT_ENV: str(output)}):
                 adapter.write_usage_output(payload)
             self.assertEqual(json.loads(output.read_text(encoding="utf-8")), payload)
+
+    def test_codex_process_streams_timeout_sidecars_before_child_exit(self) -> None:
+        command_event = {
+            "type": "item.completed",
+            "item": {
+                "id": "command-1",
+                "type": "command_execution",
+                "command": "rg --files",
+                "aggregated_output": "file.py\n",
+                "exit_code": 0,
+                "status": "completed",
+            },
+        }
+        usage_event = {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 20,
+                "reasoning_output_tokens": 10,
+            },
+        }
+        child = (
+            "import json, sys, time; "
+            "sys.stdin.read(); "
+            f"print(json.dumps({command_event!r}), flush=True); "
+            "time.sleep(0.5); "
+            f"print(json.dumps({usage_event!r}), flush=True)"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            usage_path = Path(directory) / "usage.json"
+            trace_path = Path(directory) / "tool-trace.json"
+            result: list[int] = []
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            def invoke() -> None:
+                result.append(
+                    adapter.run_codex_process(
+                        [sys.executable, "-c", child],
+                        prompt="review\n",
+                        command_env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                        replacements={},
+                    )
+                )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        adapter.USAGE_OUTPUT_ENV: str(usage_path),
+                        adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
+                    },
+                ),
+                patch.object(adapter.sys, "stdout", stdout),
+                patch.object(adapter.sys, "stderr", stderr),
+            ):
+                thread = threading.Thread(target=invoke)
+                thread.start()
+                deadline = time.monotonic() + 2
+                partial_trace = None
+                while time.monotonic() < deadline and thread.is_alive():
+                    if trace_path.is_file():
+                        candidate = json.loads(trace_path.read_text(encoding="utf-8"))
+                        if candidate["items"]:
+                            partial_trace = candidate
+                            break
+                    time.sleep(0.01)
+                self.assertTrue(thread.is_alive())
+                self.assertIsNotNone(partial_trace)
+                self.assertEqual(len(partial_trace["items"]), 1)
+                partial_usage = json.loads(usage_path.read_text(encoding="utf-8"))
+                self.assertEqual(partial_usage["availability"], "UNAVAILABLE")
+                self.assertEqual(partial_usage["unavailableReason"], "HOST_USAGE_MISSING")
+                thread.join(timeout=3)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result, [0])
+            final_usage = json.loads(usage_path.read_text(encoding="utf-8"))
+            self.assertEqual(final_usage["availability"], "AVAILABLE")
+            self.assertEqual(final_usage["totalTokens"], 120)
+            self.assertIn('"type": "item.completed"', stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
 
     def test_explicit_provider_is_validated_and_rendered_as_codex_config(self) -> None:
         args = adapter.parse_args(

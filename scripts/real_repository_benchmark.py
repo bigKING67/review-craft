@@ -14,8 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from real_repository_contracts import (
+    ADJUDICATION_MAPPING_SCHEMA,
+    ADJUDICATION_PACKET_SCHEMA,
+    ADJUDICATION_SUBMISSION_SCHEMA,
     TREATMENTS,
     RealRepositoryError,
+    adjudication_subjects,
     blind_suite,
     build_stability_report,
     read_json,
@@ -32,12 +36,19 @@ from real_repository_contracts import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_LIB = ROOT / "skills/review-craft/lib"
 DEFAULT_SUITE = ROOT / "evals/specs/real-repositories.json"
 OUTPUT_SCHEMA = ROOT / "evals/schemas/eval-real-repository-output.schema.json"
 ADAPTER_SCHEMA = ROOT / "evals/schemas/eval-adapter.schema.json"
+TOOL_TRACE_SCHEMA = ROOT / "evals/schemas/eval-tool-trace.schema.json"
 DEFAULT_SKILL = ROOT / "skills/review-craft"
 DEFAULT_EVIDENCE_ROOT = ROOT / "evals/real-repositories/verifiers"
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
+TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
+sys.path.insert(0, str(RUNTIME_LIB))
+
+from review_craft.process_lifecycle import ProcessResult, run_process  # noqa: E402
+
 SENSITIVE_ARGUMENT = re.compile(r"^--?(?:api[-_]?key|password|secret|token)(?:=|$)", re.IGNORECASE)
 SENSITIVE_OUTPUT_PATTERNS = (
     re.compile(r"(?i)(Incorrect API key provided:\s*)[^\s,\"']+"),
@@ -194,16 +205,18 @@ method actually produced a defensible score; label any non-canonical estimate PR
     return prompt.encode("utf-8")
 
 
-def _usage_projection(payload: dict[str, Any] | None) -> dict[str, int | None]:
+def _usage_projection(
+    payload: dict[str, Any] | None,
+    tool_trace: dict[str, Any] | None = None,
+) -> dict[str, int | None]:
     if not isinstance(payload, dict):
-        return {
-            "inputTokens": None,
-            "outputTokens": None,
-            "totalTokens": None,
-            "toolCalls": None,
-        }
+        payload = {}
     tool_calls = payload.get("toolCalls")
     tool_total = tool_calls.get("total") if isinstance(tool_calls, dict) else tool_calls
+    if tool_total is None and isinstance(tool_trace, dict):
+        items = tool_trace.get("items")
+        if isinstance(items, list):
+            tool_total = len(items)
     return {
         "inputTokens": payload.get("inputTokens"),
         "outputTokens": payload.get("outputTokens"),
@@ -218,6 +231,164 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _bind_content_hash(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["contentSha256"] = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
+    )
+    return payload
+
+
+def _content_bound_errors(
+    payload: dict[str, Any], schema_path: Path, artifact: str
+) -> list[str]:
+    errors = schema_errors(payload, schema_path)
+    if errors:
+        return errors
+    expected = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
+    )
+    if payload["contentSha256"] != expected:
+        errors.append(f"{artifact} contentSha256 mismatch")
+    return errors
+
+
+def _adjudication_item_id(
+    campaign_hash: str,
+    adjudicator_id: str,
+    sample_id: str,
+    subject_type: str,
+    subject_key: str,
+) -> str:
+    value = "\0".join(
+        (campaign_hash, adjudicator_id, sample_id, subject_type, subject_key)
+    ).encode("utf-8")
+    return f"item-{hashlib.sha256(value).hexdigest()[:20]}"
+
+
+def _adjudication_subject_rows(
+    campaign: dict[str, Any], blind: dict[str, Any]
+) -> list[dict[str, Any]]:
+    repositories = {row["id"]: row for row in blind["repositories"]}
+    rows: list[dict[str, Any]] = []
+    for sample in campaign["samples"]:
+        if sample["status"] != "COMPLETED" or sample["output"] is None:
+            continue
+        repository = repositories[sample["repositoryId"]]
+        public_prompts = {
+            probe["id"]: probe["publicPrompt"] for probe in repository["probes"]
+        }
+        repository_projection = {
+            key: repository[key] for key in ("id", "remote", "revision", "scope")
+        }
+        rows.extend(
+            {
+                "sampleId": sample["sampleId"],
+                "subjectType": "PROBE_RESPONSE",
+                "subjectKey": probe["probeId"],
+                "repository": repository_projection,
+                "publicPrompt": public_prompts[probe["probeId"]],
+                "response": probe,
+            }
+            for probe in sample["output"]["probes"]
+        )
+        rows.extend(
+            {
+                "sampleId": sample["sampleId"],
+                "subjectType": "ADDITIONAL_FINDING",
+                "subjectKey": finding["findingId"],
+                "repository": repository_projection,
+                "publicPrompt": None,
+                "response": finding,
+            }
+            for finding in sample["output"]["additionalFindings"]
+        )
+    return rows
+
+
+def _validate_adjudication_mapping(
+    mapping: dict[str, Any], campaign: dict[str, Any]
+) -> list[str]:
+    errors = _content_bound_errors(
+        mapping, ADJUDICATION_MAPPING_SCHEMA, "adjudication mapping"
+    )
+    if errors:
+        return errors
+    if mapping["campaignContentSha256"] != campaign["contentSha256"]:
+        errors.append("adjudication mapping campaignContentSha256 mismatch")
+    adjudicator_ids = [row["adjudicatorId"] for row in mapping["packets"]]
+    if len(adjudicator_ids) != len(set(adjudicator_ids)):
+        errors.append("adjudication mapping contains duplicate adjudicators")
+    expected = {
+        (adjudicator_id, *subject)
+        for adjudicator_id in adjudicator_ids
+        for subject in adjudication_subjects(campaign)
+    }
+    actual = {
+        (
+            row["adjudicatorId"],
+            row["sampleId"],
+            row["subjectType"],
+            row["subjectKey"],
+        )
+        for row in mapping["subjects"]
+    }
+    if len(actual) != len(mapping["subjects"]):
+        errors.append("adjudication mapping contains duplicate subjects")
+    item_ids = {(row["adjudicatorId"], row["itemId"]) for row in mapping["subjects"]}
+    if len(item_ids) != len(mapping["subjects"]):
+        errors.append("adjudication mapping contains duplicate item ids")
+    if expected - actual:
+        errors.append(
+            f"adjudication mapping is missing {len(expected - actual)} subjects"
+        )
+    if actual - expected:
+        errors.append(
+            f"adjudication mapping contains {len(actual - expected)} unexpected subjects"
+        )
+    return errors
+
+
+def _validate_adjudication_submission(
+    submission: dict[str, Any],
+    *,
+    packet: dict[str, Any] | None = None,
+    require_complete: bool,
+) -> list[str]:
+    errors = _content_bound_errors(
+        submission, ADJUDICATION_SUBMISSION_SCHEMA, "adjudication submission"
+    )
+    if errors:
+        return errors
+    label_ids = [row["itemId"] for row in submission["labels"]]
+    if len(label_ids) != len(set(label_ids)):
+        errors.append("adjudication submission contains duplicate item ids")
+    if require_complete:
+        incomplete = [
+            row["itemId"]
+            for row in submission["labels"]
+            if row["label"] is None or row["rationale"] is None
+        ]
+        if incomplete:
+            errors.append(
+                f"adjudication submission has {len(incomplete)} incomplete labels"
+            )
+    if packet is not None:
+        packet_errors = _content_bound_errors(
+            packet, ADJUDICATION_PACKET_SCHEMA, "adjudication packet"
+        )
+        if packet_errors:
+            return [*errors, *packet_errors]
+        if submission["packetContentSha256"] != packet["contentSha256"]:
+            errors.append("adjudication submission packetContentSha256 mismatch")
+        if submission["adjudicatorId"] != packet["adjudicatorId"]:
+            errors.append("adjudication submission adjudicatorId mismatch")
+        expected_ids = {row["itemId"] for row in packet["items"]}
+        actual_ids = set(label_ids)
+        if expected_ids != actual_ids:
+            errors.append("adjudication submission item set does not match packet")
+    return errors
 
 
 def _run_sample(
@@ -243,6 +414,7 @@ def _run_sample(
     stderr_path = sample_dir / "stderr.txt"
     usage_path = sample_dir / "usage.json"
     adapter_usage_path = sample_dir / "adapter-usage.json"
+    tool_trace_path = sample_dir / "tool-trace.json"
     output_path = sample_dir / "output.json"
     prompt = _render_benchmark_prompt(treatment, repository)
     write_bytes(prompt_path, prompt)
@@ -274,16 +446,23 @@ def _run_sample(
     stdout = b""
     stderr = b""
     try:
-        completed = subprocess.run(
+        completed: ProcessResult = run_process(
             command,
             cwd=ROOT,
-            capture_output=True,
             timeout=timeout_seconds,
-            env={**os.environ, USAGE_OUTPUT_ENV: str(adapter_usage_path)},
+            env={
+                **os.environ,
+                USAGE_OUTPUT_ENV: str(adapter_usage_path),
+                TOOL_TRACE_OUTPUT_ENV: str(tool_trace_path),
+            },
         )
         stdout = completed.stdout
         stderr = completed.stderr
-        if completed.returncode != 0:
+        if completed.timed_out:
+            status = "TIMED_OUT"
+            failure_reason = f"adapter timed out after {timeout_seconds} seconds"
+            stderr += (failure_reason + "\n").encode("utf-8")
+        elif completed.returncode != 0:
             failure_reason = f"adapter exited with code {completed.returncode}"
         elif not output_path.is_file():
             failure_reason = "adapter did not create normalized output"
@@ -301,11 +480,6 @@ def _run_sample(
     except FileNotFoundError as error:
         failure_reason = f"adapter executable unavailable: {error}"
         stderr = (failure_reason + "\n").encode("utf-8")
-    except subprocess.TimeoutExpired as error:
-        status = "TIMED_OUT"
-        failure_reason = f"adapter timed out after {timeout_seconds} seconds"
-        stdout = error.stdout or b""
-        stderr = (error.stderr or b"") + (failure_reason + "\n").encode("utf-8")
     duration = max(0.0, round(time.monotonic() - started, 3))
     write_bytes(stdout_path, _redact_output(stdout))
     write_bytes(stderr_path, _redact_output(stderr))
@@ -316,7 +490,17 @@ def _run_sample(
             usage_payload = read_json(adapter_usage_path)
         except (OSError, json.JSONDecodeError):
             usage_payload = None
-    usage = _usage_projection(usage_payload)
+    tool_trace_payload: dict[str, Any] | None = None
+    if tool_trace_path.is_file():
+        try:
+            candidate_tool_trace = read_json(tool_trace_path)
+        except (OSError, json.JSONDecodeError):
+            candidate_tool_trace = None
+        if isinstance(candidate_tool_trace, dict) and not schema_errors(
+            candidate_tool_trace, TOOL_TRACE_SCHEMA
+        ):
+            tool_trace_payload = candidate_tool_trace
+    usage = _usage_projection(usage_payload, tool_trace_payload)
     write_json(usage_path, usage)
     after = _repository_state(repository_root)
     mutation_detected = after != before
@@ -347,6 +531,9 @@ def _run_sample(
             "usageSha256": _file_sha256(usage_path),
             "outputSha256": (
                 sha256_json(canonical_output) if canonical_output is not None else None
+            ),
+            "toolTraceSha256": (
+                _file_sha256(tool_trace_path) if tool_trace_path.is_file() else None
             ),
         },
     }
@@ -585,6 +772,288 @@ def command_validate_campaign(args: argparse.Namespace) -> int:
                 "contentSha256": campaign["contentSha256"],
                 "samples": len(campaign["samples"]),
                 "completedSamples": completed,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_prepare_adjudication(args: argparse.Namespace) -> int:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
+    campaign = read_json(Path(args.campaign).expanduser().resolve(strict=True))
+    campaign_errors = validate_campaign(campaign, suite, blind)
+    if campaign_errors:
+        raise RealRepositoryError("invalid campaign: " + "; ".join(campaign_errors))
+    adjudicator_ids = args.adjudicator
+    if len(adjudicator_ids) < 2:
+        raise RealRepositoryError("at least two independent adjudicators are required")
+    if len(adjudicator_ids) != len(set(adjudicator_ids)):
+        raise RealRepositoryError("adjudicator ids must be unique")
+    if any(re.fullmatch(r"[A-Za-z0-9._-]+", value) is None for value in adjudicator_ids):
+        raise RealRepositoryError(
+            "adjudicator ids may contain only letters, digits, dot, underscore, or hyphen"
+        )
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise RealRepositoryError(f"adjudication output directory must be empty: {output_dir}")
+    output_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    subject_rows = _adjudication_subject_rows(campaign, blind)
+    if not subject_rows:
+        raise RealRepositoryError("campaign has no completed subjects to adjudicate")
+    instructions = (
+        "Work independently and do not coordinate with another adjudicator. For every item, "
+        "inspect the pinned repository revision and declared scope when needed. Label CORRECT "
+        "only when the response's disposition, decision, severity, evidence, and rationale are "
+        "materially supported; label INCORRECT when a material claim is wrong or unsupported; "
+        "label UNRESOLVED when the available evidence cannot decide. For ADDITIONAL_FINDING, "
+        "CORRECT means a real actionable finding and INCORRECT means a false positive. Do not "
+        "try to infer the treatment, model, repetition, or sample identity, and do not request "
+        "the coordinator-only mapping. Record a concrete rationale for every label."
+    )
+    mapping_rows: list[dict[str, str]] = []
+    packet_bindings: list[dict[str, str]] = []
+    for adjudicator_id in adjudicator_ids:
+        packet_items = []
+        for row in subject_rows:
+            item_id = _adjudication_item_id(
+                campaign["contentSha256"],
+                adjudicator_id,
+                row["sampleId"],
+                row["subjectType"],
+                row["subjectKey"],
+            )
+            mapping_rows.append(
+                {
+                    "adjudicatorId": adjudicator_id,
+                    "itemId": item_id,
+                    "sampleId": row["sampleId"],
+                    "subjectType": row["subjectType"],
+                    "subjectKey": row["subjectKey"],
+                }
+            )
+            packet_items.append(
+                {
+                    "itemId": item_id,
+                    "repository": row["repository"],
+                    "subjectType": row["subjectType"],
+                    "publicPrompt": row["publicPrompt"],
+                    "response": row["response"],
+                }
+            )
+        packet_items.sort(
+            key=lambda item: hashlib.sha256(
+                f"{adjudicator_id}\0{item['itemId']}\0order".encode()
+            ).hexdigest()
+        )
+        packet = _bind_content_hash(
+            {
+                "schema": "review-craft.eval-real-repository-adjudication-packet.v1",
+                "campaignContentSha256": campaign["contentSha256"],
+                "adjudicatorId": adjudicator_id,
+                "instructions": instructions,
+                "items": packet_items,
+                "contentSha256": "0" * 64,
+            }
+        )
+        packet_errors = _content_bound_errors(
+            packet, ADJUDICATION_PACKET_SCHEMA, "adjudication packet"
+        )
+        if packet_errors:
+            raise RealRepositoryError(
+                "generated adjudication packet is invalid: " + "; ".join(packet_errors)
+            )
+        packet_path = output_dir / f"packet-{adjudicator_id}.json"
+        write_json(packet_path, packet)
+        submission = _bind_content_hash(
+            {
+                "schema": "review-craft.eval-real-repository-adjudication-submission.v1",
+                "packetContentSha256": packet["contentSha256"],
+                "adjudicatorId": adjudicator_id,
+                "labels": [
+                    {"itemId": row["itemId"], "label": None, "rationale": None}
+                    for row in packet_items
+                ],
+                "contentSha256": "0" * 64,
+            }
+        )
+        submission_errors = _validate_adjudication_submission(
+            submission, packet=packet, require_complete=False
+        )
+        if submission_errors:
+            raise RealRepositoryError(
+                "generated adjudication template is invalid: "
+                + "; ".join(submission_errors)
+            )
+        write_json(output_dir / f"submission-{adjudicator_id}.json", submission)
+        packet_bindings.append(
+            {
+                "adjudicatorId": adjudicator_id,
+                "packetContentSha256": packet["contentSha256"],
+            }
+        )
+    mapping = _bind_content_hash(
+        {
+            "schema": "review-craft.eval-real-repository-adjudication-mapping.v1",
+            "campaignContentSha256": campaign["contentSha256"],
+            "packets": packet_bindings,
+            "subjects": mapping_rows,
+            "contentSha256": "0" * 64,
+        }
+    )
+    mapping_errors = _validate_adjudication_mapping(mapping, campaign)
+    if mapping_errors:
+        raise RealRepositoryError(
+            "generated adjudication mapping is invalid: " + "; ".join(mapping_errors)
+        )
+    mapping_path = output_dir / "coordinator-mapping.json"
+    write_json(mapping_path, mapping)
+    print(
+        json.dumps(
+            {
+                "outputDir": str(output_dir),
+                "mapping": str(mapping_path),
+                "adjudicators": len(adjudicator_ids),
+                "subjectsPerAdjudicator": len(subject_rows),
+                "mappingContentSha256": mapping["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_finalize_adjudication_submission(args: argparse.Namespace) -> int:
+    packet = read_json(Path(args.packet).expanduser().resolve(strict=True))
+    submission_path = Path(args.submission).expanduser().resolve(strict=True)
+    submission = read_json(submission_path)
+    _bind_content_hash(submission)
+    errors = _validate_adjudication_submission(
+        submission, packet=packet, require_complete=True
+    )
+    if errors:
+        raise RealRepositoryError("invalid adjudication submission: " + "; ".join(errors))
+    write_json(submission_path, submission)
+    print(
+        json.dumps(
+            {
+                "submission": str(submission_path),
+                "adjudicatorId": submission["adjudicatorId"],
+                "labels": len(submission["labels"]),
+                "contentSha256": submission["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_assemble_adjudication(args: argparse.Namespace) -> int:
+    campaign = read_json(Path(args.campaign).expanduser().resolve(strict=True))
+    mapping = read_json(Path(args.mapping).expanduser().resolve(strict=True))
+    mapping_errors = _validate_adjudication_mapping(mapping, campaign)
+    if mapping_errors:
+        raise RealRepositoryError("invalid adjudication mapping: " + "; ".join(mapping_errors))
+    packet_by_adjudicator = {
+        row["adjudicatorId"]: row["packetContentSha256"] for row in mapping["packets"]
+    }
+    subjects_by_item = {
+        (row["adjudicatorId"], row["itemId"]): row for row in mapping["subjects"]
+    }
+    submissions: dict[str, dict[str, Any]] = {}
+    for path_value in args.submission:
+        submission = read_json(Path(path_value).expanduser().resolve(strict=True))
+        errors = _validate_adjudication_submission(
+            submission, packet=None, require_complete=True
+        )
+        if errors:
+            raise RealRepositoryError(
+                f"invalid adjudication submission {path_value}: " + "; ".join(errors)
+            )
+        adjudicator_id = submission["adjudicatorId"]
+        if adjudicator_id in submissions:
+            raise RealRepositoryError(f"duplicate submission for {adjudicator_id}")
+        expected_packet_hash = packet_by_adjudicator.get(adjudicator_id)
+        if expected_packet_hash is None:
+            raise RealRepositoryError(f"submission references unknown adjudicator {adjudicator_id}")
+        if submission["packetContentSha256"] != expected_packet_hash:
+            raise RealRepositoryError(
+                f"submission packet hash mismatch for {adjudicator_id}"
+            )
+        expected_ids = {
+            item_id
+            for (owner, item_id), _row in subjects_by_item.items()
+            if owner == adjudicator_id
+        }
+        actual_ids = {row["itemId"] for row in submission["labels"]}
+        if len(actual_ids) != len(submission["labels"]):
+            raise RealRepositoryError(
+                f"submission contains duplicate item ids for {adjudicator_id}"
+            )
+        if actual_ids != expected_ids:
+            raise RealRepositoryError(
+                f"submission item set does not match mapping for {adjudicator_id}"
+            )
+        submissions[adjudicator_id] = submission
+    if set(submissions) != set(packet_by_adjudicator):
+        missing = sorted(set(packet_by_adjudicator) - set(submissions))
+        raise RealRepositoryError(
+            "missing completed adjudication submissions: " + ", ".join(missing)
+        )
+    adjudicators = []
+    labels = []
+    for adjudicator_id in packet_by_adjudicator:
+        submission = submissions[adjudicator_id]
+        adjudicators.append(
+            {
+                "id": adjudicator_id,
+                "kind": "HUMAN",
+                "independent": True,
+                "packetContentSha256": packet_by_adjudicator[adjudicator_id],
+                "submissionContentSha256": submission["contentSha256"],
+            }
+        )
+        for label in submission["labels"]:
+            subject = subjects_by_item[(adjudicator_id, label["itemId"])]
+            labels.append(
+                {
+                    "adjudicatorId": adjudicator_id,
+                    "itemId": label["itemId"],
+                    "sampleId": subject["sampleId"],
+                    "subjectType": subject["subjectType"],
+                    "subjectKey": subject["subjectKey"],
+                    "label": label["label"],
+                    "rationale": label["rationale"],
+                }
+            )
+    adjudication = _bind_content_hash(
+        {
+            "schema": "review-craft.eval-real-repository-adjudication.v2",
+            "campaignContentSha256": campaign["contentSha256"],
+            "mappingContentSha256": mapping["contentSha256"],
+            "adjudicators": adjudicators,
+            "labels": labels,
+            "contentSha256": "0" * 64,
+        }
+    )
+    errors = validate_adjudication(adjudication, campaign)
+    if errors:
+        raise RealRepositoryError(
+            "assembled adjudication is invalid: " + "; ".join(errors)
+        )
+    output = Path(args.output).expanduser().resolve()
+    write_json(output, adjudication)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "adjudicators": len(adjudicators),
+                "labels": len(labels),
+                "contentSha256": adjudication["contentSha256"],
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -862,6 +1331,28 @@ def build_parser() -> argparse.ArgumentParser:
     validate_campaign_parser.add_argument("--blind-suite", required=True)
     validate_campaign_parser.add_argument("--campaign", required=True)
     validate_campaign_parser.set_defaults(handler=command_validate_campaign)
+
+    prepare_adjudication = subparsers.add_parser("prepare-adjudication")
+    prepare_adjudication.add_argument("--suite", default=str(DEFAULT_SUITE))
+    prepare_adjudication.add_argument("--blind-suite", required=True)
+    prepare_adjudication.add_argument("--campaign", required=True)
+    prepare_adjudication.add_argument("--output-dir", required=True)
+    prepare_adjudication.add_argument("--adjudicator", action="append", required=True)
+    prepare_adjudication.set_defaults(handler=command_prepare_adjudication)
+
+    finalize_submission = subparsers.add_parser(
+        "finalize-adjudication-submission"
+    )
+    finalize_submission.add_argument("--packet", required=True)
+    finalize_submission.add_argument("--submission", required=True)
+    finalize_submission.set_defaults(handler=command_finalize_adjudication_submission)
+
+    assemble_adjudication = subparsers.add_parser("assemble-adjudication")
+    assemble_adjudication.add_argument("--campaign", required=True)
+    assemble_adjudication.add_argument("--mapping", required=True)
+    assemble_adjudication.add_argument("--submission", action="append", required=True)
+    assemble_adjudication.add_argument("--output", required=True)
+    assemble_adjudication.set_defaults(handler=command_assemble_adjudication)
 
     validate_adjudication_parser = subparsers.add_parser("validate-adjudication")
     validate_adjudication_parser.add_argument("--campaign", required=True)

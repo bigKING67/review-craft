@@ -20,9 +20,14 @@ class ProcessResult:
     timed_out: bool
 
 
-def _popen(argv: list[str], cwd: Path) -> subprocess.Popen[bytes]:
+def _popen(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
     options: dict[str, object] = {
         "cwd": cwd,
+        "env": env,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "shell": False,
@@ -83,9 +88,15 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=FORCE_WAIT_SECONDS)
 
 
-def run_process(argv: list[str], *, cwd: Path, timeout: int) -> ProcessResult:
+def run_process(
+    argv: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> ProcessResult:
     """Run a fixed argv and terminate its inherited process tree on timeout."""
-    process = _popen(argv, cwd)
+    process = _popen(argv, cwd, env)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
         return ProcessResult(process.returncode, stdout, stderr, False)

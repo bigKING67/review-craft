@@ -87,7 +87,8 @@
               "stdoutSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "stderrSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "usageSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-              "outputSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+              "outputSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+              "toolTraceSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
             }
           }
         }

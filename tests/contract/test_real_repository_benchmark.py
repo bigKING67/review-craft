@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from tests.support import ROOT
 
@@ -358,6 +360,187 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             "upstreamFix",
             (evidence_root / "README.md").read_text(encoding="utf-8"),
         )
+
+    def test_timed_out_sample_preserves_partial_stdout_and_tool_trace(self) -> None:
+        repository = self.suite["repositories"][0]
+        description = {
+            "name": "fixture-adapter",
+            "adapterVersion": "fixture-v1",
+            "version": "fixture-host-v1",
+            "model": "fixture-model",
+            "reasoning": "medium",
+            "evidenceKind": "REAL_HOST",
+            "provider": {"name": "fixture-provider"},
+            "isolation": {"fixture": True},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository_root = root / "repository"
+            repository_root.mkdir()
+            runner.run_git("init", "--quiet", cwd=repository_root)
+            runner.run_git("config", "user.name", "Review Craft Tests", cwd=repository_root)
+            runner.run_git(
+                "config", "user.email", "review-craft-tests@example.invalid", cwd=repository_root
+            )
+            target = repository_root / repository["scope"][0]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fixture\n", encoding="utf-8")
+            runner.run_git("add", repository["scope"][0], cwd=repository_root)
+            runner.run_git("commit", "--quiet", "-m", "fixture", cwd=repository_root)
+
+            def timed_out(
+                _command: list[str],
+                *,
+                cwd: Path,
+                timeout: int,
+                env: dict[str, str],
+            ) -> runner.ProcessResult:
+                self.assertEqual(cwd, ROOT)
+                self.assertEqual(timeout, 7)
+                Path(env[runner.USAGE_OUTPUT_ENV]).write_text(
+                    json.dumps(
+                        {
+                            "inputTokens": None,
+                            "outputTokens": None,
+                            "totalTokens": None,
+                            "toolCalls": None,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                trace = {
+                    "schema": "review-craft.eval-tool-trace.v1",
+                    "items": [
+                        {
+                            "sequence": 0,
+                            "type": "commandExecution",
+                            "status": "completed",
+                            "command": "rg --files",
+                            "exitCode": 0,
+                            "outputBytes": 8,
+                            "outputSha256": "1" * 64,
+                        }
+                    ],
+                }
+                Path(env[runner.TOOL_TRACE_OUTPUT_ENV]).write_text(
+                    json.dumps(trace), encoding="utf-8"
+                )
+                return runner.ProcessResult(124, b'{"type":"item.completed"}\n', b"", True)
+
+            with patch.object(runner, "run_process", side_effect=timed_out):
+                sample = runner._run_sample(
+                    run_dir=root / "run",
+                    sample_ordinal=1,
+                    repository=repository,
+                    repository_root=repository_root,
+                    treatment="ORDINARY_PROMPT",
+                    repetition=1,
+                    adapter={"id": "fixture", "command": ["fixture-adapter"]},
+                    description=description,
+                    timeout_seconds=7,
+                    skill_root=ROOT / "skills/review-craft",
+                    evidence_root=ROOT / "evals/real-repositories/verifiers",
+                )
+
+            self.assertEqual(sample["status"], "TIMED_OUT")
+            self.assertEqual(sample["usage"]["toolCalls"], 1)
+            self.assertIsNotNone(sample["artifacts"]["toolTraceSha256"])
+            sample_dir = next((root / "run/samples").iterdir())
+            self.assertEqual(
+                (sample_dir / "stdout.txt").read_text(encoding="utf-8"),
+                '{"type":"item.completed"}\n',
+            )
+            self.assertTrue((sample_dir / "tool-trace.json").is_file())
+            self.assertFalse(sample["sourceMutationDetected"])
+
+    def test_blinded_adjudication_packets_cover_probes_and_additional_findings(self) -> None:
+        campaign, blind = self._campaign(additional_finding=True)
+        expected_subjects = contracts.adjudication_subjects(campaign)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            suite_path = root / "suite.json"
+            blind_path = root / "blind.json"
+            campaign_path = root / "campaign.json"
+            output_dir = root / "adjudication"
+            runner.write_json(suite_path, self.suite)
+            runner.write_json(blind_path, blind)
+            runner.write_json(campaign_path, campaign)
+            with patch("builtins.print"):
+                status = runner.command_prepare_adjudication(
+                    SimpleNamespace(
+                        suite=str(suite_path),
+                        blind_suite=str(blind_path),
+                        campaign=str(campaign_path),
+                        output_dir=str(output_dir),
+                        adjudicator=["human-a", "human-b"],
+                    )
+                )
+            self.assertEqual(status, 0)
+            packets = {
+                adjudicator: json.loads(
+                    (output_dir / f"packet-{adjudicator}.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                for adjudicator in ("human-a", "human-b")
+            }
+            for packet in packets.values():
+                self.assertEqual(len(packet["items"]), len(expected_subjects))
+                rendered = json.dumps(packet, sort_keys=True)
+                self.assertNotIn("sampleId", rendered)
+                self.assertNotIn("modelConfiguration", rendered)
+                for treatment in contracts.TREATMENTS:
+                    self.assertNotIn(treatment, rendered)
+            self.assertTrue(
+                {row["itemId"] for row in packets["human-a"]["items"]}.isdisjoint(
+                    {row["itemId"] for row in packets["human-b"]["items"]}
+                )
+            )
+
+            submission_paths = []
+            for adjudicator in packets:
+                submission_path = output_dir / f"submission-{adjudicator}.json"
+                submission = json.loads(submission_path.read_text(encoding="utf-8"))
+                for label in submission["labels"]:
+                    label["label"] = "CORRECT"
+                    label["rationale"] = "Independently verified synthetic fixture."
+                runner.write_json(submission_path, submission)
+                with patch("builtins.print"):
+                    status = runner.command_finalize_adjudication_submission(
+                        SimpleNamespace(
+                            packet=str(output_dir / f"packet-{adjudicator}.json"),
+                            submission=str(submission_path),
+                        )
+                    )
+                self.assertEqual(status, 0)
+                submission_paths.append(str(submission_path))
+
+            adjudication_path = root / "adjudication.json"
+            with patch("builtins.print"):
+                status = runner.command_assemble_adjudication(
+                    SimpleNamespace(
+                        campaign=str(campaign_path),
+                        mapping=str(output_dir / "coordinator-mapping.json"),
+                        submission=submission_paths,
+                        output=str(adjudication_path),
+                    )
+                )
+            self.assertEqual(status, 0)
+            adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                adjudication["schema"],
+                "review-craft.eval-real-repository-adjudication.v2",
+            )
+            self.assertEqual(
+                len(adjudication["labels"]), 2 * len(expected_subjects)
+            )
+            self.assertEqual(
+                contracts.validate_adjudication(adjudication, campaign), []
+            )
+            report = contracts.build_stability_report(
+                self.suite, campaign, adjudication
+            )
+            self.assertEqual(report["metrics"]["humanAgreement"]["value"], 1)
 
     def test_stability_report_computes_repeated_metrics_without_overclaiming(self) -> None:
         campaign, _blind = self._campaign()
