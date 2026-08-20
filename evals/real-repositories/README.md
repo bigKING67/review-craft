@@ -61,6 +61,7 @@ uv run --locked python scripts/real_repository_benchmark.py \
 uv run --locked python scripts/real_repository_benchmark.py assemble-adjudication \
   --campaign <campaign.json> --mapping <coordinator-mapping.json> \
   --submission <submission-human-a.json> --submission <submission-human-b.json> \
+  --kind HUMAN \
   --output <independent-adjudication.json>
 
 uv run --locked python scripts/real_repository_benchmark.py validate-adjudication \
@@ -85,6 +86,11 @@ token counts remain null when no complete host usage event was emitted.
 Adjudication v2 covers every probe response plus every additional finding from completed
 samples. Reviewer packets use reviewer-specific opaque item IDs and omit sample, treatment,
 model, and repetition identities. Packet order is independently deterministic per reviewer.
+`assemble-adjudication` requires an explicit uniform `--kind`: use `HUMAN` only for actual
+independent human reviewers and `AGENT_ASSISTED` for isolated model-assisted adjudicators.
+Agent-assisted labels contribute to adjudicated false-positive analysis and the explicit
+`adjudicatorAgreement` metric, but never populate `humanAgreement` or satisfy the independent
+human adjudication completion gate.
 The coordinator-only mapping is required to assemble the two completed submissions; a blank
 template or a single reviewer cannot produce a valid v2 adjudication. Legacy v1 adjudication
 remains validation-compatible for historical campaigns, but it covers additional findings only.

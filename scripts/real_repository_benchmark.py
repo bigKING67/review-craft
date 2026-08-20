@@ -1011,7 +1011,7 @@ def command_assemble_adjudication(args: argparse.Namespace) -> int:
         adjudicators.append(
             {
                 "id": adjudicator_id,
-                "kind": "HUMAN",
+                "kind": args.kind,
                 "independent": True,
                 "packetContentSha256": packet_by_adjudicator[adjudicator_id],
                 "submissionContentSha256": submission["contentSha256"],
@@ -1351,6 +1351,9 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_adjudication.add_argument("--campaign", required=True)
     assemble_adjudication.add_argument("--mapping", required=True)
     assemble_adjudication.add_argument("--submission", action="append", required=True)
+    assemble_adjudication.add_argument(
+        "--kind", choices=("HUMAN", "AGENT_ASSISTED"), required=True
+    )
     assemble_adjudication.add_argument("--output", required=True)
     assemble_adjudication.set_defaults(handler=command_assemble_adjudication)
 

@@ -522,6 +522,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                         campaign=str(campaign_path),
                         mapping=str(output_dir / "coordinator-mapping.json"),
                         submission=submission_paths,
+                        kind="HUMAN",
                         output=str(adjudication_path),
                     )
                 )
@@ -541,6 +542,52 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 self.suite, campaign, adjudication
             )
             self.assertEqual(report["metrics"]["humanAgreement"]["value"], 1)
+            self.assertEqual(
+                report["metrics"]["adjudicatorAgreement"]["value"], 1
+            )
+
+            agent_adjudication_path = root / "agent-adjudication.json"
+            with patch("builtins.print"):
+                status = runner.command_assemble_adjudication(
+                    SimpleNamespace(
+                        campaign=str(campaign_path),
+                        mapping=str(output_dir / "coordinator-mapping.json"),
+                        submission=submission_paths,
+                        kind="AGENT_ASSISTED",
+                        output=str(agent_adjudication_path),
+                    )
+                )
+            self.assertEqual(status, 0)
+            agent_adjudication = json.loads(
+                agent_adjudication_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                {row["kind"] for row in agent_adjudication["adjudicators"]},
+                {"AGENT_ASSISTED"},
+            )
+            agent_report = contracts.build_stability_report(
+                self.suite, campaign, agent_adjudication
+            )
+            self.assertIsNone(agent_report["metrics"]["humanAgreement"]["value"])
+            self.assertEqual(
+                agent_report["metrics"]["adjudicatorAgreement"]["value"], 1
+            )
+            self.assertIn(
+                "adjudication is agent-assisted, not independent human adjudication",
+                agent_report["limitations"],
+            )
+
+            mixed = copy.deepcopy(agent_adjudication)
+            mixed["adjudicators"][0]["kind"] = "HUMAN"
+            mixed["contentSha256"] = contracts.sha256_json(
+                {
+                    key: value
+                    for key, value in mixed.items()
+                    if key != "contentSha256"
+                }
+            )
+            errors = contracts.validate_adjudication(mixed, campaign)
+            self.assertIn("adjudication mixes adjudicator kinds", errors)
 
     def test_stability_report_computes_repeated_metrics_without_overclaiming(self) -> None:
         campaign, _blind = self._campaign()

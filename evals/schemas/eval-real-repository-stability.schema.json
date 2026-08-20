@@ -56,7 +56,8 @@
             "medianTokens": {"type": ["number", "null"], "minimum": 0}
           }
         },
-        "humanAgreement": {"$ref": "#/$defs/ratio"}
+        "humanAgreement": {"$ref": "#/$defs/ratio"},
+        "adjudicatorAgreement": {"$ref": "#/$defs/ratio"}
       }
     },
     "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}},

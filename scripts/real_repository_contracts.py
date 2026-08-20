@@ -561,6 +561,9 @@ def _validate_adjudication_v2(
     adjudicator_ids = [row["id"] for row in payload["adjudicators"]]
     if len(adjudicator_ids) != len(set(adjudicator_ids)):
         errors.append("adjudication contains duplicate adjudicator ids")
+    adjudicator_kinds = {row["kind"] for row in payload["adjudicators"]}
+    if len(adjudicator_kinds) != 1:
+        errors.append("adjudication mixes adjudicator kinds")
     expected_subjects = adjudication_subjects(campaign)
     expected_labels = {
         (adjudicator_id, *subject)
@@ -664,7 +667,7 @@ def _agreement(maps: list[dict[str, str]]) -> dict[str, Any]:
     return _ratio(numerator, denominator)
 
 
-def _human_metrics(
+def _adjudication_metrics(
     adjudication: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], tuple[int, int]]:
     if adjudication is None:
@@ -804,12 +807,24 @@ def build_stability_report(
             for probe in sample["output"]["probes"]
             if probe_kind_by_id.get(probe["probeId"]) == "DECOY"
         )
-    human_agreement, human_false_positives = _human_metrics(adjudication)
+    adjudicator_agreement, adjudicated_false_positives = _adjudication_metrics(
+        adjudication
+    )
+    adjudicator_kinds = (
+        {row["kind"] for row in adjudication["adjudicators"]}
+        if adjudication is not None
+        else set()
+    )
+    human_agreement = (
+        adjudicator_agreement
+        if adjudicator_kinds == {"HUMAN"}
+        else _ratio(0, 0)
+    )
     decoy_false_positives = sum(
         probe["disposition"] == "VALIDATED" for probe in decoy_results
     )
-    false_positive_numerator = decoy_false_positives + human_false_positives[0]
-    false_positive_denominator = len(decoy_results) + human_false_positives[1]
+    false_positive_numerator = decoy_false_positives + adjudicated_false_positives[0]
+    false_positive_denominator = len(decoy_results) + adjudicated_false_positives[1]
 
     expected, completed_matrix = _campaign_matrix(campaign, source_suite)
     model_ids = {
@@ -843,6 +858,10 @@ def build_stability_report(
         limitations.append("the required campaign matrix is not fully completed")
     if adjudication is None:
         limitations.append("independent human adjudication is not attached")
+    elif adjudicator_kinds != {"HUMAN"}:
+        limitations.append(
+            "adjudication is agent-assisted, not independent human adjudication"
+        )
     complete = not limitations and campaign["status"] == "COMPLETED"
 
     durations = [float(sample["durationSeconds"]) for sample in campaign["samples"]]
@@ -900,6 +919,7 @@ def build_stability_report(
                 "medianTokens": statistics.median(tokens) if tokens else None,
             },
             "humanAgreement": human_agreement,
+            "adjudicatorAgreement": adjudicator_agreement,
         },
         "limitations": limitations,
         "contentSha256": "0" * 64,

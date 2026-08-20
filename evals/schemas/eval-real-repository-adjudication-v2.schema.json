@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-adjudication-v2.schema.json",
-  "title": "Independent human adjudication for all completed campaign subjects",
+  "title": "Independent adjudication for all completed campaign subjects",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "campaignContentSha256", "mappingContentSha256", "adjudicators", "labels", "contentSha256"],
@@ -18,7 +18,7 @@
         "required": ["id", "kind", "independent", "packetContentSha256", "submissionContentSha256"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "kind": {"const": "HUMAN"},
+          "kind": {"enum": ["HUMAN", "AGENT_ASSISTED"]},
           "independent": {"const": true},
           "packetContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "submissionContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
