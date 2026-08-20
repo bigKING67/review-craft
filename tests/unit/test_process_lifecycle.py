@@ -33,7 +33,7 @@ class ProcessLifecycleTests(unittest.TestCase):
 
         self.assertTrue(result.timed_out)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, b"streamed\n")
+        self.assertEqual(result.stdout.replace(b"\r\n", b"\n"), b"streamed\n")
 
 
 if __name__ == "__main__":
