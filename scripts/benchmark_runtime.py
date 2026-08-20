@@ -181,9 +181,48 @@ def _io_blocks() -> tuple[int | None, int | None]:
 
 def _peak_rss_bytes() -> int | None:
     if resource is None:
-        return None
+        return _windows_peak_rss_bytes() if os.name == "nt" else None
     value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return value if sys.platform == "darwin" else value * 1024
+
+
+def _windows_peak_rss_bytes() -> int | None:
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("page_fault_count", wintypes.DWORD),
+            ("peak_working_set_size", ctypes.c_size_t),
+            ("working_set_size", ctypes.c_size_t),
+            ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+            ("quota_paged_pool_usage", ctypes.c_size_t),
+            ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+            ("quota_non_paged_pool_usage", ctypes.c_size_t),
+            ("pagefile_usage", ctypes.c_size_t),
+            ("peak_pagefile_usage", ctypes.c_size_t),
+        ]
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.GetProcessMemoryInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ProcessMemoryCounters),
+            wintypes.DWORD,
+        ]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        if not psapi.GetProcessMemoryInfo(
+            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+        ):
+            return None
+    except (AttributeError, OSError):
+        return None
+    return int(counters.peak_working_set_size)
 
 
 def measure(operation: Callable[[], Any], *, capture_memory: bool) -> dict[str, Any]:
