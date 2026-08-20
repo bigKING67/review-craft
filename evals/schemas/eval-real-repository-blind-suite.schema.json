@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-blind-suite.schema.json",
+  "title": "Treatment-safe real-repository benchmark bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "sourceSuiteSha256", "protocol", "repositories", "contentSha256"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-blind-suite.v1"},
+    "sourceSuiteSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repetitions", "minimumModelConfigurations", "treatments"],
+      "properties": {
+        "repetitions": {"type": "integer", "minimum": 3},
+        "minimumModelConfigurations": {"type": "integer", "minimum": 2},
+        "treatments": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "ORDINARY_PROMPT"},
+            {"const": "RISK_LENS_REVIEW"},
+            {"const": "REVIEW_CRAFT_EVIDENCE_LOOP"}
+          ],
+          "items": false
+        }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "displayName", "ecosystem", "projectType", "remote", "revision", "scope", "probes"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "displayName": {"type": "string", "minLength": 1},
+          "ecosystem": {"type": "string", "minLength": 1},
+          "projectType": {"type": "string", "minLength": 1},
+          "remote": {"type": "string", "format": "uri"},
+          "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "scope": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "probes": {
+            "type": "array",
+            "minItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "publicPrompt"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "publicPrompt": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-materialization.schema.json",
+  "title": "Materialized real-repository source receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "createdAt", "suite", "repositories", "contentSha256"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-materialization.v1"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "sha256", "fullSuite", "selectedRepositoryIds"],
+      "properties": {
+        "artifact": {"const": "suite.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fullSuite": {"type": "boolean"},
+        "selectedRepositoryIds": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "remote", "revision", "tree", "fixRevision", "fixParentVerified", "scope", "checkout"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "remote": {"type": "string", "format": "uri"},
+          "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "fixRevision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "fixParentVerified": {"const": true},
+          "scope": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "checkout": {"type": "string", "pattern": "^repositories/[a-z][a-z0-9-]+$"}
+        }
+      }
+    },
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -16,7 +16,7 @@
         "required": ["id", "kind", "path", "sha256", "sizeBytes", "mediaType", "producer", "description", "registeredAt"],
         "properties": {
           "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
-          "kind": {"enum": ["source", "check", "test", "build", "runtime", "benchmark", "profile", "trace", "other"]},
+          "kind": {"enum": ["source", "check", "test", "build", "runtime", "benchmark", "profile", "trace", "verification", "other"]},
           "path": {"type": "string", "minLength": 1},
           "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
           "sizeBytes": {"type": "integer", "minimum": 0},

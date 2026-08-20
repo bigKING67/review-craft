@@ -37,6 +37,7 @@ REGISTERED_EVIDENCE_KINDS = {
     "benchmark",
     "profile",
     "trace",
+    "verification",
     "other",
 }
 REGISTERED_EVIDENCE_MAX_BYTES = 64 * 1024 * 1024

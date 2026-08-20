@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .assurance import ASSURANCE_LEVELS
 from .constants import PROFILES, REVIEW_MODES, SCORE_DIMENSIONS, SEMANTIC_CLAIM_LEVELS
 from .jsonio import json_pointer_tokens, read_json
 
@@ -16,6 +17,7 @@ DEFAULT_ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
 def default_config() -> dict[str, Any]:
     return {
         "mode": "review",
+        "assuranceLevel": "standard",
         "profile": "auto",
         "focusDimensions": [],
         "diffBase": None,
@@ -44,6 +46,10 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("config.scope: must not be empty")
     if config["mode"] not in REVIEW_MODES:
         raise ValueError(f"config.mode: expected one of {', '.join(sorted(REVIEW_MODES))}")
+    if config["assuranceLevel"] not in ASSURANCE_LEVELS:
+        raise ValueError(
+            f"config.assuranceLevel: expected one of {', '.join(sorted(ASSURANCE_LEVELS))}"
+        )
     if config["profile"] not in PROFILES:
         raise ValueError(f"config.profile: expected one of {', '.join(sorted(PROFILES))}")
     focus_dimensions = config["focusDimensions"]
@@ -60,33 +66,44 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("config.diffBase: expected a non-empty string or null")
     if config["reportLanguage"] != "zh-CN":
         raise ValueError("config.reportLanguage: only zh-CN is supported")
-    commands = config["commands"]
+    _validate_commands(config["commands"])
+
+
+def _validate_commands(commands: Any) -> None:
     if not isinstance(commands, dict):
         raise ValueError("config.commands: expected an object")
     for name, command in commands.items():
-        if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or not isinstance(command, dict):
-            raise ValueError(f"config.commands.{name}: invalid command")
-        unknown_command_fields = set(command) - COMMAND_FIELDS
-        if unknown_command_fields:
-            raise ValueError(
-                f"config.commands.{name}: unsupported fields "
-                f"{', '.join(sorted(unknown_command_fields))}"
-            )
-        argv = command.get("argv")
-        if not isinstance(argv, list) or not argv or not all(
-            isinstance(item, str) and item and "\0" not in item for item in argv
-        ):
-            raise ValueError(f"config.commands.{name}.argv: expected a non-empty string array")
-        cwd = command.get("cwd", ".")
-        if not isinstance(cwd, str) or not cwd:
-            raise ValueError(f"config.commands.{name}.cwd: expected a string")
-        timeout = command.get("timeoutSeconds", 600)
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
-            raise ValueError(
-                f"config.commands.{name}.timeoutSeconds: expected a positive integer"
-            )
-        _validate_evidence_claims(name, command.get("evidenceClaims", []))
-        _validate_evidence_artifacts(name, command.get("artifacts", []))
+        _validate_command(name, command)
+
+
+def _validate_command(name: Any, command: Any) -> None:
+    if (
+        not isinstance(name, str)
+        or re.fullmatch(r"[a-z][a-z0-9_-]*", name) is None
+        or not isinstance(command, dict)
+    ):
+        raise ValueError(f"config.commands.{name}: invalid command")
+    unknown_command_fields = set(command) - COMMAND_FIELDS
+    if unknown_command_fields:
+        raise ValueError(
+            f"config.commands.{name}: unsupported fields "
+            f"{', '.join(sorted(unknown_command_fields))}"
+        )
+    argv = command.get("argv")
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(item, str) and item and "\0" not in item for item in argv)
+    ):
+        raise ValueError(f"config.commands.{name}.argv: expected a non-empty string array")
+    cwd = command.get("cwd", ".")
+    if not isinstance(cwd, str) or not cwd:
+        raise ValueError(f"config.commands.{name}.cwd: expected a string")
+    timeout = command.get("timeoutSeconds", 600)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        raise ValueError(f"config.commands.{name}.timeoutSeconds: expected a positive integer")
+    _validate_evidence_claims(name, command.get("evidenceClaims", []))
+    _validate_evidence_artifacts(name, command.get("artifacts", []))
 
 
 def _valid_evidence_id(value: Any) -> bool:
@@ -122,8 +139,7 @@ def _validate_evidence_claims(command_name: str, claims: Any) -> None:
         identifiers.add(identifier)
         if claim.get("kind") not in SEMANTIC_CLAIM_LEVELS:
             raise ValueError(
-                f"{field}.kind: expected one of "
-                f"{', '.join(sorted(SEMANTIC_CLAIM_LEVELS))}"
+                f"{field}.kind: expected one of {', '.join(sorted(SEMANTIC_CLAIM_LEVELS))}"
             )
         _validate_pointer(claim.get("jsonPointer"), f"{field}.jsonPointer")
         if "equals" not in claim or isinstance(claim["equals"], (dict, list)):
@@ -184,8 +200,7 @@ def load_config(path: Path | None) -> dict[str, Any]:
                 unknown_policy = set(value) - set(config["policy"])
                 if unknown_policy:
                     raise ValueError(
-                        "config.policy: unsupported fields "
-                        f"{', '.join(sorted(unknown_policy))}"
+                        f"config.policy: unsupported fields {', '.join(sorted(unknown_policy))}"
                     )
                 if not all(isinstance(item, bool) for item in value.values()):
                     raise ValueError("config.policy: expected boolean values")
@@ -199,12 +214,7 @@ def load_config(path: Path | None) -> dict[str, Any]:
 def focus_values(values: list[str] | None) -> list[str]:
     if not values:
         return []
-    requested = {
-        item.strip()
-        for value in values
-        for item in value.split(",")
-        if item.strip()
-    }
+    requested = {item.strip() for value in values for item in value.split(",") if item.strip()}
     valid = [row[0] for row in SCORE_DIMENSIONS]
     unknown = sorted(requested - set(valid))
     if unknown:
@@ -218,10 +228,13 @@ def effective_preflight_config(
     mode: str | None,
     base: str | None,
     focus: list[str] | None,
+    assurance: str | None,
 ) -> tuple[dict[str, Any], str | None]:
     effective = copy.deepcopy(config)
     if mode:
         effective["mode"] = mode
+    if assurance:
+        effective["assuranceLevel"] = assurance
     if base:
         if mode and mode != "diff":
             raise ValueError("--base can only be used with --mode diff")

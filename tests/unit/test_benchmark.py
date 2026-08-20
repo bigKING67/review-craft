@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.benchmark_runtime import sha256_json
 from tests.support import ROOT
 
 BENCHMARK = ROOT / "scripts/benchmark_runtime.py"
@@ -67,6 +69,14 @@ class BenchmarkTests(unittest.TestCase):
                 payload["measurements"][0]["operations"]["preflight"]["memoryScope"],
                 "NOT_CAPTURED_FOR_SUBPROCESS",
             )
+            summary = payload["measurements"][0]["operations"]["inventory"]["summary"]
+            self.assertGreater(summary["p50FilesPerSecond"], 0)
+            self.assertGreater(
+                payload["measurements"][0]["operations"]["inventory"]["samples"][0][
+                    "processPeakRssBytes"
+                ],
+                0,
+            )
             validated = subprocess.run(
                 [
                     sys.executable,
@@ -80,6 +90,47 @@ class BenchmarkTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(validated.returncode, 0, validated.stderr)
+
+            compared = subprocess.run(
+                [
+                    sys.executable,
+                    str(BENCHMARK),
+                    "compare",
+                    "--baseline",
+                    str(result_path),
+                    "--result",
+                    str(result_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            self.assertTrue(json.loads(compared.stdout)["valid"])
+
+            regressed_path = Path(directory) / "regressed.json"
+            regressed = copy.deepcopy(payload)
+            regressed["measurements"][0]["operations"]["inventory"]["summary"]["p50WallMs"] *= 2
+            regressed["contentSha256"] = sha256_json(
+                {key: value for key, value in regressed.items() if key != "contentSha256"}
+            )
+            regressed_path.write_text(json.dumps(regressed) + "\n", encoding="utf-8")
+            failed = subprocess.run(
+                [
+                    sys.executable,
+                    str(BENCHMARK),
+                    "compare",
+                    "--baseline",
+                    str(result_path),
+                    "--result",
+                    str(regressed_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(failed.returncode, 1, failed.stderr)
+            self.assertFalse(json.loads(failed.stdout)["valid"])
 
 
 if __name__ == "__main__":

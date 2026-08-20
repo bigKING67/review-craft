@@ -37,6 +37,21 @@ build scripts, tests, and applicable engineering authority. Then run:
 python3 <skill-root>/scripts/review_craft.py preflight --target <repository>
 ```
 
+Select the canonical assurance contract explicitly when the default `standard` level is
+not appropriate:
+
+```text
+python3 <skill-root>/scripts/review_craft.py preflight \
+  --target <repository> --assurance fast
+
+python3 <skill-root>/scripts/review_craft.py preflight \
+  --target <repository> --assurance assured
+```
+
+`fast` fails closed when the eligible inventory exceeds 200 files and later enforces a
+three-command and 12-candidate budget. It stays provisional. `assured` requires E3+ and an
+independent verifier artifact before finalization.
+
 For a Git diff or focused review:
 
 ```text
@@ -182,6 +197,13 @@ returned `artifact:<id>` reference in coverage, candidate, finding, validation, 
 scorecard evidence. A source path written directly into canonical evidence is not a
 registered artifact. Unknown IDs, path-style references, missing copies, symlinks,
 path drift, size drift, and content drift fail validation.
+
+For `assured`, create one JSON document matching
+`schemas/assurance-verification.schema.json`, bind it to the run ID and source fingerprint,
+and list every canonical finding in canonical order. The verifier must be independent and
+each disposition must be `AGREED`; `FALSIFIED`, `BLOCKED`, missing findings, or verifier
+unverified claims prevent finalization. Register it with `--kind verification`, then cite
+the returned artifact reference through the derived scorecard assurance state.
 
 If a command mutates tracked or untracked target source, stop automatic execution,
 report the mutation, and do not revert user work.

@@ -235,9 +235,7 @@ def _delivery_finding_errors(
             changed_paths.intersection(selections[result["findingId"]]["locationPaths"])
         )
         if result["locationPathsChanged"] != expected_locations:
-            errors.append(
-                f"{attempt_id}: finding {result['findingId']} changed locations mismatch"
-            )
+            errors.append(f"{attempt_id}: finding {result['findingId']} changed locations mismatch")
     return errors
 
 
@@ -377,57 +375,8 @@ def validate_attempt_delivery_source(
     attempt_ids = [row["attemptId"] for row in rows]
     if len(attempt_ids) != len(set(attempt_ids)):
         errors.append("delivery source attempt ids must be unique")
-    attempts: list[dict[str, Any]] = []
-    projections: list[dict[str, Any]] = []
-    previous: dict[str, Any] | None = None
-    for sequence, row in enumerate(rows, 1):
-        attempt_id = row["attemptId"]
-        root = f"source/attempts/{attempt_id}"
-        manifest = _read_artifact(
-            delivery_dir,
-            row["manifest"],
-            expected_path=f"{root}/attempt-manifest.json",
-            schema_name="fix-attempt-manifest.schema.json",
-        )
-        evidence = _read_artifact(
-            delivery_dir,
-            row["evidence"],
-            expected_path=f"{root}/attempt-evidence.json",
-            schema_name="fix-attempt-evidence.schema.json",
-        )
-        assessment = _read_artifact(
-            delivery_dir,
-            row["assessment"],
-            expected_path=f"{root}/fix-assessment.json",
-            schema_name="fix-attempt-assessment.schema.json",
-        )
-        verification = _read_artifact(
-            delivery_dir,
-            row["verification"],
-            expected_path=f"{root}/attempt-verification.json",
-            schema_name="fix-attempt-verification.schema.json",
-        )
-        if manifest["attemptId"] != attempt_id:
-            errors.append(f"{attempt_id}: manifest attemptId does not match artifact row")
-        attempt = {
-            "manifest": manifest,
-            "evidence": evidence,
-            "assessment": assessment,
-            "verification": verification,
-        }
-        attempt_errors, projection = _validate_attempt_documents(
-            plan=plan,
-            manifest=manifest,
-            evidence=evidence,
-            assessment=assessment,
-            verification=verification,
-            previous=previous,
-            sequence=sequence,
-        )
-        errors.extend(attempt_errors)
-        attempts.append(attempt)
-        projections.append(projection)
-        previous = attempt
+    attempts, projections, attempt_errors = _load_delivery_attempts(delivery_dir, plan, rows)
+    errors.extend(attempt_errors)
 
     latest = projections[-1] if projections else None
     if latest is None:
@@ -482,9 +431,7 @@ def validate_attempt_delivery_source(
         }
         for field, expected in expected_fix.items():
             if fix[field] != expected:
-                errors.append(
-                    f"delivery fix.{field}: does not match copied attempt lineage"
-                )
+                errors.append(f"delivery fix.{field}: does not match copied attempt lineage")
         if lineage["latestAttemptId"] != manifest["attemptId"]:
             errors.append("delivery selected attempt is not the latest lineage attempt")
         if verification["status"] != "VERIFIED":
@@ -500,3 +447,63 @@ def validate_attempt_delivery_source(
         "attempts": attempts,
         "verification": selected["verification"],
     }
+
+
+def _load_delivery_attempts(
+    delivery_dir: Path,
+    plan: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    attempts: list[dict[str, Any]] = []
+    projections: list[dict[str, Any]] = []
+    errors: list[str] = []
+    previous: dict[str, Any] | None = None
+    for sequence, row in enumerate(rows, 1):
+        attempt_id = row["attemptId"]
+        root = f"source/attempts/{attempt_id}"
+        manifest = _read_artifact(
+            delivery_dir,
+            row["manifest"],
+            expected_path=f"{root}/attempt-manifest.json",
+            schema_name="fix-attempt-manifest.schema.json",
+        )
+        evidence = _read_artifact(
+            delivery_dir,
+            row["evidence"],
+            expected_path=f"{root}/attempt-evidence.json",
+            schema_name="fix-attempt-evidence.schema.json",
+        )
+        assessment = _read_artifact(
+            delivery_dir,
+            row["assessment"],
+            expected_path=f"{root}/fix-assessment.json",
+            schema_name="fix-attempt-assessment.schema.json",
+        )
+        verification = _read_artifact(
+            delivery_dir,
+            row["verification"],
+            expected_path=f"{root}/attempt-verification.json",
+            schema_name="fix-attempt-verification.schema.json",
+        )
+        if manifest["attemptId"] != attempt_id:
+            errors.append(f"{attempt_id}: manifest attemptId does not match artifact row")
+        attempt = {
+            "manifest": manifest,
+            "evidence": evidence,
+            "assessment": assessment,
+            "verification": verification,
+        }
+        attempt_errors, projection = _validate_attempt_documents(
+            plan=plan,
+            manifest=manifest,
+            evidence=evidence,
+            assessment=assessment,
+            verification=verification,
+            previous=previous,
+            sequence=sequence,
+        )
+        errors.extend(attempt_errors)
+        attempts.append(attempt)
+        projections.append(projection)
+        previous = attempt
+    return attempts, projections, errors

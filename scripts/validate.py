@@ -40,9 +40,20 @@ REQUIRED_FILES = (
     "skills/review-craft/SKILL.md",
     "skills/review-craft/VERSION",
     "skills/review-craft/agents/openai.yaml",
+    "skills/review-craft/lib/review_craft/assurance.py",
     "skills/review-craft/lib/review_craft/attempt_delivery.py",
     "skills/review-craft/lib/review_craft/attempt_delivery_validation.py",
+    "skills/review-craft/lib/review_craft/cli.py",
+    "skills/review-craft/lib/review_craft/cli_common.py",
+    "skills/review-craft/lib/review_craft/cli_delivery.py",
+    "skills/review-craft/lib/review_craft/cli_doctor.py",
+    "skills/review-craft/lib/review_craft/cli_evidence.py",
+    "skills/review-craft/lib/review_craft/cli_parser.py",
+    "skills/review-craft/lib/review_craft/cli_remediation.py",
+    "skills/review-craft/lib/review_craft/cli_review.py",
     "skills/review-craft/lib/review_craft/configuration.py",
+    "skills/review-craft/lib/review_craft/contract_core.py",
+    "skills/review-craft/lib/review_craft/contracts.py",
     "skills/review-craft/lib/review_craft/delivery.py",
     "skills/review-craft/lib/review_craft/delivery_contract.py",
     "skills/review-craft/lib/review_craft/delivery_validation.py",
@@ -57,10 +68,14 @@ REQUIRED_FILES = (
     "skills/review-craft/lib/review_craft/remediation_contract.py",
     "skills/review-craft/lib/review_craft/remediation_validation.py",
     "skills/review-craft/lib/review_craft/repository_analysis.py",
+    "skills/review-craft/lib/review_craft/review_validation.py",
+    "skills/review-craft/lib/review_craft/run_evidence_validation.py",
     "skills/review-craft/lib/review_craft/semantic_evidence.py",
     "skills/review-craft/lib/review_craft/score_validation.py",
     "skills/review-craft/references/modes-and-profiles.md",
+    "skills/review-craft/references/protocol-lifecycle.md",
     "skills/review-craft/references/remediation.md",
+    "skills/review-craft/schemas/assurance-verification.schema.json",
     "skills/review-craft/schemas/dependency-map.schema.json",
     "skills/review-craft/schemas/delivery-attestation.schema.json",
     "skills/review-craft/schemas/delivery-attestation-v2.schema.json",
@@ -84,6 +99,14 @@ REQUIRED_FILES = (
     "evals/prompts/remediation-review-craft.md",
     "evals/prompts/remediation-repair.md",
     "evals/schemas/eval-adapter.schema.json",
+    "evals/schemas/eval-real-repository-adapters.schema.json",
+    "evals/schemas/eval-real-repository-adjudication.schema.json",
+    "evals/schemas/eval-real-repository-blind-suite.schema.json",
+    "evals/schemas/eval-real-repository-campaign.schema.json",
+    "evals/schemas/eval-real-repository-materialization.schema.json",
+    "evals/schemas/eval-real-repository-output.schema.json",
+    "evals/schemas/eval-real-repository-stability.schema.json",
+    "evals/schemas/eval-real-repository-suite.schema.json",
     "evals/schemas/eval-ablation-adjudication-result.schema.json",
     "evals/schemas/eval-ablation-adjudication-result-v2.schema.json",
     "evals/schemas/eval-ablation-adjudication.schema.json",
@@ -118,11 +141,16 @@ REQUIRED_FILES = (
     "evals/specs/self-correction-cases.json",
     "evals/specs/remediation-safety-cases.json",
     "evals/specs/routing-cases.json",
+    "evals/specs/real-repositories.json",
     "evals/verifiers/verify_case.py",
     "evals/verifiers/verify_remediation_case.py",
     "evals/remediation-safety/README.md",
     "evals/routing-results/README.md",
     "evals/ablation-results/README.md",
+    "evals/real-repositories/README.md",
+    "evals/real-repositories/current/blind-suite.json",
+    "evals/real-repositories/current/materialization.json",
+    "evals/real-repositories/verifiers/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
     "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
     "scripts/codex_eval_adapter.py",
@@ -131,6 +159,8 @@ REQUIRED_FILES = (
     "scripts/eval_contracts.py",
     "scripts/package_check.py",
     "scripts/package_e2e_fixture.py",
+    "scripts/real_repository_benchmark.py",
+    "scripts/real_repository_contracts.py",
     "scripts/release_gate.py",
     "scripts/remediation_safety.py",
     "scripts/routing_eval.py",
@@ -223,6 +253,15 @@ def validate_schemas(errors: list[str]) -> None:
     if cases_schema_path.exists():
         schema = schemas.get("eval-cases.schema.json")
         from eval_contracts import validate_eval_suite
+        from real_repository_contracts import (
+            validate_blind_suite as validate_real_repository_blind_suite,
+        )
+        from real_repository_contracts import (
+            validate_materialization_receipt,
+        )
+        from real_repository_contracts import (
+            validate_suite as validate_real_repository_suite,
+        )
         from remediation_safety import validate_remediation_suite
         from routing_eval import validate_routing_suite
 
@@ -230,12 +269,16 @@ def validate_schemas(errors: list[str]) -> None:
             cases = json.loads(cases_path.read_text(encoding="utf-8"))
             remediation = cases.get("schema") == "review-craft.eval-remediation-cases.v1"
             routing = cases.get("schema") == "review-craft.eval-routing-cases.v1"
+            real_repository = cases.get("schema") == "review-craft.eval-real-repository-suite.v1"
             if remediation:
                 selected_schema = schemas.get("eval-remediation-cases.schema.json")
                 validator = validate_remediation_suite
             elif routing:
                 selected_schema = schemas.get("eval-routing-cases.schema.json")
                 validator = validate_routing_suite
+            elif real_repository:
+                selected_schema = schemas.get("eval-real-repository-suite.schema.json")
+                validator = validate_real_repository_suite
             else:
                 selected_schema = schema
                 validator = validate_eval_suite
@@ -246,11 +289,20 @@ def validate_schemas(errors: list[str]) -> None:
                 )
                 for error in case_errors:
                     location = ".".join(str(part) for part in error.path) or "<root>"
-                    errors.append(
-                        f"{cases_path.relative_to(ROOT)}:{location}: {error.message}"
-                    )
+                    errors.append(f"{cases_path.relative_to(ROOT)}:{location}: {error.message}")
             for error in validator(cases):
                 errors.append(f"{cases_path.relative_to(ROOT)}:{error}")
+        real_suite_path = ROOT / "evals/specs/real-repositories.json"
+        blind_path = ROOT / "evals/real-repositories/current/blind-suite.json"
+        materialization_path = ROOT / "evals/real-repositories/current/materialization.json"
+        if real_suite_path.exists() and blind_path.exists() and materialization_path.exists():
+            suite = json.loads(real_suite_path.read_text(encoding="utf-8"))
+            blind = json.loads(blind_path.read_text(encoding="utf-8"))
+            receipt = json.loads(materialization_path.read_text(encoding="utf-8"))
+            for error in validate_real_repository_blind_suite(blind, suite):
+                errors.append(f"{blind_path.relative_to(ROOT)}:{error}")
+            for error in validate_materialization_receipt(receipt, suite):
+                errors.append(f"{materialization_path.relative_to(ROOT)}:{error}")
     from eval_contracts import validate_ablation_snapshot, validate_golden_snapshot
 
     golden_root = ROOT / "evals/golden-results"
@@ -282,15 +334,11 @@ def validate_versions(errors: list[str]) -> None:
     pyproject_version = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', pyproject, re.M)
     values = {
         "VERSION": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
-        "skill VERSION": (ROOT / "skills/review-craft/VERSION").read_text(
-            encoding="utf-8"
-        ).strip(),
-        "package.json": json.loads((ROOT / "package.json").read_text(encoding="utf-8"))[
+        "skill VERSION": (ROOT / "skills/review-craft/VERSION").read_text(encoding="utf-8").strip(),
+        "package.json": json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"],
+        "plugin.json": json.loads((ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))[
             "version"
         ],
-        "plugin.json": json.loads(
-            (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
-        )["version"],
         "pyproject.toml": pyproject_version.group(1) if pyproject_version else None,
         "runtime": __version__,
         "runtime constants": CONSTANT_VERSION,

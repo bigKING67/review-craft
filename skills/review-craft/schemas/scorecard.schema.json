@@ -15,10 +15,48 @@
     "accountedPercent": {"type": "number", "minimum": 0, "maximum": 100},
     "reviewedPercent": {"type": "number", "minimum": 0, "maximum": 100},
     "unresolvedCandidates": {"type": "integer", "minimum": 0},
+    "assurance": {"$ref": "#/$defs/assurance"},
     "dimensions": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/dimension"}},
     "total": {"type": "integer", "minimum": 0, "maximum": 100}
   },
   "$defs": {
+    "assurance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "completionStatus", "budget", "verifier", "unverifiedClaims", "skippedDimensions"],
+      "properties": {
+        "level": {"enum": ["fast", "standard", "assured"]},
+        "completionStatus": {"enum": ["COMPLETE", "PARTIAL"]},
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxEligibleFiles", "maxEvidenceCommands", "maxCandidates", "eligibleFiles", "evidenceCommands", "candidates"],
+          "properties": {
+            "maxEligibleFiles": {"type": ["integer", "null"], "minimum": 0},
+            "maxEvidenceCommands": {"type": ["integer", "null"], "minimum": 0},
+            "maxCandidates": {"type": ["integer", "null"], "minimum": 0},
+            "eligibleFiles": {"type": "integer", "minimum": 0},
+            "evidenceCommands": {"type": "integer", "minimum": 0},
+            "candidates": {"type": "integer", "minimum": 0}
+          }
+        },
+        "verifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "status", "evidenceRef"],
+          "properties": {
+            "required": {"type": "boolean"},
+            "status": {"enum": ["NOT_REQUIRED", "MISSING", "VERIFIED"]},
+            "evidenceRef": {"type": ["string", "null"], "pattern": "^artifact:[a-z0-9][a-z0-9._-]{0,127}$"}
+          }
+        },
+        "unverifiedClaims": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "skippedDimensions": {
+          "type": "array",
+          "items": {"enum": ["correctness", "architecture", "maintainability", "performance", "codeQuality", "testing", "dependenciesSecurity", "repositoryExperience"]}
+        }
+      }
+    },
     "dimension": {
       "type": "object",
       "additionalProperties": false,

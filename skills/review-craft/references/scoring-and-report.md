@@ -49,6 +49,11 @@ but never presented as reviewed. `PENDING`, `DEFERRED`, `UNREADABLE`, and
 `OUT_OF_SCOPE` review gaps prevent a final score. Do not deduct for an explicit
 non-goal. Do not inflate a score merely because source files, schemas, or tests exist.
 
+Canonical `fast` assurance is always provisional and capped at E2 even when its bounded
+scope is fully accounted. `assured` is final only with E3+ evidence, no unverified claims,
+and one valid independent verification artifact covering every canonical finding. The
+finalizer derives the assurance block; do not hand-author completion or verifier status.
+
 ## Evidence levels
 
 - E0: description or documentation only; no formal score.
@@ -94,6 +99,9 @@ from scorecard deduction references beginning with `evidence-gap:`; remaining ri
 from `quality-model.json.unknowns`. Verified semantic claims and copied command artifacts
 are listed from canonical command receipts. Current run.v4 reports also list every
 registered `artifact:<id>` with kind, producer, SHA-256, and byte size.
+Current reports also project assurance level, completion status, budget consumption,
+verifier status, unverified claims, and skipped dimensions. These fields distinguish a
+complete standard or assured review from a bounded provisional run.
 
 `reportLanguage: zh-CN` requires human-facing canonical text such as finding rationale,
 target architecture, phase scope, benefits, risks, and acceptance criteria to be authored

@@ -28,6 +28,7 @@ already-appropriate code.
   manual artifacts; sealed run.v3 is validation-only historical data. The runtime never
   edits source, commits, pushes, or publishes, and does not support deep multi-pass or
   historical comparison.
+- Assurance is `fast` (budgeted/provisional), `standard`, or `assured` (E3+, no unresolved claims, and independent registered verification covering every finding).
 
 ## Authority and trust
 
@@ -98,8 +99,7 @@ cannot be resolved from this file and the target's scoped controls.
 - `focus`: keep repository coverage explicit while limiting claims and findings to
   selected canonical dimensions.
 
-Read [modes-and-profiles.md](references/modes-and-profiles.md) before using `diff`,
-`focus`, or an explicit project profile.
+Read [modes-and-profiles.md](references/modes-and-profiles.md) before `diff`, `focus`, an explicit profile, or non-default assurance; read [protocol-lifecycle.md](references/protocol-lifecycle.md) for legacy formats.
 
 ## Bounded review fast path
 

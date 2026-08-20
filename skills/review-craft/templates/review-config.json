@@ -1,6 +1,7 @@
 {
   "$schema": "./skills/review-craft/schemas/config.schema.json",
   "mode": "review",
+  "assuranceLevel": "standard",
   "profile": "auto",
   "focusDimensions": [],
   "diffBase": null,

@@ -59,6 +59,45 @@ def register_evidence(
     max_bytes: int = REGISTERED_EVIDENCE_MAX_BYTES,
 ) -> dict[str, Any]:
     run_dir = Path(run_dir_value).expanduser().resolve(strict=True)
+    source = _validate_registration_input(
+        source_value,
+        identifier=identifier,
+        kind=kind,
+        producer=producer,
+        description=description,
+        media_type=media_type,
+        max_bytes=max_bytes,
+    )
+
+    with exclusive_file_lock(
+        run_dir,
+        name=REGISTRY_LOCK,
+        wait_seconds=30,
+        timeout_message="timed out waiting for the evidence registry lock",
+    ):
+        return _register_locked(
+            run_dir,
+            source=source,
+            identifier=identifier,
+            kind=kind,
+            producer=producer,
+            description=description,
+            media_type=media_type,
+            registered_at=registered_at,
+            max_bytes=max_bytes,
+        )
+
+
+def _validate_registration_input(
+    source_value: str | Path,
+    *,
+    identifier: str,
+    kind: str,
+    producer: str,
+    description: str,
+    media_type: str,
+    max_bytes: int,
+) -> Path:
     source_path = Path(source_value).expanduser()
     if source_path.is_symlink():
         raise ValueError("--source: expected a regular non-symlink file")
@@ -82,55 +121,59 @@ def register_evidence(
         raise ValueError("--source: expected a regular non-symlink file")
     source_size = source.stat().st_size
     if source_size > max_bytes:
-        raise ValueError(
-            f"registered evidence exceeds --max-bytes: {source_size} > {max_bytes}"
-        )
+        raise ValueError(f"registered evidence exceeds --max-bytes: {source_size} > {max_bytes}")
+    return source
 
-    with exclusive_file_lock(
-        run_dir,
-        name=REGISTRY_LOCK,
-        wait_seconds=30,
-        timeout_message="timed out waiting for the evidence registry lock",
-    ):
-        manifest = read_json(_canonical_file(run_dir, "review-manifest.json"))
-        if manifest.get("schemaVersion") != SCHEMA_VERSION:
-            raise ValueError("register-evidence requires a current run.v4 review")
-        if manifest.get("status") != "draft" or manifest.get("sealedAt") is not None:
-            raise ValueError("register-evidence requires an unsealed draft review")
-        if manifest.get("artifacts") != ARTIFACT_PATHS:
-            raise ValueError("review manifest does not declare the current canonical artifact map")
 
-        registry_path = run_dir / ARTIFACT_PATHS["evidenceRegistry"]
-        registry = read_json(_canonical_file(run_dir, ARTIFACT_PATHS["evidenceRegistry"]))
-        rows = registry.get("artifacts")
-        if not isinstance(rows, list):
-            raise ValueError("evidence registry artifacts must be an array")
-        if any(isinstance(row, dict) and row.get("id") == identifier for row in rows):
-            raise ValueError(f"registered evidence id already exists: {identifier}")
+def _register_locked(
+    run_dir: Path,
+    *,
+    source: Path,
+    identifier: str,
+    kind: str,
+    producer: str,
+    description: str,
+    media_type: str,
+    registered_at: str,
+    max_bytes: int,
+) -> dict[str, Any]:
+    manifest = read_json(_canonical_file(run_dir, "review-manifest.json"))
+    if manifest.get("schemaVersion") != SCHEMA_VERSION:
+        raise ValueError("register-evidence requires a current run.v4 review")
+    if manifest.get("status") != "draft" or manifest.get("sealedAt") is not None:
+        raise ValueError("register-evidence requires an unsealed draft review")
+    if manifest.get("artifacts") != ARTIFACT_PATHS:
+        raise ValueError("review manifest does not declare the current canonical artifact map")
 
-        content = source.read_bytes()
-        if len(content) > max_bytes:
-            raise ValueError(
-                f"registered evidence exceeds --max-bytes: {len(content)} > {max_bytes}"
-            )
-        relative = registered_artifact_path(identifier)
-        target = run_dir / relative
-        if target.exists() or target.is_symlink():
-            raise ValueError(f"registered evidence target already exists: {relative}")
-        _prepare_target_parent(run_dir, target)
+    registry_path = run_dir / ARTIFACT_PATHS["evidenceRegistry"]
+    registry = read_json(_canonical_file(run_dir, ARTIFACT_PATHS["evidenceRegistry"]))
+    rows = registry.get("artifacts")
+    if not isinstance(rows, list):
+        raise ValueError("evidence registry artifacts must be an array")
+    if any(isinstance(row, dict) and row.get("id") == identifier for row in rows):
+        raise ValueError(f"registered evidence id already exists: {identifier}")
 
-        entry = {
-            "id": identifier,
-            "kind": kind,
-            "path": relative,
-            "sha256": sha256_bytes(content),
-            "sizeBytes": len(content),
-            "mediaType": media_type.strip(),
-            "producer": producer.strip(),
-            "description": description.strip(),
-            "registeredAt": registered_at,
-        }
-        atomic_write_bytes(target, content, mode=0o600)
-        registry["artifacts"] = sorted([*rows, entry], key=lambda row: row["id"])
-        write_json(registry_path, registry, mode=0o600)
-        return {**entry, "ref": f"artifact:{identifier}"}
+    content = source.read_bytes()
+    if len(content) > max_bytes:
+        raise ValueError(f"registered evidence exceeds --max-bytes: {len(content)} > {max_bytes}")
+    relative = registered_artifact_path(identifier)
+    target = run_dir / relative
+    if target.exists() or target.is_symlink():
+        raise ValueError(f"registered evidence target already exists: {relative}")
+    _prepare_target_parent(run_dir, target)
+
+    entry = {
+        "id": identifier,
+        "kind": kind,
+        "path": relative,
+        "sha256": sha256_bytes(content),
+        "sizeBytes": len(content),
+        "mediaType": media_type.strip(),
+        "producer": producer.strip(),
+        "description": description.strip(),
+        "registeredAt": registered_at,
+    }
+    atomic_write_bytes(target, content, mode=0o600)
+    registry["artifacts"] = sorted([*rows, entry], key=lambda row: row["id"])
+    write_json(registry_path, registry, mode=0o600)
+    return {**entry, "ref": f"artifact:{identifier}"}

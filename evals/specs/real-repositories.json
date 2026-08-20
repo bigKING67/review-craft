@@ -1,0 +1,568 @@
+{
+  "schema": "review-craft.eval-real-repository-suite.v1",
+  "createdAt": "2026-08-20T00:00:00Z",
+  "protocol": {
+    "minimumRepositories": 8,
+    "repetitions": 3,
+    "minimumModelConfigurations": 2,
+    "treatments": [
+      "ORDINARY_PROMPT",
+      "RISK_LENS_REVIEW",
+      "REVIEW_CRAFT_EVIDENCE_LOOP"
+    ],
+    "requiredProbeKinds": [
+      "REAL_FINDING",
+      "KEEP",
+      "DECOY",
+      "MEASUREMENT",
+      "EVIDENCE_GAP"
+    ],
+    "metrics": [
+      "findingOverlap",
+      "rootCauseOverlap",
+      "decisionStability",
+      "severityAgreement",
+      "scoreVariance",
+      "falsePositiveRate",
+      "falsificationAccuracy",
+      "completionRate",
+      "wallTime",
+      "tokenCost",
+      "humanAgreement"
+    ]
+  },
+  "repositories": [
+    {
+      "id": "pypa-sampleproject",
+      "displayName": "PyPA Sample Project",
+      "ecosystem": "python",
+      "projectType": "library",
+      "remote": "https://github.com/pypa/sampleproject.git",
+      "revision": "6a2444b88f48eaa1cf3a2f32fe8bbed8dad82801",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://github.com/pypa/sampleproject/blob/main/LICENSE.txt"
+      },
+      "scope": ["setup.py", "sample", "tests"],
+      "probes": [
+        {
+          "id": "pypa-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential correctness or compatibility defect in the declared packaging scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent mishandles Windows line endings while parsing requirements.",
+          "upstreamFix": {
+            "revision": "ce10821e1391613d14a44a06a07b3d00c18cccf5",
+            "url": "https://github.com/pypa/sampleproject/commit/ce10821e1391613d14a44a06a07b3d00c18cccf5",
+            "title": "Handle Windows line endings correctly in setup.py",
+            "locations": [{"path": "setup.py"}]
+          }
+        },
+        {
+          "id": "pypa-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether the packaging example should be rewritten solely because it uses an older but compatibility-relevant setup path.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP", "DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "Modernity alone is not evidence that a compatibility example should be rewritten."
+        },
+        {
+          "id": "pypa-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: the repository is defective because setup.py exists. Validate or falsify this claim using project evidence.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DEFER"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "File presence is not a defect without a violated compatibility or packaging invariant."
+        },
+        {
+          "id": "pypa-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: requirement parsing is a material packaging performance bottleneck. Determine whether the repository contains sufficient measurements.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REWRITE", "REPLACE"],
+          "rationale": "The pinned repository has no representative performance evidence for that claim."
+        },
+        {
+          "id": "pypa-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: the packaging flow is proven on every supported operating system. Identify whether current host evidence is sufficient.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE", "REWRITE"],
+          "rationale": "Cross-platform support cannot be proven from source inspection alone."
+        }
+      ]
+    },
+    {
+      "id": "pallets-click",
+      "displayName": "Pallets Click",
+      "ecosystem": "python",
+      "projectType": "legacy-compatibility",
+      "remote": "https://github.com/pallets/click.git",
+      "revision": "8c1a0a7abbc1c36f70d1f65f3604acc46c5ce6ab",
+      "license": {
+        "spdx": "BSD-3-Clause",
+        "url": "https://github.com/pallets/click/blob/main/LICENSE.txt"
+      },
+      "scope": ["src/click", "tests"],
+      "probes": [
+        {
+          "id": "click-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential parsing or public-API compatibility defect in the declared scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent mishandles a parameter named help.",
+          "upstreamFix": {
+            "revision": "b67832c2167e5b0ff6764a8c04a0a9087e697b5a",
+            "url": "https://github.com/pallets/click/commit/b67832c2167e5b0ff6764a8c04a0a9087e697b5a",
+            "title": "Fix parsing when a parameter is named help",
+            "locations": [
+              {"path": "src/click/core.py"},
+              {"path": "tests/test_basic.py"},
+              {"path": "tests/test_options.py"}
+            ]
+          }
+        },
+        {
+          "id": "click-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether Click's compatibility-oriented parser should be rewritten solely because core.py is large and branch-heavy.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP", "DEFER"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "Size and branching alone do not establish that a mature public parser should be rewritten."
+        },
+        {
+          "id": "click-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: every branch that preserves legacy CLI behavior is dead code. Validate or falsify this claim.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "Compatibility branches require behavior evidence before removal."
+        },
+        {
+          "id": "click-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: option parsing latency is a material regression. Determine whether representative benchmarks prove it.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REWRITE", "REPLACE"],
+          "rationale": "A performance conclusion needs workload-bound measurement."
+        },
+        {
+          "id": "click-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: terminal and pager behavior is proven equivalent across Windows and POSIX hosts. Assess the evidence boundary.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Source and one host cannot prove terminal parity across supported platforms."
+        }
+      ]
+    },
+    {
+      "id": "sindresorhus-p-limit",
+      "displayName": "p-limit",
+      "ecosystem": "node",
+      "projectType": "library",
+      "remote": "https://github.com/sindresorhus/p-limit.git",
+      "revision": "42599ebbbb1228a5bdab381fcf8f4ac20eb8d551",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://github.com/sindresorhus/p-limit/blob/main/license"
+      },
+      "scope": ["index.js", "index.d.ts", "test.js", "package.json"],
+      "probes": [
+        {
+          "id": "p-limit-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential concurrency or method-binding defect in the declared scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent breaks detached limit.map calls.",
+          "upstreamFix": {
+            "revision": "ef37eb2f372d385883d113803c98ba0bf3828ad1",
+            "url": "https://github.com/sindresorhus/p-limit/commit/ef37eb2f372d385883d113803c98ba0bf3828ad1",
+            "title": "Fix detached limit.map calls",
+            "locations": [{"path": "index.js"}, {"path": "test.js"}]
+          }
+        },
+        {
+          "id": "p-limit-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether the bounded queue implementation should be replaced with worker threads solely because it is compact and event-loop based.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "The event-loop design is aligned with the library's scope absent contrary requirements."
+        },
+        {
+          "id": "p-limit-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: use of promises proves that queued work executes concurrently without a limit. Validate or falsify this claim.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP"],
+          "forbiddenDecisions": ["REWRITE", "REPLACE"],
+          "rationale": "Promise usage alone does not bypass the limiter."
+        },
+        {
+          "id": "p-limit-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: queue scheduling overhead is a production bottleneck. Determine whether representative measurements support the claim.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REWRITE", "REPLACE"],
+          "rationale": "The claim requires workload-specific measurement."
+        },
+        {
+          "id": "p-limit-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: async context propagation is correct for every supported Node.js version. Determine what runtime evidence is missing.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Cross-version async behavior requires version-bound runtime evidence."
+        }
+      ]
+    },
+    {
+      "id": "expressjs-express",
+      "displayName": "Express",
+      "ecosystem": "node",
+      "projectType": "legacy-compatibility",
+      "remote": "https://github.com/expressjs/express.git",
+      "revision": "59e205a57a04fced6bb7b8ec0b5dec29461a9996",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://github.com/expressjs/express/blob/master/LICENSE"
+      },
+      "scope": ["lib", "test", "package.json"],
+      "probes": [
+        {
+          "id": "express-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential HTTP response correctness defect in the declared scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent can add Content-Length when Transfer-Encoding is already present.",
+          "upstreamFix": {
+            "revision": "18e5985b8a9d5e8423db0a9121f22bdaecd5b120",
+            "url": "https://github.com/expressjs/express/commit/18e5985b8a9d5e8423db0a9121f22bdaecd5b120",
+            "title": "Add Content-Length only if Transfer-Encoding is not present",
+            "locations": [{"path": "lib/response.js"}, {"path": "test/res.send.js"}]
+          }
+        },
+        {
+          "id": "express-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether callback middleware compatibility should be rewritten wholesale to async functions solely for modernity.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP", "DEFER"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "A broad rewrite needs migration and compatibility evidence, not style preference."
+        },
+        {
+          "id": "express-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: legacy HTTP branches are unreachable because modern Node.js exists. Validate or falsify this claim.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "Supported compatibility behavior cannot be declared unreachable without call and version evidence."
+        },
+        {
+          "id": "express-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: response serialization is the dominant request latency. Determine whether repository measurements prove the claim.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REWRITE", "REPLACE"],
+          "rationale": "End-to-end request latency requires representative profiling."
+        },
+        {
+          "id": "express-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: HTTP behavior is identical across all supported Node.js releases and proxies. Assess the available evidence.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Source review cannot prove the full runtime and intermediary matrix."
+        }
+      ]
+    },
+    {
+      "id": "electron-react-boilerplate",
+      "displayName": "Electron React Boilerplate",
+      "ecosystem": "electron",
+      "projectType": "desktop",
+      "remote": "https://github.com/electron-react-boilerplate/electron-react-boilerplate.git",
+      "revision": "7714bcdd66211f7dafc6c866c1c54e151712e459",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://github.com/electron-react-boilerplate/electron-react-boilerplate/blob/main/LICENSE"
+      },
+      "scope": ["package.json", "src/main", "src/renderer", ".erb"],
+      "probes": [
+        {
+          "id": "electron-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential build-to-main-process argument propagation defect in the declared scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent does not pass MAIN_ARGS correctly into main.ts.",
+          "upstreamFix": {
+            "revision": "318a4a404419aa887848fd50f19d45a640471472",
+            "url": "https://github.com/electron-react-boilerplate/electron-react-boilerplate/commit/318a4a404419aa887848fd50f19d45a640471472",
+            "title": "Pass MAIN_ARGS into main.ts correctly",
+            "locations": [{"path": "package.json"}]
+          }
+        },
+        {
+          "id": "electron-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether the separate main, preload, and renderer boundaries should be merged solely to reduce directory count.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP"],
+          "forbiddenDecisions": ["MERGE", "REWRITE"],
+          "rationale": "Electron process boundaries are security and lifecycle boundaries, not incidental folders."
+        },
+        {
+          "id": "electron-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: every build-script environment variable is an exposed renderer secret. Validate or falsify this claim using actual data flow.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "A variable name is not proof of renderer exposure; the data flow must be traced."
+        },
+        {
+          "id": "electron-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: the webpack build is unacceptably slow. Determine whether representative cold and warm build measurements exist.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "Build performance needs reproducible cold and warm measurements."
+        },
+        {
+          "id": "electron-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: packaging, signing, and lifecycle behavior is proven on macOS, Windows, and Linux. Assess the evidence boundary.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Cross-platform packaged behavior requires exact native artifacts and host evidence."
+        }
+      ]
+    },
+    {
+      "id": "julienschmidt-httprouter",
+      "displayName": "HttpRouter",
+      "ecosystem": "go",
+      "projectType": "library",
+      "remote": "https://github.com/julienschmidt/httprouter.git",
+      "revision": "ef8578da8d8e1217ea44313b23edf46154b198ab",
+      "license": {
+        "spdx": "BSD-3-Clause",
+        "url": "https://github.com/julienschmidt/httprouter/blob/master/LICENSE"
+      },
+      "scope": ["router.go", "tree.go", "router_test.go", "tree_test.go"],
+      "probes": [
+        {
+          "id": "httprouter-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential automatic OPTIONS or allowed-method correctness defect in the declared scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent reports OPTIONS as allowed even when HandleOPTIONS is disabled.",
+          "upstreamFix": {
+            "revision": "484018016424d215c0b87c42f4c9b57d980fbd00",
+            "url": "https://github.com/julienschmidt/httprouter/commit/484018016424d215c0b87c42f4c9b57d980fbd00",
+            "title": "Append MethodOptions only when HandleOPTIONS is true",
+            "locations": [{"path": "router.go"}]
+          }
+        },
+        {
+          "id": "httprouter-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether the trie router should be replaced with regular expressions solely for local readability.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "The trie is a core algorithmic design and replacement needs behavioral and performance evidence."
+        },
+        {
+          "id": "httprouter-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: explicit redirect handling duplicates net/http and is therefore dead code. Validate or falsify this claim.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "Repository-specific route correction behavior is not proven dead by standard-library overlap."
+        },
+        {
+          "id": "httprouter-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: route lookup regressed materially. Determine whether benchmark evidence for representative route shapes exists.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "Algorithmic concern is not a measured regression."
+        },
+        {
+          "id": "httprouter-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: behavior is proven across all supported Go versions and HTTP server integrations. Assess the evidence boundary.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Cross-version and integration claims require a declared test matrix."
+        }
+      ]
+    },
+    {
+      "id": "sharkdp-bat",
+      "displayName": "bat",
+      "ecosystem": "rust",
+      "projectType": "cli",
+      "remote": "https://github.com/sharkdp/bat.git",
+      "revision": "0230cba42d2f1089e232930aae9fccc5ec49cfa3",
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://github.com/sharkdp/bat/blob/master/LICENSE-APACHE"
+      },
+      "scope": ["src/preprocessor.rs", "tests", "Cargo.toml"],
+      "probes": [
+        {
+          "id": "bat-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential sanitization defect in the declared preprocessing scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent passes through three bidirectional-control characters during sanitization.",
+          "upstreamFix": {
+            "revision": "c2cc79daa747bbbfcdec22bf1eea95a1d1ef8aa2",
+            "url": "https://github.com/sharkdp/bat/commit/c2cc79daa747bbbfcdec22bf1eea95a1d1ef8aa2",
+            "title": "Sanitize U+200E, U+200F, and U+061C",
+            "locations": [{"path": "src/preprocessor.rs"}]
+          }
+        },
+        {
+          "id": "bat-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether streaming preprocessing should be replaced with full-file buffering solely to simplify control flow.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP", "DEFER"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "Buffering changes memory and streaming behavior and requires measured justification."
+        },
+        {
+          "id": "bat-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: every Unicode control character must be deleted from output regardless of context. Validate or falsify this claim.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "Sanitization policy must be bound to threat and rendering behavior, not a universal character ban."
+        },
+        {
+          "id": "bat-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: sanitization dominates rendering time for large files. Determine whether profiles support the claim.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "A hot-path claim requires profiles over representative content."
+        },
+        {
+          "id": "bat-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: terminal rendering and sanitization are proven equivalent across terminal emulators and operating systems. Assess the evidence boundary.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Terminal-specific behavior requires host and emulator evidence."
+        }
+      ]
+    },
+    {
+      "id": "spring-petclinic",
+      "displayName": "Spring Petclinic",
+      "ecosystem": "jvm",
+      "projectType": "service",
+      "remote": "https://github.com/spring-projects/spring-petclinic.git",
+      "revision": "bb37aad8c332264723817d855e8b3b96b7c392bc",
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://github.com/spring-projects/spring-petclinic/blob/main/LICENSE.txt"
+      },
+      "scope": ["src/main", "src/test", "pom.xml"],
+      "probes": [
+        {
+          "id": "petclinic-real-finding",
+          "kind": "REAL_FINDING",
+          "publicPrompt": "Find the most consequential PostgreSQL schema initialization defect in the declared scope. Do not assume that a defect exists.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["CLEAN_UP"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "The pinned parent can attempt to create the unique_owner_pet_name relation twice.",
+          "upstreamFix": {
+            "revision": "88e37c15cf6fc8490b01bc3e8e2c800cec1ac272",
+            "url": "https://github.com/spring-projects/spring-petclinic/commit/88e37c15cf6fc8490b01bc3e8e2c800cec1ac272",
+            "title": "Fix duplicate unique_owner_pet_name relation creation",
+            "locations": [{"path": "src/main/resources/db/postgres/schema.sql"}]
+          }
+        },
+        {
+          "id": "petclinic-keep",
+          "kind": "KEEP",
+          "publicPrompt": "Decide whether the layered MVC sample should be rewritten to a reactive architecture solely because reactive APIs are newer.",
+          "expectedDispositions": ["VALIDATED"],
+          "expectedDecisions": ["KEEP", "DEFER"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "Architecture replacement requires product and workload evidence, not modernity preference."
+        },
+        {
+          "id": "petclinic-decoy",
+          "kind": "DECOY",
+          "publicPrompt": "Claim: SQL schema files are dead code because an ORM is present. Validate or falsify this claim using startup and deployment paths.",
+          "expectedDispositions": ["FALSIFIED"],
+          "expectedDecisions": ["KEEP", "DOCUMENT"],
+          "forbiddenDecisions": ["DELETE", "REWRITE"],
+          "rationale": "ORM use does not prove that explicit schema initialization is unused."
+        },
+        {
+          "id": "petclinic-measure",
+          "kind": "MEASUREMENT",
+          "publicPrompt": "Claim: owner search is a production database bottleneck. Determine whether query plans and representative measurements prove the claim.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["MEASURE"],
+          "forbiddenDecisions": ["REPLACE", "REWRITE"],
+          "rationale": "Database performance requires data-volume and query-plan evidence."
+        },
+        {
+          "id": "petclinic-evidence-gap",
+          "kind": "EVIDENCE_GAP",
+          "publicPrompt": "Claim: schema initialization is proven equivalent across H2, MySQL, and PostgreSQL. Assess the available evidence.",
+          "expectedDispositions": ["BLOCKED"],
+          "expectedDecisions": ["DEFER", "DOCUMENT"],
+          "forbiddenDecisions": ["KEEP", "DELETE"],
+          "rationale": "Cross-database behavior requires database-specific runtime evidence."
+        }
+      ]
+    }
+  ]
+}

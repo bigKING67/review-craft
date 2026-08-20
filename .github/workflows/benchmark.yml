@@ -1,4 +1,4 @@
-name: Runtime benchmark telemetry
+name: Runtime performance gates and telemetry
 
 on:
   pull_request:
@@ -26,28 +26,57 @@ jobs:
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: benchmark-baseline
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: benchmark-current
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked --group dev
-      - name: Run 1k smoke telemetry
+      - name: Install baseline dependencies
+        working-directory: benchmark-baseline
+        run: uv sync --locked --group dev
+      - name: Install current dependencies
+        working-directory: benchmark-current
+        run: uv sync --locked --group dev
+      - name: Run 1k baseline
+        working-directory: benchmark-baseline
         run: >-
           uv run --locked python scripts/benchmark_runtime.py run
-          --sizes 1000 --repetitions 1 --warmups 0
+          --sizes 1000 --repetitions 3 --warmups 1
+          --output ../benchmark-baseline-1k.json
+      - name: Run 1k current candidate
+        working-directory: benchmark-current
+        run: >-
+          uv run --locked python scripts/benchmark_runtime.py run
+          --sizes 1000 --repetitions 3 --warmups 1
           --output artifacts/benchmark-pr-1k.json
+      - name: Enforce 20 percent relative regression limit
+        working-directory: benchmark-current
+        run: >-
+          uv run --locked python scripts/benchmark_runtime.py compare
+          --baseline ../benchmark-baseline-1k.json
+          --result artifacts/benchmark-pr-1k.json
+          --max-regression-percent 20
+          --output artifacts/benchmark-pr-comparison.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: benchmark-pr-1k
-          path: artifacts/benchmark-pr-1k.json
+          path: |
+            benchmark-baseline-1k.json
+            benchmark-current/artifacts/benchmark-pr-1k.json
+            benchmark-current/artifacts/benchmark-pr-comparison.json
           if-no-files-found: ignore
           retention-days: 14
 

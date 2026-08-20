@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-suite.schema.json",
+  "title": "Review Craft real-repository benchmark suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "createdAt", "protocol", "repositories"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-suite.v1"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimumRepositories",
+        "repetitions",
+        "minimumModelConfigurations",
+        "treatments",
+        "requiredProbeKinds",
+        "metrics"
+      ],
+      "properties": {
+        "minimumRepositories": {"type": "integer", "minimum": 8, "maximum": 12},
+        "repetitions": {"type": "integer", "minimum": 3, "maximum": 10},
+        "minimumModelConfigurations": {"type": "integer", "minimum": 2, "maximum": 4},
+        "treatments": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "ORDINARY_PROMPT"},
+            {"const": "RISK_LENS_REVIEW"},
+            {"const": "REVIEW_CRAFT_EVIDENCE_LOOP"}
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "requiredProbeKinds": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "REAL_FINDING"},
+            {"const": "KEEP"},
+            {"const": "DECOY"},
+            {"const": "MEASUREMENT"},
+            {"const": "EVIDENCE_GAP"}
+          ],
+          "items": false,
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 10,
+          "items": {
+            "enum": [
+              "findingOverlap",
+              "rootCauseOverlap",
+              "decisionStability",
+              "severityAgreement",
+              "scoreVariance",
+              "falsePositiveRate",
+              "falsificationAccuracy",
+              "completionRate",
+              "wallTime",
+              "tokenCost",
+              "humanAgreement"
+            ]
+          }
+        }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 12,
+      "items": {"$ref": "#/$defs/repository"}
+    }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "lineStart": {"type": "integer", "minimum": 1},
+        "lineEnd": {"type": "integer", "minimum": 1}
+      }
+    },
+    "upstreamFix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "url", "title", "locations"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "url": {"type": "string", "format": "uri", "pattern": "^https://github\\.com/"},
+        "title": {"type": "string", "minLength": 1},
+        "locations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/location"}
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "publicPrompt",
+        "expectedDispositions",
+        "forbiddenDecisions",
+        "rationale"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+        "kind": {
+          "enum": ["REAL_FINDING", "KEEP", "DECOY", "MEASUREMENT", "EVIDENCE_GAP"]
+        },
+        "publicPrompt": {"type": "string", "minLength": 1},
+        "expectedDispositions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"enum": ["VALIDATED", "FALSIFIED", "BLOCKED", "NOT_RAISED"]}
+        },
+        "expectedDecisions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "KEEP",
+              "CLEAN_UP",
+              "MERGE",
+              "REPLACE",
+              "REWRITE",
+              "DELETE",
+              "DEFER",
+              "MEASURE",
+              "DOCUMENT"
+            ]
+          }
+        },
+        "forbiddenDecisions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "KEEP",
+              "CLEAN_UP",
+              "MERGE",
+              "REPLACE",
+              "REWRITE",
+              "DELETE",
+              "DEFER",
+              "MEASURE",
+              "DOCUMENT"
+            ]
+          }
+        },
+        "rationale": {"type": "string", "minLength": 1},
+        "upstreamFix": {"$ref": "#/$defs/upstreamFix"}
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "ecosystem",
+        "projectType",
+        "remote",
+        "revision",
+        "license",
+        "scope",
+        "probes"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+        "displayName": {"type": "string", "minLength": 1},
+        "ecosystem": {"enum": ["python", "node", "electron", "go", "rust", "jvm"]},
+        "projectType": {
+          "enum": ["library", "service", "desktop", "cli", "legacy-compatibility"]
+        },
+        "remote": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://github\\.com/.+\\.git$"
+        },
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["spdx", "url"],
+          "properties": {
+            "spdx": {"type": "string", "minLength": 1},
+            "url": {"type": "string", "format": "uri"}
+          }
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "probes": {
+          "type": "array",
+          "minItems": 5,
+          "items": {"$ref": "#/$defs/probe"}
+        }
+      }
+    }
+  }
+}

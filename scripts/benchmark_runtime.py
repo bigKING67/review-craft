@@ -179,6 +179,13 @@ def _io_blocks() -> tuple[int | None, int | None]:
     )
 
 
+def _peak_rss_bytes() -> int | None:
+    if resource is None:
+        return None
+    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return value if sys.platform == "darwin" else value * 1024
+
+
 def measure(operation: Callable[[], Any], *, capture_memory: bool) -> dict[str, Any]:
     gc.collect()
     if capture_memory:
@@ -197,6 +204,7 @@ def measure(operation: Callable[[], Any], *, capture_memory: bool) -> dict[str, 
     return {
         "wallMs": round(wall_ms, 3),
         "cpuMs": round(max(cpu_ms, 0.0), 3),
+        "processPeakRssBytes": _peak_rss_bytes(),
         "pythonAllocatedPeakBytes": peak,
         "inputBlocks": (
             max(after_input - before_input, 0)
@@ -228,11 +236,24 @@ def summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "p95PythonAllocatedPeakBytes": _percentile(
             [sample["pythonAllocatedPeakBytes"] for sample in samples], 0.95
         ),
+        "p95ProcessPeakRssBytes": _percentile(
+            [sample["processPeakRssBytes"] for sample in samples], 0.95
+        ),
         "p50InputBlocks": _percentile([sample["inputBlocks"] for sample in samples], 0.5),
         "p95InputBlocks": _percentile([sample["inputBlocks"] for sample in samples], 0.95),
         "p50OutputBlocks": _percentile([sample["outputBlocks"] for sample in samples], 0.5),
         "p95OutputBlocks": _percentile([sample["outputBlocks"] for sample in samples], 0.95),
     }
+
+
+def _add_throughput(operation: dict[str, Any], file_count: int) -> None:
+    values = [
+        round(file_count * 1000 / sample["wallMs"], 3)
+        for sample in operation["samples"]
+        if sample["wallMs"] > 0
+    ]
+    operation["summary"]["p50FilesPerSecond"] = _percentile(values, 0.5)
+    operation["summary"]["p95FilesPerSecond"] = _percentile(values, 0.95)
 
 
 def benchmark_operation(
@@ -245,13 +266,12 @@ def benchmark_operation(
     for _ in range(warmups):
         operation()
     samples = [measure(operation, capture_memory=capture_memory) for _ in range(repetitions)]
-    return {
+    result = {
         "samples": samples,
         "summary": summarize(samples),
-        "memoryScope": (
-            "PYTHON_PROCESS" if capture_memory else "NOT_CAPTURED_FOR_SUBPROCESS"
-        ),
+        "memoryScope": ("PYTHON_PROCESS" if capture_memory else "NOT_CAPTURED_FOR_SUBPROCESS"),
     }
+    return result
 
 
 def _runtime_command(*args: str) -> dict[str, Any]:
@@ -356,6 +376,8 @@ def benchmark_size(
             repetitions=repetitions,
             capture_memory=False,
         )
+        for operation in operations.values():
+            _add_throughput(operation, len(baseline_records))
         return {
             "fileCount": len(baseline_records),
             "totalBytes": sum(record["sizeBytes"] for record in baseline_records),
@@ -381,9 +403,7 @@ def validate_result(path: Path) -> list[str]:
     errors = _schema_errors(payload)
     if not isinstance(payload, dict):
         return errors
-    expected = sha256_json(
-        {key: value for key, value in payload.items() if key != "contentSha256"}
-    )
+    expected = sha256_json({key: value for key, value in payload.items() if key != "contentSha256"})
     if payload.get("contentSha256") != expected:
         errors.append("contentSha256 does not match benchmark metadata")
     operations = read_json(SPEC_PATH)["operations"]
@@ -497,6 +517,88 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+COMPARISON_METRICS = (("p50WallMs", "LOWER_IS_BETTER"),)
+
+
+def compare_payloads(
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    maximum_regression_percent: float,
+) -> dict[str, Any]:
+    if baseline["environment"] != current["environment"]:
+        raise BenchmarkError("baseline and current benchmark environments differ")
+    if baseline["parameters"] != current["parameters"]:
+        raise BenchmarkError("baseline and current benchmark parameters differ")
+    baseline_sizes = {row["fileCount"]: row for row in baseline["measurements"]}
+    current_sizes = {row["fileCount"]: row for row in current["measurements"]}
+    if set(baseline_sizes) != set(current_sizes):
+        raise BenchmarkError("baseline and current benchmark sizes differ")
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for file_count in sorted(baseline_sizes):
+        baseline_operations = baseline_sizes[file_count]["operations"]
+        current_operations = current_sizes[file_count]["operations"]
+        if set(baseline_operations) != set(current_operations):
+            raise BenchmarkError(f"{file_count} files: benchmark operation sets differ")
+        for operation in sorted(baseline_operations):
+            for metric, direction in COMPARISON_METRICS:
+                before = baseline_operations[operation]["summary"].get(metric)
+                after = current_operations[operation]["summary"].get(metric)
+                if before is None or after is None or before <= 0:
+                    continue
+                regression = round((after - before) * 100 / before, 3)
+                passed = regression <= maximum_regression_percent
+                rows.append(
+                    {
+                        "fileCount": file_count,
+                        "operation": operation,
+                        "metric": metric,
+                        "direction": direction,
+                        "baseline": before,
+                        "current": after,
+                        "regressionPercent": regression,
+                        "passed": passed,
+                    }
+                )
+                if not passed:
+                    failures.append(f"{file_count}/{operation}/{metric}: {regression}%")
+    if not rows:
+        raise BenchmarkError("benchmark comparison has no comparable measurements")
+    return {
+        "schema": "review-craft.runtime-benchmark-comparison.v1",
+        "valid": not failures,
+        "maximumRegressionPercent": maximum_regression_percent,
+        "baselineSha256": baseline["contentSha256"],
+        "currentSha256": current["contentSha256"],
+        "comparisons": rows,
+        "failures": failures,
+    }
+
+
+def command_compare(args: argparse.Namespace) -> int:
+    baseline_path = Path(args.baseline).expanduser().resolve(strict=True)
+    current_path = Path(args.result).expanduser().resolve(strict=True)
+    for label, path in (("baseline", baseline_path), ("current", current_path)):
+        errors = validate_result(path)
+        if errors:
+            raise BenchmarkError(f"{label} result is invalid: " + "; ".join(errors))
+    comparison = compare_payloads(
+        read_json(baseline_path),
+        read_json(current_path),
+        maximum_regression_percent=args.max_regression_percent,
+    )
+    if args.output:
+        output = Path(args.output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(comparison, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    print(json.dumps(comparison, sort_keys=True))
+    return 0 if comparison["valid"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark Review Craft repository hot paths")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -512,6 +614,12 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate")
     validate.add_argument("--result", required=True)
     validate.set_defaults(handler=command_validate)
+    compare = subparsers.add_parser("compare")
+    compare.add_argument("--baseline", required=True)
+    compare.add_argument("--result", required=True)
+    compare.add_argument("--max-regression-percent", type=float, default=20.0)
+    compare.add_argument("--output")
+    compare.set_defaults(handler=command_compare)
     return parser
 
 
@@ -524,6 +632,9 @@ def main(argv: list[str] | None = None) -> int:
             raise BenchmarkError("--repetitions must be positive")
         if warmups is not None and warmups < 0:
             raise BenchmarkError("--warmups must not be negative")
+        maximum_regression = getattr(args, "max_regression_percent", None)
+        if maximum_regression is not None and maximum_regression < 0:
+            raise BenchmarkError("--max-regression-percent must not be negative")
         return args.handler(args)
     except (BenchmarkError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"review-craft benchmark: {error}", file=sys.stderr)

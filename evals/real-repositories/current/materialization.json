@@ -1,0 +1,136 @@
+{
+  "contentSha256": "36cb433b3a5ddc872c779dfd00634ad2ab691f41178d1e50285fde340f623df5",
+  "createdAt": "2026-08-19T16:20:03Z",
+  "repositories": [
+    {
+      "checkout": "repositories/pypa-sampleproject",
+      "fixParentVerified": true,
+      "fixRevision": "ce10821e1391613d14a44a06a07b3d00c18cccf5",
+      "id": "pypa-sampleproject",
+      "remote": "https://github.com/pypa/sampleproject.git",
+      "revision": "6a2444b88f48eaa1cf3a2f32fe8bbed8dad82801",
+      "scope": [
+        "setup.py",
+        "sample",
+        "tests"
+      ],
+      "tree": "5a1d6c1597d9aee0d14c194226c6ecd83cd26127"
+    },
+    {
+      "checkout": "repositories/pallets-click",
+      "fixParentVerified": true,
+      "fixRevision": "b67832c2167e5b0ff6764a8c04a0a9087e697b5a",
+      "id": "pallets-click",
+      "remote": "https://github.com/pallets/click.git",
+      "revision": "8c1a0a7abbc1c36f70d1f65f3604acc46c5ce6ab",
+      "scope": [
+        "src/click",
+        "tests"
+      ],
+      "tree": "b1b1b5a4672e482e0f323145e1836f297910e1aa"
+    },
+    {
+      "checkout": "repositories/sindresorhus-p-limit",
+      "fixParentVerified": true,
+      "fixRevision": "ef37eb2f372d385883d113803c98ba0bf3828ad1",
+      "id": "sindresorhus-p-limit",
+      "remote": "https://github.com/sindresorhus/p-limit.git",
+      "revision": "42599ebbbb1228a5bdab381fcf8f4ac20eb8d551",
+      "scope": [
+        "index.js",
+        "index.d.ts",
+        "test.js",
+        "package.json"
+      ],
+      "tree": "b29ee56afd5b6050d88332d82fec3271c867fa07"
+    },
+    {
+      "checkout": "repositories/expressjs-express",
+      "fixParentVerified": true,
+      "fixRevision": "18e5985b8a9d5e8423db0a9121f22bdaecd5b120",
+      "id": "expressjs-express",
+      "remote": "https://github.com/expressjs/express.git",
+      "revision": "59e205a57a04fced6bb7b8ec0b5dec29461a9996",
+      "scope": [
+        "lib",
+        "test",
+        "package.json"
+      ],
+      "tree": "63d34a8826ccaf9727dbeaa234e994664cd3aa14"
+    },
+    {
+      "checkout": "repositories/electron-react-boilerplate",
+      "fixParentVerified": true,
+      "fixRevision": "318a4a404419aa887848fd50f19d45a640471472",
+      "id": "electron-react-boilerplate",
+      "remote": "https://github.com/electron-react-boilerplate/electron-react-boilerplate.git",
+      "revision": "7714bcdd66211f7dafc6c866c1c54e151712e459",
+      "scope": [
+        "package.json",
+        "src/main",
+        "src/renderer",
+        ".erb"
+      ],
+      "tree": "d6093d48c820eab5d7a106a06dc2770874fc1aab"
+    },
+    {
+      "checkout": "repositories/julienschmidt-httprouter",
+      "fixParentVerified": true,
+      "fixRevision": "484018016424d215c0b87c42f4c9b57d980fbd00",
+      "id": "julienschmidt-httprouter",
+      "remote": "https://github.com/julienschmidt/httprouter.git",
+      "revision": "ef8578da8d8e1217ea44313b23edf46154b198ab",
+      "scope": [
+        "router.go",
+        "tree.go",
+        "router_test.go",
+        "tree_test.go"
+      ],
+      "tree": "99c5dddf7d348a2840a807d151f062264e0acc87"
+    },
+    {
+      "checkout": "repositories/sharkdp-bat",
+      "fixParentVerified": true,
+      "fixRevision": "c2cc79daa747bbbfcdec22bf1eea95a1d1ef8aa2",
+      "id": "sharkdp-bat",
+      "remote": "https://github.com/sharkdp/bat.git",
+      "revision": "0230cba42d2f1089e232930aae9fccc5ec49cfa3",
+      "scope": [
+        "src/preprocessor.rs",
+        "tests",
+        "Cargo.toml"
+      ],
+      "tree": "30bce59bb5d08f4865ad03b3afca707fe049ccc7"
+    },
+    {
+      "checkout": "repositories/spring-petclinic",
+      "fixParentVerified": true,
+      "fixRevision": "88e37c15cf6fc8490b01bc3e8e2c800cec1ac272",
+      "id": "spring-petclinic",
+      "remote": "https://github.com/spring-projects/spring-petclinic.git",
+      "revision": "bb37aad8c332264723817d855e8b3b96b7c392bc",
+      "scope": [
+        "src/main",
+        "src/test",
+        "pom.xml"
+      ],
+      "tree": "f9c6641fb7db8e388189d4ed5894b5456fa5fe24"
+    }
+  ],
+  "schema": "review-craft.eval-real-repository-materialization.v1",
+  "suite": {
+    "artifact": "suite.json",
+    "fullSuite": true,
+    "selectedRepositoryIds": [
+      "pypa-sampleproject",
+      "pallets-click",
+      "sindresorhus-p-limit",
+      "expressjs-express",
+      "electron-react-boilerplate",
+      "julienschmidt-httprouter",
+      "sharkdp-bat",
+      "spring-petclinic"
+    ],
+    "sha256": "8a78b8a7f2c6d81c12c3d72cc33ea3ba3d9124838275bb5a8e8c13dd99328083"
+  }
+}

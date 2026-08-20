@@ -6,7 +6,13 @@
     {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"validate_run","maximum":8,"reason":"Run validation remains orchestration-only."},
     {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_run_documents","maximum":8,"reason":"Document and schema validation boundary."},
     {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_live_source","maximum":8,"reason":"Live source and diff-scope parity boundary."},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_command_receipts","maximum":8,"reason":"Command receipt orchestration boundary."},
+    {"path":"skills/review-craft/lib/review_craft/run_evidence_validation.py","function":"_validate_command_receipts","maximum":8,"reason":"Command receipt orchestration boundary."},
+    {"path":"skills/review-craft/lib/review_craft/review_validation.py","function":"_validate_review_scope","maximum":4,"reason":"Review-scope validation remains orchestration-only."},
+    {"path":"skills/review-craft/lib/review_craft/review_validation.py","function":"_validate_repository_maps","maximum":4,"reason":"Repository-map validation remains orchestration-only."},
+    {"path":"skills/review-craft/lib/review_craft/review_validation.py","function":"_validate_findings","maximum":6,"reason":"Finding validation remains orchestration-only."},
+    {"path":"skills/review-craft/lib/review_craft/review_validation.py","function":"_validate_decisions","maximum":6,"reason":"Decision validation remains orchestration-only."},
+    {"path":"skills/review-craft/lib/review_craft/run_evidence_validation.py","function":"_evidence_references","maximum":4,"reason":"Evidence-reference collection remains orchestration-only."},
+    {"path":"skills/review-craft/lib/review_craft/run_evidence_validation.py","function":"_validate_evidence_registry","maximum":6,"reason":"Evidence-registry validation remains orchestration-only."},
     {"path":"skills/review-craft/lib/review_craft/report.py","function":"render_report","maximum":14,"reason":"New report sections must remain delegated to helpers."},
     {"path":"skills/review-craft/lib/review_craft/repository_analysis.py","function":"detect_profile","maximum":4,"reason":"Profile detection remains a small orchestration function."},
     {"path":"skills/review-craft/lib/review_craft/process_lifecycle.py","function":"run_process","maximum":2,"reason":"Shared process lifecycle orchestration."},
@@ -14,20 +20,5 @@
     {"path":"skills/review-craft/lib/review_craft/score_validation.py","function":"_validate_dimensions","maximum":8,"reason":"Per-dimension score arithmetic validation."},
     {"path":"skills/review-craft/lib/review_craft/score_validation.py","function":"validate_scorecard","maximum":6,"reason":"Score validator orchestration boundary."}
   ],
-  "debtExceptions": [
-    {"path":"skills/review-craft/lib/review_craft/attempt_delivery_validation.py","function":"validate_attempt_delivery_source","observed":16,"targetMaximum":15,"reason":"Portable delivery source validation still combines lineage and attestation projection.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/configuration.py","function":"validate_config","observed":17,"targetMaximum":15,"reason":"Configuration validation still combines command, scope, and policy checks.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_review_scope","observed":22,"targetMaximum":15,"reason":"Review scope mode and diff invariants remain combined.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_repository_maps","observed":19,"targetMaximum":15,"reason":"Module and dependency map cross-checks remain combined.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_findings","observed":20,"targetMaximum":15,"reason":"Finding identity and evidence closure remain combined.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_decisions","observed":19,"targetMaximum":15,"reason":"Decision proportionality gates remain combined.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_evidence_references","observed":17,"targetMaximum":15,"reason":"Evidence reference parsing still handles all supported namespaces.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/contracts.py","function":"_validate_evidence_registry","observed":23,"targetMaximum":15,"reason":"Registry identity, hash, and reference validation remain combined.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/evidence_registry.py","function":"register_evidence","observed":17,"targetMaximum":15,"reason":"Registration validates path, identity, limits, and immutable replacement.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/remediation_contract.py","function":"load_fix","observed":21,"targetMaximum":15,"reason":"Legacy and attempt-protocol fix loading remain shared.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/remediation_contract.py","function":"validate_review_provenance","observed":22,"targetMaximum":15,"reason":"Sealed review provenance checks remain one compatibility boundary.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/remediation_validation.py","function":"validate_fix_snapshot","observed":25,"targetMaximum":15,"reason":"Legacy fix.v1 validation remains frozen but supported.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/repository_analysis.py","function":"build_dependency_map","observed":17,"targetMaximum":15,"reason":"Multi-language static dependency extraction remains combined.","removeByVersion":"v0.7.0"},
-    {"path":"skills/review-craft/lib/review_craft/semantic_evidence.py","function":"receipt_semantic_errors","observed":20,"targetMaximum":15,"reason":"Semantic claim and artifact validation remain combined.","removeByVersion":"v0.7.0"}
-  ]
+  "debtExceptions": []
 }

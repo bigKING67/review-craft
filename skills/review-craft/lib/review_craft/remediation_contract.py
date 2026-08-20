@@ -35,8 +35,7 @@ def schema(name: str) -> dict[str, Any]:
 
 def validate_schema(document: Any, schema_name: str) -> None:
     errors = [
-        f"{schema_name}: {message}"
-        for message in validate_instance(document, schema(schema_name))
+        f"{schema_name}: {message}" for message in validate_instance(document, schema(schema_name))
     ]
     if errors:
         raise ContractError(errors)
@@ -123,6 +122,16 @@ def load_fix(
     if not isinstance(state, dict):
         raise ContractError(["fix-state.json: expected an object"])
     errors: list[str] = []
+    _validate_fix_plan_identity(fix_dir, plan, errors)
+    _validate_fix_state_baseline(plan, state, errors)
+    _validate_fix_state_commands(plan, state, errors)
+    _normalize_fix_source_configuration(state, errors)
+    if errors:
+        raise ContractError(errors)
+    return fix_dir, plan, state
+
+
+def _validate_fix_plan_identity(fix_dir: Path, plan: dict[str, Any], errors: list[str]) -> None:
     if plan.get("fixId") != fix_dir.name:
         errors.append("fix-plan.fixId: must match the fix directory name")
     selection_ids = [row["findingId"] for row in plan["selections"]]
@@ -138,6 +147,11 @@ def load_fix(
     planned_commands = plan["verification"]["commands"]
     if len(planned_commands) != len(set(planned_commands)):
         errors.append("fix-plan.verification.commands: names must be unique")
+
+
+def _validate_fix_state_baseline(
+    plan: dict[str, Any], state: dict[str, Any], errors: list[str]
+) -> None:
     if state.get("planSha256") != sha256_json(plan):
         errors.append("fix-state.planSha256: does not match fix-plan.json")
     baseline_files = state.get("baselineFiles")
@@ -149,43 +163,40 @@ def load_fix(
         errors.append("fix-state.baselineFiles: does not match baseline source fingerprint")
     elif len({row.get("path") for row in baseline_files}) != len(baseline_files):
         errors.append("fix-state.baselineFiles: paths must be unique")
+
+
+def _validate_fix_state_commands(
+    plan: dict[str, Any], state: dict[str, Any], errors: list[str]
+) -> None:
     commands = state.get("commands")
     if not isinstance(commands, dict):
         errors.append("fix-state.commands: expected an object")
-    else:
-        command_hash = sha256_json(commands)
-        if command_hash != state.get("commandConfigSha256"):
-            errors.append("fix-state.commandConfigSha256: does not match commands")
-        if command_hash != plan["verification"]["commandConfigSha256"]:
-            errors.append("fix-plan.verification.commandConfigSha256: does not match state")
-        if sorted(commands) != sorted(plan["verification"]["commands"]):
-            errors.append("fix-state.commands: names do not match fix plan")
-    stored_source_configuration = state.get("sourceConfiguration")
+        return
+    command_hash = sha256_json(commands)
+    if command_hash != state.get("commandConfigSha256"):
+        errors.append("fix-state.commandConfigSha256: does not match commands")
+    if command_hash != plan["verification"]["commandConfigSha256"]:
+        errors.append("fix-plan.verification.commandConfigSha256: does not match state")
+    if sorted(commands) != sorted(plan["verification"]["commands"]):
+        errors.append("fix-state.commands: names do not match fix plan")
+
+
+def _normalize_fix_source_configuration(state: dict[str, Any], errors: list[str]) -> None:
+    stored = state.get("sourceConfiguration")
     try:
-        resolved_source_configuration = fix_source_configuration(state)
+        resolved = fix_source_configuration(state)
     except ContractError as error:
         errors.extend(error.errors)
-    else:
-        if (
-            stored_source_configuration is not None
-            and stored_source_configuration != resolved_source_configuration
-        ):
-            errors.append("fix-state.sourceConfiguration: is not canonical")
-        source_configuration_hash = sha256_json(resolved_source_configuration)
-        stored_source_configuration_hash = state.get("sourceConfigurationSha256")
-        if (
-            stored_source_configuration_hash is not None
-            and stored_source_configuration_hash != source_configuration_hash
-        ):
-            errors.append(
-                "fix-state.sourceConfigurationSha256: does not match sourceConfiguration"
-            )
-        # Legacy v1 sessions derive this field from their sealed review manifest.
-        state["sourceConfiguration"] = resolved_source_configuration
-        state["sourceConfigurationSha256"] = source_configuration_hash
-    if errors:
-        raise ContractError(errors)
-    return fix_dir, plan, state
+        return
+    if stored is not None and stored != resolved:
+        errors.append("fix-state.sourceConfiguration: is not canonical")
+    source_hash = sha256_json(resolved)
+    stored_hash = state.get("sourceConfigurationSha256")
+    if stored_hash is not None and stored_hash != source_hash:
+        errors.append("fix-state.sourceConfigurationSha256: does not match sourceConfiguration")
+    # Legacy v1 sessions derive these fields from their sealed review manifest.
+    state["sourceConfiguration"] = resolved
+    state["sourceConfigurationSha256"] = source_hash
 
 
 def validate_review_provenance(plan: dict[str, Any], state: dict[str, Any]) -> None:
@@ -198,88 +209,90 @@ def validate_review_provenance(plan: dict[str, Any], state: dict[str, Any]) -> N
         decisions_doc = read_json(session_file(run_dir, ARTIFACT_PATHS["decisions"]))
     except (KeyError, OSError, ValueError, ContractError) as error:
         raise ContractError([f"fix review provenance is unavailable: {error}"]) from error
+    _validate_review_manifest_provenance(plan, state, manifest, manifest_path, errors)
+    findings = {
+        row.get("id"): row for row in findings_doc.get("findings", []) if isinstance(row, dict)
+    }
+    decisions = {
+        row.get("id"): row for row in decisions_doc.get("decisions", []) if isinstance(row, dict)
+    }
+    _validate_review_command_provenance(plan, manifest, errors)
+    for selection in plan["selections"]:
+        _validate_review_selection_provenance(selection, findings, decisions, errors)
+    if errors:
+        raise ContractError(errors)
+
+
+def _validate_review_manifest_provenance(
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    errors: list[str],
+) -> None:
     if file_sha256(manifest_path) != plan["review"]["manifestSha256"]:
         errors.append("fix-plan.review.manifestSha256: review manifest changed")
     if manifest.get("status") != "final" or not manifest.get("sealedAt"):
         errors.append("fix review provenance: source review is not sealed and final")
     if manifest.get("runId") != plan["review"]["runId"]:
         errors.append("fix-plan.review.runId: does not match review manifest")
-    manifest_configuration = manifest.get("configuration", {})
-    if not isinstance(manifest_configuration, dict):
+    configuration = manifest.get("configuration", {})
+    if not isinstance(configuration, dict):
         errors.append("fix review provenance: review configuration is invalid")
     else:
-        expected_source_configuration = source_inventory_configuration(
-            manifest_configuration
-        )
-        if state.get("sourceConfiguration") != expected_source_configuration:
-            errors.append(
-                "fix-state.sourceConfiguration: does not match review provenance"
-            )
-        if state.get("sourceConfigurationSha256") != sha256_json(
-            expected_source_configuration
-        ):
-            errors.append(
-                "fix-state.sourceConfigurationSha256: review provenance mismatch"
-            )
-    target = manifest.get("target") if isinstance(manifest, dict) else None
+        expected = source_inventory_configuration(configuration)
+        if state.get("sourceConfiguration") != expected:
+            errors.append("fix-state.sourceConfiguration: does not match review provenance")
+        if state.get("sourceConfigurationSha256") != sha256_json(expected):
+            errors.append("fix-state.sourceConfigurationSha256: review provenance mismatch")
+    target = manifest.get("target")
     if not isinstance(target, dict) or target.get("identity") != plan["review"]["targetIdentity"]:
         errors.append("fix-plan.review.targetIdentity: does not match review manifest")
-    findings = {
-        row.get("id"): row
-        for row in findings_doc.get("findings", [])
-        if isinstance(row, dict)
-    }
-    decisions = {
-        row.get("id"): row
-        for row in decisions_doc.get("decisions", [])
-        if isinstance(row, dict)
-    }
-    original_commands = manifest.get("configuration", {}).get("commands", {})
-    selected_commands = {
-        name: original_commands.get(name) for name in plan["verification"]["commands"]
-    }
-    if any(value is None for value in selected_commands.values()):
+
+
+def _validate_review_command_provenance(
+    plan: dict[str, Any], manifest: dict[str, Any], errors: list[str]
+) -> None:
+    commands = manifest.get("configuration", {}).get("commands", {})
+    selected = {name: commands.get(name) for name in plan["verification"]["commands"]}
+    if any(value is None for value in selected.values()):
         errors.append("fix-plan.verification.commands: command is absent from review provenance")
-    elif sha256_json(selected_commands) != plan["verification"]["commandConfigSha256"]:
+    elif sha256_json(selected) != plan["verification"]["commandConfigSha256"]:
         errors.append("fix-plan.verification.commandConfigSha256: review provenance mismatch")
-    for selection in plan["selections"]:
-        finding = findings.get(selection["findingId"])
-        decision = decisions.get(selection["decisionId"])
-        if finding is None or sha256_json(finding) != selection["findingSha256"]:
-            errors.append(f"fix selection {selection['findingId']}: finding provenance changed")
-        if decision is None or sha256_json(decision) != selection["decisionSha256"]:
-            errors.append(f"fix selection {selection['findingId']}: decision provenance changed")
-        if finding is not None:
-            expected_locations = sorted({row["path"] for row in finding.get("locations", [])})
-            if selection["locationPaths"] != expected_locations:
-                errors.append(
-                    f"fix selection {selection['findingId']}: location paths do not match finding"
-                )
-            if finding.get("decisionId") != selection["decisionId"]:
-                errors.append(
-                    f"fix selection {selection['findingId']}: decision id does not match finding"
-                )
-        if decision is not None:
-            expected_criteria = list(
-                dict.fromkeys(
-                    (finding.get("verification", []) if finding else [])
-                    + decision.get("verification", [])
-                )
-            )
-            if selection["verificationCriteria"] != expected_criteria:
-                errors.append(
-                    f"fix selection {selection['findingId']}: verification criteria changed"
-                )
-            if decision.get("decision") != selection["decision"]:
-                errors.append(
-                    f"fix selection {selection['findingId']}: decision action changed"
-                )
-            if selection["findingId"] not in decision.get("findingRefs", []):
-                errors.append(
-                    f"fix selection {selection['findingId']}: decision does not reference finding"
-                )
-    if errors:
-        raise ContractError(errors)
+
+
+def _validate_review_selection_provenance(
+    selection: dict[str, Any],
+    findings: dict[str, dict[str, Any]],
+    decisions: dict[str, dict[str, Any]],
+    errors: list[str],
+) -> None:
+    finding_id = selection["findingId"]
+    finding = findings.get(finding_id)
+    decision = decisions.get(selection["decisionId"])
+    if finding is None or sha256_json(finding) != selection["findingSha256"]:
+        errors.append(f"fix selection {finding_id}: finding provenance changed")
+    if decision is None or sha256_json(decision) != selection["decisionSha256"]:
+        errors.append(f"fix selection {finding_id}: decision provenance changed")
+    if finding is not None:
+        expected_locations = sorted({row["path"] for row in finding.get("locations", [])})
+        if selection["locationPaths"] != expected_locations:
+            errors.append(f"fix selection {finding_id}: location paths do not match finding")
+        if finding.get("decisionId") != selection["decisionId"]:
+            errors.append(f"fix selection {finding_id}: decision id does not match finding")
+    if decision is None:
+        return
+    expected_criteria = list(
+        dict.fromkeys(
+            (finding.get("verification", []) if finding else []) + decision.get("verification", [])
+        )
+    )
+    if selection["verificationCriteria"] != expected_criteria:
+        errors.append(f"fix selection {finding_id}: verification criteria changed")
+    if decision.get("decision") != selection["decision"]:
+        errors.append(f"fix selection {finding_id}: decision action changed")
+    if finding_id not in decision.get("findingRefs", []):
+        errors.append(f"fix selection {finding_id}: decision does not reference finding")
 
 
 def changes(
@@ -310,9 +323,7 @@ def changes(
     return result
 
 
-def assessment_rows(
-    assessment: dict[str, Any], plan: dict[str, Any]
-) -> dict[str, dict[str, Any]]:
+def assessment_rows(assessment: dict[str, Any], plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
     validate_schema(assessment, "fix-assessment.schema.json")
     rows = assessment["findings"]
     identifiers = [row["findingId"] for row in rows]
@@ -324,9 +335,7 @@ def assessment_rows(
         errors.append("fix-assessment.findings: must assess every selected finding exactly once")
     for row in rows:
         if len(row["evidenceRefs"]) != len(set(row["evidenceRefs"])):
-            errors.append(
-                f"fix-assessment {row['findingId']}: evidence references must be unique"
-            )
+            errors.append(f"fix-assessment {row['findingId']}: evidence references must be unique")
     if errors:
         raise ContractError(errors)
     return {row["findingId"]: row for row in rows}
@@ -364,10 +373,15 @@ def validate_evidence_refs(
                 errors.append(
                     f"fix-assessment {result['findingId']}: unsupported evidence ref {reference!r}"
                 )
-        if assessment["kind"] == "AUTOMATED" and result["status"] in {
-            "RESOLVED",
-            "LIKELY_RESOLVED",
-        } and not any(ref.startswith("command:") for ref in result["evidenceRefs"]):
+        if (
+            assessment["kind"] == "AUTOMATED"
+            and result["status"]
+            in {
+                "RESOLVED",
+                "LIKELY_RESOLVED",
+            }
+            and not any(ref.startswith("command:") for ref in result["evidenceRefs"])
+        ):
             errors.append(
                 f"fix-assessment {result['findingId']}: automated resolution "
                 "requires command evidence"
@@ -385,13 +399,17 @@ def verification_status(
 ) -> str:
     if not source_changed:
         return "NO_CHANGES"
-    if skipped_commands or any(
-        row["exitCode"] != 0
-        or row["timedOut"]
-        or row["repositoryMutationDetected"]
-        or row.get("semanticEvidenceValid") is False
-        for row in command_results
-    ) or any(status in {"UNRESOLVED", "REGRESSED"} for status in statuses):
+    if (
+        skipped_commands
+        or any(
+            row["exitCode"] != 0
+            or row["timedOut"]
+            or row["repositoryMutationDetected"]
+            or row.get("semanticEvidenceValid") is False
+            for row in command_results
+        )
+        or any(status in {"UNRESOLVED", "REGRESSED"} for status in statuses)
+    ):
         return "FAILED"
     if any(status in {"LIKELY_RESOLVED", "PARTIAL"} for status in statuses):
         return "PARTIAL"

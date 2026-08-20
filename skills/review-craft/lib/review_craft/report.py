@@ -4,8 +4,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from .assurance import build_assurance_state
 from .constants import ARTIFACT_PATHS, REMEDIATION_PHASES, SCHEMA_VERSION, SCORE_DIMENSIONS
-from .contracts import ContractError, validate_run
+from .contracts import ContractError, load_run, validate_run
 from .jsonio import atomic_write_text, read_json, read_jsonl, write_json
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -44,7 +45,14 @@ def _finding_sort(row: dict[str, Any]) -> tuple[int, int, str]:
     )
 
 
-def _score_copy(mode: str) -> tuple[str, str, str, str | None]:
+def _score_copy(mode: str, assurance_level: str) -> tuple[str, str, str, str | None]:
+    if assurance_level == "fast":
+        return (
+            "当前临时评分",
+            "临时评分",
+            "临时评分",
+            "FAST 保证等级不形成最终评分；该数字仅为 provisional 结果。",
+        )
     if mode == "focus":
         return (
             "当前 focused review 评分",
@@ -170,8 +178,28 @@ def render_report(data: dict[str, Any]) -> str:
         coverage["files"]
     )
     eligible_display = f"{eligible_percent}%" if eligible_percent is not None else "N/A"
+    assurance = scorecard.get(
+        "assurance",
+        {
+            "level": "standard",
+            "completionStatus": "PARTIAL",
+            "budget": {},
+            "verifier": {"status": "NOT_REQUIRED", "evidenceRef": None},
+            "unverifiedClaims": [],
+            "skippedDimensions": [],
+        },
+    )
     summary_score, score_label, conclusion_score, score_limitation = _score_copy(
-        review_scope["mode"]
+        review_scope["mode"], assurance["level"]
+    )
+    budget = assurance["budget"]
+    budget_display = (
+        f"files={budget.get('eligibleFiles', 'N/A')}/"
+        f"{budget.get('maxEligibleFiles') or 'unlimited'}, "
+        f"commands={budget.get('evidenceCommands', 'N/A')}/"
+        f"{budget.get('maxEvidenceCommands') or 'unlimited'}, "
+        f"candidates={budget.get('candidates', 'N/A')}/"
+        f"{budget.get('maxCandidates') or 'unlimited'}"
     )
 
     identity_lines = [
@@ -183,6 +211,10 @@ def render_report(data: dict[str, Any]) -> str:
         f"- Repository: `{manifest['target']['repositoryName']}`",
         f"- Revision: `{manifest['target'].get('revision') or 'unversioned'}`",
         f"- Mode: `{review_scope['mode']}`",
+        f"- Assurance: `{assurance['level'].upper()}`",
+        f"- Completion status: `{assurance['completionStatus']}`",
+        f"- Budget consumed: `{budget_display}`",
+        f"- Independent verifier: `{assurance['verifier']['status']}`",
         (
             f"- Profile: `{review_scope['profile']['resolved']}` "
             f"({review_scope['profile']['confidence']})"
@@ -207,6 +239,8 @@ def render_report(data: dict[str, Any]) -> str:
             ),
             f"- Reviewed inventory: `{reviewed_percent}%`",
             f"- Hard evidence gaps: `{len(evidence_gaps)}`",
+            f"- Unverified claims: `{len(assurance['unverifiedClaims'])}`",
+            f"- Skipped dimensions: `{len(assurance['skippedDimensions'])}`",
             f"- Score status: `{scorecard['status']}`",
             f"- Confidence: `{scorecard['confidence']}`",
             f"- Modules: `{len(module_map['modules'])}`",
@@ -364,6 +398,10 @@ def render_report(data: dict[str, Any]) -> str:
             f"- 已捕获证据产物：{len(captured_artifacts)}",
             f"- 审查模式：{review_scope['mode']}",
             f"- 项目 Profile：{review_scope['profile']['resolved']}",
+            f"- 保证等级：{assurance['level'].upper()}",
+            f"- 完成状态：{assurance['completionStatus']}",
+            f"- 预算消耗：{budget_display}",
+            f"- 独立复核：{assurance['verifier']['status']}",
             f"- 模块数：{len(module_map['modules'])}",
             f"- 静态依赖边数：{len(dependency_map['edges'])}",
             "- Coverage dispositions:",
@@ -386,6 +424,12 @@ def render_report(data: dict[str, Any]) -> str:
             "",
             "### 已捕获证据产物",
             *_bullets(captured_artifacts),
+            "",
+            "### 未验证声明",
+            *_bullets(assurance["unverifiedClaims"]),
+            "",
+            "### 跳过维度",
+            *_bullets(assurance["skippedDimensions"]),
         ]
     )
     if score_limitation is not None:
@@ -429,6 +473,11 @@ def finalize_run(run_dir: Path, *, sealed_at: str) -> Path:
         for row in candidates
         if row.get("validation", {}).get("status") in {"PENDING", "BLOCKED"}
     )
+    if "assuranceLevel" in manifest.get("configuration", {}):
+        write_json(scorecard_path, scorecard)
+        draft_data = load_run(run_dir)
+        assurance, _verifier_errors = build_assurance_state(draft_data, run_dir)
+        scorecard["assurance"] = assurance
     write_json(scorecard_path, scorecard)
     data = validate_run(run_dir, final=True)
     manifest = data["manifest"]

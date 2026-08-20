@@ -105,17 +105,20 @@ missing, stale, synthetic, or below threshold. Quick PR, small diff, casual scor
 visual-design, deep exploit-validation, and direct implementation requests remain explicit
 negative routes. Use `$review-craft` when deterministic routing is required.
 
-The current product has two implemented depths:
+The current product has a bounded path plus three canonical assurance levels:
 
 - `bounded`: one narrow evidence-backed `KEEP`, `CLEAN_UP`, `MEASURE`, or other decision;
   it does not emit canonical artifacts or a numeric score;
-- canonical `review`, `diff`, or `focus`: inventory, candidate validation, deterministic
-  artifacts, scope-bound scoring, and final reporting.
+- canonical `fast`: a budgeted run capped at 200 eligible files, three evidence commands,
+  and 12 candidates; its score remains provisional and evidence is capped at E2;
+- canonical `standard`: complete inventory, candidate validation, deterministic artifacts,
+  scope-bound scoring, and final reporting;
+- canonical `assured`: standard requirements plus E3+ evidence and one independently
+  produced, registered verifier artifact that agrees with every canonical finding.
 
-The repository's `REVIEW_CRAFT_EVIDENCE_LOOP` eval treatment is a development experiment,
-not a third runtime assurance profile. There is no `fast | standard | assured` configuration
-contract yet, and Review Craft does not claim independent multi-agent verification merely
-because an eval arm exists.
+Set `assuranceLevel` in `.review-craft.json` or pass `preflight --assurance`. The
+`REVIEW_CRAFT_EVIDENCE_LOOP` eval treatment remains a separate development experiment and
+does not itself satisfy the `assured` verifier contract.
 
 ## Repository layout
 
@@ -584,8 +587,9 @@ uv run --locked python scripts/release_gate.py \
 
 The package E2E installs the tarball in an isolated temporary home, proves the runtime was
 imported from that installation, executes `doctor`, completes canonical preflight through
-deterministic report finalization, captures and validates an immutable remediation attempt,
-and checks the target mutation boundary. CI builds this tarball once and revalidates those
+deterministic report finalization, validates the installed `fast` assurance contract,
+captures and validates an immutable remediation attempt, and checks the target mutation
+boundary. CI builds this tarball once and revalidates those
 same bytes on Ubuntu, Windows, and macOS; source-tree tests remain a separate evidence layer.
 
 The eval runner does not invoke a model during CI. Contract tests use a synthetic adapter
@@ -750,6 +754,15 @@ narrow fixture result, not universal superiority, a stable cost ratio, a native 
 comparison, or a comparison with Codex Security. See
 `evals/golden-results/705dbac-gpt-5.6-sol/README.md` for the exact evidence boundary.
 
+Real Repository Benchmark v1 adds eight immutable upstream repositories across Python,
+Node.js, Electron, Go, Rust, and JVM. Each case contains a real upstream-fixed defect, a
+legitimate `KEEP`, a decoy, a measurement-only claim, and an evidence-gap claim. The
+oracle-free blind suite, verified source materialization, campaign runner, independent
+adjudication contract, and stability report are under `evals/real-repositories/`. A campaign
+is Golden only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions
+matrix completes and independent adjudication validates; the checked-in materialization
+receipt alone makes no model-quality claim.
+
 Runtime scale measurements are also explicit and external by default. The normal command
 runs the 1k-file tier; `--full` additionally runs 10k and 100k tiers and can take materially
 longer:
@@ -757,14 +770,17 @@ longer:
 ```text
 uv run --locked python scripts/benchmark_runtime.py run
 uv run --locked python scripts/benchmark_runtime.py validate --result <result.json>
+uv run --locked python scripts/benchmark_runtime.py compare \
+  --baseline <base-result.json> --result <candidate-result.json> \
+  --max-regression-percent 20
 ```
 
-The telemetry workflow runs a non-blocking 1k PR smoke, 1k/10k nightly samples with five
-repetitions, and a 100k weekly sample with three repetitions. It records p50/p95 timings and
-Python-process allocation peaks where observable. No release baseline or relative regression
-threshold is claimed yet; a threshold must be bound to an immutable clean-source baseline
-before it can become a failure gate. Runner-to-runner deltas are telemetry, not proof of a
-product regression by themselves.
+The PR workflow benchmarks the exact base and candidate revisions on the same runner with
+three repetitions and fails when comparable p50 wall time regresses by more than 20%.
+Nightly 1k/10k and weekly 100k tiers remain telemetry because hosted-runner
+noise is too high for a single absolute-time gate. Results record p50/p95 timings,
+files-per-second throughput, Python allocation peaks, and process peak RSS where observable.
+Cross-runner deltas remain telemetry, not proof of a product regression by themselves.
 
 The package gate builds the npm tarball in a temporary directory and rejects tests,
 development tooling, caches, local paths, and real review runs from the public package.

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-output.schema.json",
+  "title": "Normalized host output for one real-repository benchmark sample",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repositoryId", "score", "probes", "additionalFindings", "summary"],
+  "properties": {
+    "schema": {"type": "string", "const": "review-craft.eval-real-repository-output.v1"},
+    "repositoryId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value"],
+      "properties": {
+        "status": {"type": "string", "enum": ["FINAL", "PROVISIONAL", "NOT_PRODUCED"]},
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 100}
+      }
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 5,
+      "items": {"$ref": "#/$defs/probeResult"}
+    },
+    "additionalFindings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/additionalFinding"}
+    },
+    "summary": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "lineStart", "lineEnd"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "lineStart": {"type": "integer", "minimum": 1},
+        "lineEnd": {"type": "integer", "minimum": 1}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim", "locations"],
+      "properties": {
+        "claim": {"type": "string", "minLength": 1},
+        "locations": {"type": "array", "items": {"$ref": "#/$defs/location"}}
+      }
+    },
+    "decision": {
+      "type": ["string", "null"],
+      "enum": [
+        "KEEP",
+        "CLEAN_UP",
+        "MERGE",
+        "REPLACE",
+        "REWRITE",
+        "DELETE",
+        "DEFER",
+        "MEASURE",
+        "DOCUMENT",
+        null
+      ]
+    },
+    "severity": {
+      "type": ["string", "null"],
+      "enum": ["P0", "P1", "P2", "P3", null]
+    },
+    "probeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probeId",
+        "disposition",
+        "decision",
+        "severity",
+        "rootCauseKey",
+        "locations",
+        "evidence",
+        "confidence",
+        "rationale"
+      ],
+      "properties": {
+        "probeId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+        "disposition": {"type": "string", "enum": ["VALIDATED", "FALSIFIED", "BLOCKED", "NOT_RAISED"]},
+        "decision": {"$ref": "#/$defs/decision"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "rootCauseKey": {"type": ["string", "null"], "minLength": 1},
+        "locations": {"type": "array", "items": {"$ref": "#/$defs/location"}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "additionalFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findingId",
+        "title",
+        "decision",
+        "severity",
+        "rootCauseKey",
+        "locations",
+        "evidence",
+        "confidence"
+      ],
+      "properties": {
+        "findingId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+        "title": {"type": "string", "minLength": 1},
+        "decision": {"$ref": "#/$defs/decision"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "rootCauseKey": {"type": "string", "minLength": 1},
+        "locations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/location"}},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]}
+      }
+    }
+  }
+}

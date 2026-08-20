@@ -13,6 +13,9 @@
   sealed `review-craft.run.v3` remains validation-only legacy data. Keep legacy
   `fix.v1` and `delivery.v1` semantics unchanged. Remote push and GitHub Actions proof
   require explicit CLI options.
+  Canonical assurance levels are `fast`, `standard`, and `assured`; fast is budgeted and
+  provisional, while assured requires E3+ and independent registered verification.
+  Follow `references/protocol-lifecycle.md` for frozen legacy write and retirement windows.
   Do not document deep multi-pass, historical comparison, SARIF, MCP, or automatic source
   mutation as implemented.
 

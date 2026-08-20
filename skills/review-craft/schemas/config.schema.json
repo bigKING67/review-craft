@@ -8,6 +8,7 @@
   "properties": {
     "$schema": {"type": "string", "minLength": 1},
     "mode": {"enum": ["review", "diff", "focus"]},
+    "assuranceLevel": {"enum": ["fast", "standard", "assured"]},
     "profile": {"enum": ["auto", "generic", "application", "desktop-app", "frontend", "backend-service", "library", "cli", "monorepo", "agent-project", "data-pipeline"]},
     "focusDimensions": {
       "type": "array",

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-adapters.schema.json",
+  "title": "Real-repository benchmark adapter commands",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "adapters"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-adapters.v1"},
+    "adapters": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "command"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "command": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  }
+}

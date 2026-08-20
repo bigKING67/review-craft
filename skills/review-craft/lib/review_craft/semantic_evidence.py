@@ -57,9 +57,12 @@ def _claim_results(
             else (False, None)
         )
         expected = declaration["equals"]
-        matches = found and actual == expected and (
-            not isinstance(actual, bool) or isinstance(expected, bool)
-        ) and (not isinstance(expected, bool) or isinstance(actual, bool))
+        matches = (
+            found
+            and actual == expected
+            and (not isinstance(actual, bool) or isinstance(expected, bool))
+            and (not isinstance(expected, bool) or isinstance(actual, bool))
+        )
         results.append(
             {
                 "id": declaration["id"],
@@ -70,9 +73,7 @@ def _claim_results(
     return results
 
 
-def _pointer_scalar(
-    document: Any, output_valid: bool, pointer: str | None
-) -> tuple[bool, Any]:
+def _pointer_scalar(document: Any, output_valid: bool, pointer: str | None) -> tuple[bool, Any]:
     if pointer is None:
         return True, None
     if not output_valid:
@@ -118,9 +119,12 @@ def _stage_artifact(
     try:
         digest = hashlib.sha256()
         size = 0
-        with source.open("rb") as input_handle, tempfile.NamedTemporaryFile(
-            mode="wb", dir=staging_dir, prefix="artifact-", delete=False
-        ) as output_handle:
+        with (
+            source.open("rb") as input_handle,
+            tempfile.NamedTemporaryFile(
+                mode="wb", dir=staging_dir, prefix="artifact-", delete=False
+            ) as output_handle,
+        ):
             staged = Path(output_handle.name)
             before = os.fstat(input_handle.fileno())
             while chunk := input_handle.read(1024 * 1024):
@@ -165,9 +169,7 @@ def _capture_artifacts(
     captured: list[CapturedArtifact] = []
     roots = _artifact_roots(session_dir)
     for declaration in command.get("artifacts", []):
-        found, raw_path = _pointer_scalar(
-            document, output_valid, declaration["pathJsonPointer"]
-        )
+        found, raw_path = _pointer_scalar(document, output_valid, declaration["pathJsonPointer"])
         row: dict[str, Any] = {
             "id": declaration["id"],
             "status": "INVALID_OUTPUT" if not output_valid else "MISSING",
@@ -323,108 +325,129 @@ def receipt_semantic_errors(
     for declaration, row in zip(declarations, artifact_rows, strict=False):
         if not isinstance(row, dict):
             continue
-        found, raw_path = _pointer_scalar(
-            document, output_valid, declaration["pathJsonPointer"]
+        _validate_semantic_artifact(
+            receipt, declaration, row, document, output_valid, session_dir, prefix, errors
         )
-        expected_source = raw_path if found and isinstance(raw_path, str) else None
-        if row.get("sourcePath") != expected_source:
-            errors.append(
-                f"{prefix}: evidence artifact {declaration['id']} sourcePath does not match stdout"
-            )
-        stored = row.get("storedArtifact")
-        digest = row.get("sha256")
-        size = row.get("sizeBytes")
-        if stored is None:
-            if (
-                row.get("status") in {"VERIFIED", "MISMATCH"}
-                or digest is not None
-                or size is not None
-            ):
-                errors.append(
-                    f"{prefix}: evidence artifact {declaration['id']} has incomplete "
-                    "stored evidence"
-                )
-            continue
-        expected_stored = (
-            f"evidence/commands/{receipt.get('id')}.artifacts/{declaration['id']}"
-        )
-        if stored != expected_stored:
-            errors.append(
-                f"{prefix}: evidence artifact {declaration['id']} storedArtifact "
-                f"must be {expected_stored}"
-            )
-            continue
-        path = session_dir / stored
-        if path.is_symlink():
-            errors.append(f"{prefix}: evidence artifact {declaration['id']} must not be a symlink")
-            continue
-        try:
-            resolved = path.resolve(strict=True)
-            resolved.relative_to(session_dir)
-        except (OSError, ValueError) as error:
-            errors.append(f"{prefix}: invalid evidence artifact {declaration['id']}: {error}")
-            continue
-        if not resolved.is_file():
-            errors.append(f"{prefix}: evidence artifact {declaration['id']} must be a file")
-            continue
-        maximum = declaration.get("maxBytes", DEFAULT_ARTIFACT_MAX_BYTES)
-        if resolved.stat().st_size > maximum:
-            errors.append(
-                f"{prefix}: evidence artifact {declaration['id']} exceeds maxBytes {maximum}"
-            )
-            continue
-        actual_digest, actual_size = _file_digest_size(resolved)
-        if digest != actual_digest:
-            errors.append(
-                f"{prefix}: evidence artifact sha256 does not match {declaration['id']}"
-            )
-        if size != actual_size:
-            errors.append(
-                f"{prefix}: evidence artifact sizeBytes does not match {declaration['id']}"
-            )
-        expected_sha_found, expected_sha = _pointer_scalar(
-            document, output_valid, declaration.get("sha256JsonPointer")
-        )
-        expected_size_found, expected_size = _pointer_scalar(
-            document, output_valid, declaration.get("sizeBytesJsonPointer")
-        )
-        metadata_valid = (
-            output_valid
-            and expected_sha_found
-            and expected_size_found
-            and (
-                "sha256JsonPointer" not in declaration
-                or (
-                    isinstance(expected_sha, str)
-                    and re.fullmatch(r"[a-f0-9]{64}", expected_sha) is not None
-                )
-            )
-            and (
-                "sizeBytesJsonPointer" not in declaration
-                or (
-                    isinstance(expected_size, int)
-                    and not isinstance(expected_size, bool)
-                    and expected_size >= 0
-                )
-            )
-        )
-        expected_status = (
-            "INVALID_OUTPUT"
-            if not metadata_valid
-            else "MISMATCH"
-            if (
-                ("sha256JsonPointer" in declaration and expected_sha != actual_digest)
-                or ("sizeBytesJsonPointer" in declaration and expected_size != actual_size)
-            )
-            else "VERIFIED"
-        )
-        if row.get("status") != expected_status:
-            errors.append(
-                f"{prefix}: evidence artifact {declaration['id']} status must be {expected_status}"
-            )
     semantic_valid = all(row["status"] == "VERIFIED" for row in expected_claims) and all(
         isinstance(row, dict) and row.get("status") == "VERIFIED" for row in artifact_rows
     )
     if receipt.get("semanticEvidenceValid") is not semantic_valid:
         errors.append(f"{prefix}: semanticEvidenceValid does not match claim and artifact status")
     return errors
+
+
+def _validate_semantic_artifact(
+    receipt: dict[str, Any],
+    declaration: dict[str, Any],
+    row: dict[str, Any],
+    document: Any,
+    output_valid: bool,
+    session_dir: Path,
+    prefix: str,
+    errors: list[str],
+) -> None:
+    found, raw_path = _pointer_scalar(document, output_valid, declaration["pathJsonPointer"])
+    expected_source = raw_path if found and isinstance(raw_path, str) else None
+    if row.get("sourcePath") != expected_source:
+        errors.append(
+            f"{prefix}: evidence artifact {declaration['id']} sourcePath does not match stdout"
+        )
+    stored = row.get("storedArtifact")
+    digest = row.get("sha256")
+    size = row.get("sizeBytes")
+    if stored is None:
+        if row.get("status") in {"VERIFIED", "MISMATCH"} or digest is not None or size is not None:
+            errors.append(
+                f"{prefix}: evidence artifact {declaration['id']} has incomplete stored evidence"
+            )
+        return
+    resolved = _resolve_semantic_artifact(receipt, declaration, stored, session_dir, prefix, errors)
+    if resolved is None:
+        return
+    actual_digest, actual_size = _file_digest_size(resolved)
+    if digest != actual_digest:
+        errors.append(f"{prefix}: evidence artifact sha256 does not match {declaration['id']}")
+    if size != actual_size:
+        errors.append(f"{prefix}: evidence artifact sizeBytes does not match {declaration['id']}")
+    expected_status = _semantic_artifact_status(
+        declaration, document, output_valid, actual_digest, actual_size
+    )
+    if row.get("status") != expected_status:
+        errors.append(
+            f"{prefix}: evidence artifact {declaration['id']} status must be {expected_status}"
+        )
+
+
+def _resolve_semantic_artifact(
+    receipt: dict[str, Any],
+    declaration: dict[str, Any],
+    stored: Any,
+    session_dir: Path,
+    prefix: str,
+    errors: list[str],
+) -> Path | None:
+    expected = f"evidence/commands/{receipt.get('id')}.artifacts/{declaration['id']}"
+    if stored != expected:
+        errors.append(
+            f"{prefix}: evidence artifact {declaration['id']} storedArtifact must be {expected}"
+        )
+        return None
+    path = session_dir / stored
+    if path.is_symlink():
+        errors.append(f"{prefix}: evidence artifact {declaration['id']} must not be a symlink")
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(session_dir)
+    except (OSError, ValueError) as error:
+        errors.append(f"{prefix}: invalid evidence artifact {declaration['id']}: {error}")
+        return None
+    if not resolved.is_file():
+        errors.append(f"{prefix}: evidence artifact {declaration['id']} must be a file")
+        return None
+    maximum = declaration.get("maxBytes", DEFAULT_ARTIFACT_MAX_BYTES)
+    if resolved.stat().st_size > maximum:
+        errors.append(f"{prefix}: evidence artifact {declaration['id']} exceeds maxBytes {maximum}")
+        return None
+    return resolved
+
+
+def _semantic_artifact_status(
+    declaration: dict[str, Any],
+    document: Any,
+    output_valid: bool,
+    actual_digest: str,
+    actual_size: int,
+) -> str:
+    sha_found, expected_sha = _pointer_scalar(
+        document, output_valid, declaration.get("sha256JsonPointer")
+    )
+    size_found, expected_size = _pointer_scalar(
+        document, output_valid, declaration.get("sizeBytesJsonPointer")
+    )
+    metadata_valid = (
+        output_valid
+        and sha_found
+        and size_found
+        and (
+            "sha256JsonPointer" not in declaration
+            or isinstance(expected_sha, str)
+            and re.fullmatch(r"[a-f0-9]{64}", expected_sha) is not None
+        )
+        and (
+            "sizeBytesJsonPointer" not in declaration
+            or isinstance(expected_size, int)
+            and not isinstance(expected_size, bool)
+            and expected_size >= 0
+        )
+    )
+    if not metadata_valid:
+        return "INVALID_OUTPUT"
+    if (
+        "sha256JsonPointer" in declaration
+        and expected_sha != actual_digest
+        or "sizeBytesJsonPointer" in declaration
+        and expected_size != actual_size
+    ):
+        return "MISMATCH"
+    return "VERIFIED"

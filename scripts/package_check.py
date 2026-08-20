@@ -405,6 +405,50 @@ def _remediation_e2e(
         )
 
 
+def _assurance_e2e(
+    *,
+    package_root: Path,
+    work_root: Path,
+    target: Path,
+    environment: dict[str, str],
+) -> None:
+    preflight = _runtime_command(
+        package_root,
+        [
+            "preflight",
+            "--target",
+            str(target),
+            "--config",
+            str(target / ".review-craft.json"),
+            "--assurance",
+            "fast",
+            "--output-root",
+            str(work_root / "fast-runs"),
+        ],
+        cwd=work_root,
+        environment=environment,
+        label="installed fast-assurance preflight",
+    )
+    run_dir = Path(preflight["runDir"]).resolve(strict=True)
+    manifest = json.loads((run_dir / "review-manifest.json").read_text(encoding="utf-8"))
+    scope = json.loads((run_dir / "review-scope.json").read_text(encoding="utf-8"))
+    scorecard = json.loads((run_dir / "scorecard.json").read_text(encoding="utf-8"))
+    if manifest["configuration"].get("assuranceLevel") != "fast":
+        raise PackageCheckError("installed preflight did not preserve fast assurance")
+    if (
+        scope.get("assuranceLevel") != "fast"
+        or scorecard.get("assurance", {}).get("level") != "fast"
+    ):
+        raise PackageCheckError("installed fast assurance artifacts are inconsistent")
+    _runtime_command(
+        package_root,
+        ["validate", "--run-dir", str(run_dir), "--allow-draft"],
+        cwd=work_root,
+        environment=environment,
+        label="installed fast-assurance draft validation",
+    )
+
+
 def _install_and_test(tarball: Path, version: str, temporary: Path) -> None:
     install_root = temporary / "installed"
     _run(
@@ -441,6 +485,12 @@ def _install_and_test(tarball: Path, version: str, temporary: Path) -> None:
         work_root=work_root,
         environment=environment,
     )
+    _assurance_e2e(
+        package_root=package_root,
+        work_root=work_root,
+        target=target,
+        environment=environment,
+    )
     _remediation_e2e(
         package_root=package_root,
         work_root=work_root,
@@ -467,6 +517,7 @@ def _receipt(tarball: Path, *, version: str, file_count: int) -> dict[str, Any]:
             "installation": "PASSED",
             "doctor": "PASSED",
             "canonicalE2E": "PASSED",
+            "assuranceE2E": "PASSED",
             "remediationE2E": "PASSED",
             "targetMutationBoundary": "PASSED",
         },

@@ -44,9 +44,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _profile_context(
-    root: Path, paths: set[str]
-) -> tuple[dict[str, Any], set[str], str]:
+def _profile_context(root: Path, paths: set[str]) -> tuple[dict[str, Any], set[str], str]:
     package = _read_json(root / "package.json") if "package.json" in paths else {}
     dependencies: dict[str, Any] = {}
     for field in ("dependencies", "devDependencies", "peerDependencies"):
@@ -134,8 +132,7 @@ def _add_runtime_signals(
             "contains a backend service framework or entrypoint",
         )
     if any(
-        path in paths
-        for path in ("dbt_project.yml", "airflow.cfg", "dvc.yaml", "prefect.yaml")
+        path in paths for path in ("dbt_project.yml", "airflow.cfg", "dvc.yaml", "prefect.yaml")
     ) or any(path.startswith(("dags/", "etl/", "pipelines/")) for path in paths):
         _add_profile_signal(
             scores, signals, "data-pipeline", 8, "contains data-pipeline manifests or directories"
@@ -154,9 +151,7 @@ def _add_distribution_signals(
     if "[project.scripts]" in pyproject_text:
         _add_profile_signal(scores, signals, "cli", 7, "pyproject.toml declares project scripts")
     if any(PurePosixPath(path).name in {"__main__.py", "cli.py"} for path in paths):
-        _add_profile_signal(
-            scores, signals, "cli", 3, "contains a conventional CLI entry module"
-        )
+        _add_profile_signal(scores, signals, "cli", 3, "contains a conventional CLI entry module")
     if any(key in package for key in ("main", "module", "exports", "types")):
         _add_profile_signal(scores, signals, "library", 5, "package.json declares library exports")
     if "[project]" in pyproject_text and not scores["backend-service"]:
@@ -165,9 +160,7 @@ def _add_distribution_signals(
         )
 
 
-def detect_profile(
-    root: Path, records: list[dict[str, Any]], requested: str
-) -> dict[str, Any]:
+def detect_profile(root: Path, records: list[dict[str, Any]], requested: str) -> dict[str, Any]:
     if requested not in PROFILES:
         raise ValueError(f"unsupported profile: {requested}")
     if requested != "auto":
@@ -242,9 +235,7 @@ def build_module_map(records: list[dict[str, Any]]) -> dict[str, Any]:
     for identifier in sorted(grouped):
         rows = grouped[identifier]
         entry_points = sorted(
-            row["path"]
-            for row in rows
-            if PurePosixPath(row["path"]).name in ENTRY_POINT_NAMES
+            row["path"] for row in rows if PurePosixPath(row["path"]).name in ENTRY_POINT_NAMES
         )
         modules.append(
             {
@@ -292,9 +283,7 @@ def _python_module_candidates(source: str, module: str, level: int) -> list[str]
     return candidates
 
 
-def _resolve_python_import(
-    source: str, module: str, level: int, files: set[str]
-) -> str | None:
+def _resolve_python_import(source: str, module: str, level: int, files: set[str]) -> str | None:
     resolved = next(
         (
             candidate
@@ -361,37 +350,14 @@ def build_dependency_map(root: Path, records: list[dict[str, Any]]) -> dict[str,
             skipped.append({"path": relative, "reason": type(error).__name__})
             continue
         suffix = PurePosixPath(relative).suffix.lower()
-        if suffix == ".py":
-            try:
-                tree = ast.parse(text, filename=relative)
-            except SyntaxError:
-                skipped.append({"path": relative, "reason": "Python syntax error"})
-                continue
-            for node in ast.walk(tree):
-                targets: list[str] = []
-                if isinstance(node, ast.Import):
-                    targets.extend(alias.name for alias in node.names)
-                    level = 0
-                elif isinstance(node, ast.ImportFrom):
-                    level = node.level
-                    base = node.module or ""
-                    targets.append(base)
-                    targets.extend(
-                        f"{base}.{alias.name}" if base else alias.name for alias in node.names
-                    )
-                else:
-                    continue
-                for target in targets:
-                    resolved = _resolve_python_import(relative, target, level, files)
-                    if resolved and resolved != relative:
-                        edges.add((relative, resolved, "python-import", node.lineno))
-        else:
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                for pattern in JS_IMPORT_PATTERNS:
-                    for match in pattern.finditer(line):
-                        resolved = _resolve_js_import(relative, match.group(1), files)
-                        if resolved and resolved != relative:
-                            edges.add((relative, resolved, "javascript-import", line_number))
+        try:
+            if suffix == ".py":
+                _add_python_edges(relative, text, files, edges)
+            else:
+                _add_javascript_edges(relative, text, files, edges)
+        except SyntaxError:
+            skipped.append({"path": relative, "reason": "Python syntax error"})
+            continue
         analyzed += 1
 
     edge_rows = [
@@ -426,3 +392,42 @@ def build_dependency_map(root: Path, records: list[dict[str, Any]]) -> dict[str,
             "separate evidence.",
         ],
     }
+
+
+def _add_python_edges(
+    relative: str,
+    text: str,
+    files: set[str],
+    edges: set[tuple[str, str, str, int]],
+) -> None:
+    tree = ast.parse(text, filename=relative)
+    for node in ast.walk(tree):
+        targets: list[str] = []
+        if isinstance(node, ast.Import):
+            targets.extend(alias.name for alias in node.names)
+            level = 0
+        elif isinstance(node, ast.ImportFrom):
+            level = node.level
+            base = node.module or ""
+            targets.append(base)
+            targets.extend(f"{base}.{alias.name}" if base else alias.name for alias in node.names)
+        else:
+            continue
+        for target in targets:
+            resolved = _resolve_python_import(relative, target, level, files)
+            if resolved and resolved != relative:
+                edges.add((relative, resolved, "python-import", node.lineno))
+
+
+def _add_javascript_edges(
+    relative: str,
+    text: str,
+    files: set[str],
+    edges: set[tuple[str, str, str, int]],
+) -> None:
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern in JS_IMPORT_PATTERNS:
+            for match in pattern.finditer(line):
+                resolved = _resolve_js_import(relative, match.group(1), files)
+                if resolved and resolved != relative:
+                    edges.add((relative, resolved, "javascript-import", line_number))

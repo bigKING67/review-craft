@@ -197,6 +197,12 @@ class EvalContractTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             ),
+            "review-craft.eval-real-repository-suite": json.loads(
+                (
+                    ROOT
+                    / "evals/schemas/eval-real-repository-suite.schema.json"
+                ).read_text(encoding="utf-8")
+            ),
         }
         for path in sorted((ROOT / "evals/specs").glob("*.json")):
             with self.subTest(path=path.name):

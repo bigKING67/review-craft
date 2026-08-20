@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-adjudication.schema.json",
+  "title": "Independent human adjudication for a real-repository campaign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "campaignContentSha256", "adjudicators", "labels", "contentSha256"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-adjudication.v1"},
+    "campaignContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adjudicators": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "independent"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"const": "HUMAN"},
+          "independent": {"const": true}
+        }
+      }
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["adjudicatorId", "sampleId", "findingKey", "label", "rootCauseKey", "rationale"],
+        "properties": {
+          "adjudicatorId": {"type": "string", "minLength": 1},
+          "sampleId": {"type": "string", "minLength": 1},
+          "findingKey": {"type": "string", "minLength": 1},
+          "label": {"enum": ["TRUE_POSITIVE", "FALSE_POSITIVE", "UNRESOLVED"]},
+          "rootCauseKey": {"type": ["string", "null"], "minLength": 1},
+          "rationale": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

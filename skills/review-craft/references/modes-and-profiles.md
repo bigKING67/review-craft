@@ -85,10 +85,19 @@ Use the bounded path for one narrow evidence-backed decision when canonical arti
 scoring are unnecessary. Use canonical `review`, `diff`, or `focus` for complete inventory,
 candidate validation, scope-bound scoring, and deterministic reporting.
 
-`fast | standard | assured` is not a runtime configuration contract in version 0.6. Do not
-claim a high-assurance or independent-verifier execution unless the host actually performed
-and recorded those steps. The repository evidence-loop treatment is an eval protocol, not a
-runtime assurance switch.
+Canonical runs support `fast | standard | assured` through `assuranceLevel` or
+`preflight --assurance`:
+
+- `fast` is capped at 200 eligible files, three evidence commands, and 12 candidates. It
+  always remains provisional and cannot claim above E2.
+- `standard` runs the full canonical workflow without requiring a second verifier.
+- `assured` requires a final score, E3+ evidence, no unverified claims, and exactly one
+  registered `verification` artifact whose independent verifier agrees with every finding
+  in canonical order.
+
+The bounded path is still lighter than canonical `fast`: it emits neither canonical
+artifacts nor a numeric score. The repository evidence-loop treatment is an eval protocol,
+not proof that an `assured` verifier ran.
 
 ## Run schema compatibility
 
@@ -98,3 +107,4 @@ SHA-256, and byte sizes validate. Sealed run.v3 artifacts remain supported as hi
 validation input, but they do not gain run.v4 manual-artifact integrity guarantees. An
 unfinished run.v3 must be finalized with its matching v0.5 runtime or restarted with the
 current preflight. Review Craft never mutates or silently upgrades an old run in place.
+See [protocol-lifecycle.md](protocol-lifecycle.md) for frozen-write and retirement windows.

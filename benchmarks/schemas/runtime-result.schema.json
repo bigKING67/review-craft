@@ -124,6 +124,10 @@
       "properties": {
         "wallMs": {"type": "number", "minimum": 0},
         "cpuMs": {"type": "number", "minimum": 0},
+        "processPeakRssBytes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
         "pythonAllocatedPeakBytes": {
           "type": ["integer", "null"],
           "minimum": 0
@@ -152,6 +156,9 @@
         "p50CpuMs": {"$ref": "#/$defs/nullableNumber"},
         "p95CpuMs": {"$ref": "#/$defs/nullableNumber"},
         "p95PythonAllocatedPeakBytes": {"$ref": "#/$defs/nullableNumber"},
+        "p95ProcessPeakRssBytes": {"$ref": "#/$defs/nullableNumber"},
+        "p50FilesPerSecond": {"$ref": "#/$defs/nullableNumber"},
+        "p95FilesPerSecond": {"$ref": "#/$defs/nullableNumber"},
         "p50InputBlocks": {"$ref": "#/$defs/nullableNumber"},
         "p95InputBlocks": {"$ref": "#/$defs/nullableNumber"},
         "p50OutputBlocks": {"$ref": "#/$defs/nullableNumber"},
