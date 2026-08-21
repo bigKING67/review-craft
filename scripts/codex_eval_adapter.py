@@ -593,8 +593,9 @@ def run_codex_process(
     def persist_stdout() -> None:
         rendered = "".join(stdout_lines)
         write_usage_output(parse_codex_jsonl(rendered))
-        write_tool_trace_output(parse_tool_trace(rendered, replacements))
         write_progress_output(progress)
+        # A populated trace is the commit marker for matching usage and progress.
+        write_tool_trace_output(parse_tool_trace(rendered, replacements))
 
     def drain(
         stream: Any,
@@ -617,8 +618,8 @@ def run_codex_process(
             stream.close()
 
     write_usage_output(unavailable_usage("HOST_OUTPUT_EMPTY"))
-    write_tool_trace_output({"schema": "review-craft.eval-tool-trace.v1", "items": []})
     write_progress_output(progress)
+    write_tool_trace_output({"schema": "review-craft.eval-tool-trace.v1", "items": []})
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
