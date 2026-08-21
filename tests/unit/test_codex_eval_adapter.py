@@ -423,19 +423,25 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 "reasoning_output_tokens": 10,
             },
         }
-        child = (
-            "import json, sys, time; "
-            "sys.stdin.read(); "
-            f"print(json.dumps({thread_event!r}), flush=True); "
-            f"print(json.dumps({turn_event!r}), flush=True); "
-            f"print(json.dumps({command_event!r}), flush=True); "
-            "time.sleep(0.5); "
-            f"print(json.dumps({usage_event!r}), flush=True)"
-        )
         with tempfile.TemporaryDirectory() as directory:
             usage_path = Path(directory) / "usage.json"
             trace_path = Path(directory) / "tool-trace.json"
             progress_path = Path(directory) / "progress.json"
+            release_path = Path(directory) / "release-child"
+            child = "\n".join(
+                (
+                    "import json, os, sys, time",
+                    "sys.stdin.read()",
+                    f"print(json.dumps({thread_event!r}), flush=True)",
+                    f"print(json.dumps({turn_event!r}), flush=True)",
+                    f"print(json.dumps({command_event!r}), flush=True)",
+                    "deadline = time.monotonic() + 10",
+                    "while not os.path.exists(os.environ['REVIEW_CRAFT_TEST_RELEASE']) "
+                    "and time.monotonic() < deadline:",
+                    "    time.sleep(0.01)",
+                    f"print(json.dumps({usage_event!r}), flush=True)",
+                )
+            )
             result: list[int] = []
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -445,7 +451,11 @@ class CodexEvalAdapterTests(unittest.TestCase):
                     adapter.run_codex_process(
                         [sys.executable, "-c", child],
                         prompt="review\n",
-                        command_env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                        command_env={
+                            **os.environ,
+                            "PYTHONDONTWRITEBYTECODE": "1",
+                            "REVIEW_CRAFT_TEST_RELEASE": str(release_path),
+                        },
                         replacements={},
                     )
                 )
@@ -464,30 +474,43 @@ class CodexEvalAdapterTests(unittest.TestCase):
             ):
                 thread = threading.Thread(target=invoke)
                 thread.start()
-                deadline = time.monotonic() + 2
-                partial_trace = None
-                while time.monotonic() < deadline and thread.is_alive():
-                    if trace_path.is_file():
-                        candidate = json.loads(trace_path.read_text(encoding="utf-8"))
-                        if candidate["items"]:
-                            partial_trace = candidate
-                            break
-                    time.sleep(0.01)
-                self.assertTrue(thread.is_alive())
-                self.assertIsNotNone(partial_trace)
-                self.assertEqual(len(partial_trace["items"]), 1)
-                partial_usage = json.loads(usage_path.read_text(encoding="utf-8"))
-                self.assertEqual(partial_usage["availability"], "UNAVAILABLE")
-                self.assertEqual(partial_usage["unavailableReason"], "HOST_USAGE_MISSING")
-                partial_progress = json.loads(
-                    progress_path.read_text(encoding="utf-8")
-                )
-                self.assertEqual(partial_progress["availability"], "AVAILABLE")
-                self.assertEqual(partial_progress["lastEventType"], "item.completed")
-                self.assertEqual(partial_progress["eventCount"], 3)
-                self.assertEqual(partial_progress["itemEventCount"], 1)
-                self.assertIsNotNone(partial_progress["timeToFirstItemSeconds"])
-                thread.join(timeout=3)
+                try:
+                    deadline = time.monotonic() + 2
+                    partial_trace = None
+                    while time.monotonic() < deadline and thread.is_alive():
+                        if trace_path.is_file():
+                            candidate = json.loads(
+                                trace_path.read_text(encoding="utf-8")
+                            )
+                            if candidate["items"]:
+                                partial_trace = candidate
+                                break
+                        time.sleep(0.01)
+                    self.assertTrue(thread.is_alive())
+                    self.assertIsNotNone(partial_trace)
+                    self.assertEqual(len(partial_trace["items"]), 1)
+                    partial_usage = json.loads(
+                        usage_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(partial_usage["availability"], "UNAVAILABLE")
+                    self.assertEqual(
+                        partial_usage["unavailableReason"], "HOST_USAGE_MISSING"
+                    )
+                    partial_progress = json.loads(
+                        progress_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(partial_progress["availability"], "AVAILABLE")
+                    self.assertEqual(
+                        partial_progress["lastEventType"], "item.completed"
+                    )
+                    self.assertEqual(partial_progress["eventCount"], 3)
+                    self.assertEqual(partial_progress["itemEventCount"], 1)
+                    self.assertIsNotNone(
+                        partial_progress["timeToFirstItemSeconds"]
+                    )
+                finally:
+                    release_path.touch()
+                    thread.join(timeout=3)
 
             self.assertFalse(thread.is_alive())
             self.assertEqual(result, [0])
