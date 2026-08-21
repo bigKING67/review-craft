@@ -711,6 +711,33 @@ def _pairwise_jaccard(sets: list[set[str]]) -> dict[str, Any]:
     return _ratio(numerator, denominator)
 
 
+def _location_identity(locations: list[dict[str, Any]]) -> str:
+    normalized = sorted(
+        {
+            (
+                location["path"],
+                location["lineStart"],
+                location["lineEnd"],
+            )
+            for location in locations
+        }
+    )
+    return "location:" + sha256_json(normalized)
+
+
+def _root_cause_identity_set(output: dict[str, Any]) -> set[str]:
+    identities = {
+        f"probe:{probe['probeId']}"
+        for probe in output["probes"]
+        if probe["disposition"] == "VALIDATED" and probe["severity"] is not None
+    }
+    identities.update(
+        _location_identity(finding["locations"])
+        for finding in output["additionalFindings"]
+    )
+    return identities
+
+
 def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
@@ -816,6 +843,8 @@ def build_stability_report(
     finding_overlap_denominator = 0
     root_overlap_numerator = 0
     root_overlap_denominator = 0
+    root_identity_numerator = 0
+    root_identity_denominator = 0
     decision_numerator = 0
     decision_denominator = 0
     severity_numerator = 0
@@ -852,12 +881,16 @@ def build_stability_report(
             }
             for output in outputs
         ]
+        root_identity_sets = [_root_cause_identity_set(output) for output in outputs]
         finding_ratio = _pairwise_jaccard(finding_sets)
         root_ratio = _pairwise_jaccard(root_sets)
+        root_identity_ratio = _pairwise_jaccard(root_identity_sets)
         finding_overlap_numerator += finding_ratio["numerator"]
         finding_overlap_denominator += finding_ratio["denominator"]
         root_overlap_numerator += root_ratio["numerator"]
         root_overlap_denominator += root_ratio["denominator"]
+        root_identity_numerator += root_identity_ratio["numerator"]
+        root_identity_denominator += root_identity_ratio["denominator"]
         item_maps = [_item_maps(output) for output in outputs]
         decision_ratio = _agreement([item[0] for item in item_maps])
         severity_ratio = _agreement([item[1] for item in item_maps])
@@ -970,6 +1003,9 @@ def build_stability_report(
                 finding_overlap_numerator, finding_overlap_denominator
             ),
             "rootCauseOverlap": _ratio(root_overlap_numerator, root_overlap_denominator),
+            "rootCauseIdentityOverlap": _ratio(
+                root_identity_numerator, root_identity_denominator
+            ),
             "decisionStability": _ratio(decision_numerator, decision_denominator),
             "severityAgreement": _ratio(severity_numerator, severity_denominator),
             "scoreVariance": {
@@ -1024,6 +1060,16 @@ def validate_stability_report(
         return errors
     errors.extend(_content_hash_errors(payload, "stability report"))
     expected = build_stability_report(source_suite, campaign, adjudication)
-    if payload != expected:
-        errors.append("stability report does not match deterministic campaign analysis")
+    if payload == expected:
+        return errors
+    if "rootCauseIdentityOverlap" not in payload["metrics"]:
+        legacy_metrics = dict(expected["metrics"])
+        legacy_metrics.pop("rootCauseIdentityOverlap")
+        legacy_expected = {**expected, "metrics": legacy_metrics}
+        legacy_expected["contentSha256"] = sha256_json(
+            _without_content_hash(legacy_expected)
+        )
+        if payload == legacy_expected:
+            return errors
+    errors.append("stability report does not match deterministic campaign analysis")
     return errors

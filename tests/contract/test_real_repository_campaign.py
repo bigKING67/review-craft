@@ -68,6 +68,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         max_unknown_usage_samples: int = 1,
         max_timed_out_samples_per_model_profile: int = 1,
         max_artifact_invalid_samples: int = 1,
+        max_recovered_inactivity_samples_per_model_profile: int = 2,
     ) -> dict:
         repository_ids = repositories or [row["id"] for row in self.suite["repositories"]]
         return campaign_runtime.build_campaign_plan(
@@ -90,6 +91,9 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 max_timed_out_samples_per_model_profile
             ),
             max_artifact_invalid_samples=max_artifact_invalid_samples,
+            max_recovered_inactivity_samples_per_model_profile=(
+                max_recovered_inactivity_samples_per_model_profile
+            ),
         )
 
     def _output(self, repository: dict) -> dict:
@@ -207,6 +211,33 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         sample["artifacts"]["outputSha256"] = None
         return sample
 
+    def _recovered_inactivity_sample(self, **kwargs: object) -> dict:
+        sample = self._sample(**kwargs)
+        sample["lifecycle"] = {
+            "schema": "review-craft.eval-progress.v1",
+            "availability": "AVAILABLE",
+            "startedAt": "2026-08-21T00:00:00Z",
+            "threadStartedAt": "2026-08-21T00:00:01Z",
+            "turnStartedAt": "2026-08-21T00:00:02Z",
+            "firstItemAt": "2026-08-21T00:10:03Z",
+            "lastEventAt": "2026-08-21T00:12:00Z",
+            "lastEventType": "turn.completed",
+            "eventCount": 4,
+            "itemEventCount": 1,
+            "timeToFirstItemSeconds": 601.0,
+            "inactivityWarningSeconds": 300,
+            "inactivityDiagnosticSeconds": 600,
+            "inactivityState": "RECOVERED_DIAGNOSTIC",
+            "inactivityAgeSeconds": 0.0,
+            "maximumPreItemInactivitySeconds": 601.0,
+            "diagnosticCapturedAt": "2026-08-21T00:10:02Z",
+            "processAliveWhenDiagnosticCaptured": True,
+            "terminationReason": "PROCESS_EXIT",
+            "processTreeCleanup": "NOT_REQUIRED",
+            "unavailableReason": None,
+        }
+        return sample
+
     def _write_inputs(
         self,
         root: Path,
@@ -260,6 +291,11 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             first["budgets"]["maxTimedOutSamplesPerModelProfile"], 1
         )
         self.assertEqual(first["budgets"]["maxArtifactInvalidSamples"], 1)
+        self.assertEqual(first["budgets"]["inactivityWarningSeconds"], 300)
+        self.assertEqual(first["budgets"]["inactivityDiagnosticSeconds"], 600)
+        self.assertEqual(
+            first["budgets"]["maxRecoveredInactivitySamplesPerModelProfile"], 2
+        )
 
         reordered = copy.deepcopy(first)
         reordered["samples"][0], reordered["samples"][1] = (
@@ -287,6 +323,9 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         legacy = copy.deepcopy(previous)
         del legacy["budgets"]["maxUnknownUsageSamples"]
         del legacy["budgets"]["maxTimedOutSamplesPerModelProfile"]
+        del legacy["budgets"]["inactivityWarningSeconds"]
+        del legacy["budgets"]["inactivityDiagnosticSeconds"]
+        del legacy["budgets"]["maxRecoveredInactivitySamplesPerModelProfile"]
         campaign_runtime.seal(legacy)
         self.assertEqual(
             campaign_runtime.validate_campaign_plan(legacy, self.suite, self.blind),
@@ -299,6 +338,16 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertIn(
             "campaign plan cumulative failure budgets must be declared together",
             campaign_runtime.validate_campaign_plan(partial, self.suite, self.blind),
+        )
+
+        partial_inactivity = copy.deepcopy(legacy)
+        partial_inactivity["budgets"]["inactivityWarningSeconds"] = 300
+        campaign_runtime.seal(partial_inactivity)
+        self.assertIn(
+            "campaign plan inactivity budgets must be declared together",
+            campaign_runtime.validate_campaign_plan(
+                partial_inactivity, self.suite, self.blind
+            ),
         )
 
         state = campaign_runtime.new_run_state(
@@ -397,6 +446,18 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 artifact_invalid_samples=1,
             ),
             "ARTIFACT_INVALID_BUDGET_EXCEEDED",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                recovered_inactivity_samples_by_model_profile={
+                    "fixture-assured": 2
+                },
+            ),
+            "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
         )
         self.assertEqual(
             campaign_runtime.effective_sample_timeout(
@@ -885,6 +946,57 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 {"fixture-standard": 2},
             )
 
+    def test_runner_stops_after_second_recovered_inactivity_for_one_profile(
+        self,
+    ) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(
+            repositories=[repository_id],
+            max_recovered_inactivity_samples_per_model_profile=2,
+        )
+        outcomes = iter(("stalled", "success", "stalled"))
+
+        def sample_for_outcome(**kwargs: object) -> dict:
+            if next(outcomes) == "stalled":
+                return self._recovered_inactivity_sample(**kwargs)
+            return self._sample(**kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
+                ),
+                patch.object(runner, "_repository_state", side_effect=self._repository_state),
+                patch.object(
+                    runner, "_run_sample", side_effect=sample_for_outcome
+                ) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            ledger = json.loads(Path(args.budget_ledger).read_text(encoding="utf-8"))
+            self.assertEqual(run_sample.call_count, 3)
+            self.assertEqual(state["status"], "STOPPED")
+            self.assertEqual(
+                state["stopReason"],
+                "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
+            )
+            self.assertEqual(
+                state["recoveredInactivitySamplesByModelProfile"],
+                {"fixture-standard": 2},
+            )
+            self.assertEqual(
+                campaign_runtime.budget_ledger_recovered_inactivity_samples_by_model_profile(
+                    ledger
+                ),
+                {"fixture-standard": 2},
+            )
+
     def test_runner_stops_after_first_unknown_usage_sample(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]
         plan = self._plan(repositories=[repository_id])
@@ -1026,6 +1138,86 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(second_state["stopReason"], "TOKEN_CEILING")
             self.assertEqual(
                 campaign_runtime.budget_ledger_totals(ledger)[0], 240
+            )
+
+    def test_recovered_inactivity_budget_accumulates_across_shards(self) -> None:
+        repositories = [row["id"] for row in self.suite["repositories"][:2]]
+        plan = self._plan(
+            repositories=repositories,
+            max_recovered_inactivity_samples_per_model_profile=2,
+        )
+        first_attempt = True
+
+        def first_shard_sample(**kwargs: object) -> dict:
+            nonlocal first_attempt
+            if first_attempt:
+                first_attempt = False
+                return self._recovered_inactivity_sample(**kwargs)
+            return self._sample(**kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            args.shard = repositories[0]
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(runner, "_repository_state", side_effect=self._repository_state),
+                patch.object(
+                    runner, "_run_sample", side_effect=first_shard_sample
+                ) as first,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            self.assertEqual(first.call_count, 18)
+            first_state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(first_state["status"], "COMPLETED")
+            self.assertEqual(
+                first_state["recoveredInactivitySamplesByModelProfile"],
+                {"fixture-standard": 1},
+            )
+
+            args.run_dir = str(root / "run-second")
+            args.shard = repositories[1]
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(runner, "_repository_state", side_effect=self._repository_state),
+                patch.object(
+                    runner,
+                    "_run_sample",
+                    side_effect=self._recovered_inactivity_sample,
+                ) as second,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            self.assertEqual(second.call_count, 1)
+            second_state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            ledger = json.loads(
+                Path(args.budget_ledger).read_text(encoding="utf-8")
+            )
+            self.assertEqual(second_state["status"], "STOPPED")
+            self.assertEqual(
+                second_state["stopReason"],
+                "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
+            )
+            self.assertEqual(
+                campaign_runtime.budget_ledger_recovered_inactivity_samples_by_model_profile(
+                    ledger
+                ),
+                {"fixture-standard": 2},
             )
 
     def test_eight_repository_shards_merge_to_the_same_complete_matrix(self) -> None:

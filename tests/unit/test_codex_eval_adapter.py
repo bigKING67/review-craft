@@ -508,6 +508,16 @@ class CodexEvalAdapterTests(unittest.TestCase):
                     self.assertIsNotNone(
                         partial_progress["timeToFirstItemSeconds"]
                     )
+                    self.assertIsNotNone(
+                        partial_progress["timeToThreadStartedSeconds"]
+                    )
+                    self.assertIsNotNone(
+                        partial_progress["timeToTurnStartedSeconds"]
+                    )
+                    self.assertIsNotNone(partial_progress["firstToolCallAt"])
+                    self.assertIsNotNone(
+                        partial_progress["timeToFirstToolCallSeconds"]
+                    )
                 finally:
                     release_path.touch()
                     thread.join(timeout=3)
@@ -524,6 +534,113 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(final_progress["processTreeCleanup"], "NOT_REQUIRED")
             self.assertIn('"type": "item.completed"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
+
+    def test_codex_process_captures_and_recovers_live_inactivity_diagnostic(
+        self,
+    ) -> None:
+        events = [
+            {"type": "thread.started"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "command-1",
+                    "type": "command_execution",
+                    "command": "rg --files",
+                    "aggregated_output": "file.py\n",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            progress_path = root / "progress.json"
+            release_path = root / "release-child"
+            child = "\n".join(
+                (
+                    "import json, os, sys, time",
+                    "sys.stdin.read()",
+                    f"print(json.dumps({events[0]!r}), flush=True)",
+                    f"print(json.dumps({events[1]!r}), flush=True)",
+                    "while not os.path.exists(os.environ['REVIEW_CRAFT_TEST_RELEASE']):",
+                    "    time.sleep(0.01)",
+                    f"print(json.dumps({events[2]!r}), flush=True)",
+                )
+            )
+            result: list[int] = []
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            def invoke() -> None:
+                result.append(
+                    adapter.run_codex_process(
+                        [sys.executable, "-c", child],
+                        prompt="review\n",
+                        command_env={
+                            **os.environ,
+                            "PYTHONDONTWRITEBYTECODE": "1",
+                            "REVIEW_CRAFT_TEST_RELEASE": str(release_path),
+                        },
+                        replacements={},
+                    )
+                )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                        adapter.INACTIVITY_WARNING_ENV: "1",
+                        adapter.INACTIVITY_DIAGNOSTIC_ENV: "2",
+                    },
+                ),
+                patch.object(adapter.sys, "stdout", stdout),
+                patch.object(adapter.sys, "stderr", stderr),
+            ):
+                thread = threading.Thread(target=invoke)
+                thread.start()
+                try:
+                    deadline = time.monotonic() + 4
+                    diagnostic = None
+                    while time.monotonic() < deadline and thread.is_alive():
+                        if progress_path.is_file():
+                            candidate = json.loads(
+                                progress_path.read_text(encoding="utf-8")
+                            )
+                            if candidate["inactivityState"] == "DIAGNOSTIC":
+                                diagnostic = candidate
+                                break
+                        time.sleep(0.05)
+                    self.assertIsNotNone(diagnostic)
+                    assert diagnostic is not None
+                    self.assertTrue(diagnostic["processAliveWhenDiagnosticCaptured"])
+                    self.assertIsNotNone(diagnostic["diagnosticCapturedAt"])
+                finally:
+                    release_path.touch()
+                    thread.join(timeout=3)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result, [0])
+            final = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(final["inactivityState"], "RECOVERED_DIAGNOSTIC")
+            self.assertGreaterEqual(final["maximumPreItemInactivitySeconds"], 2)
+
+    def test_inactivity_thresholds_fail_closed(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    adapter.INACTIVITY_WARNING_ENV: "600",
+                    adapter.INACTIVITY_DIAGNOSTIC_ENV: "300",
+                },
+            ),
+            self.assertRaisesRegex(
+                adapter.AdapterError,
+                "warning threshold must be below diagnostic",
+            ),
+        ):
+            adapter.inactivity_thresholds()
 
     def test_explicit_provider_is_validated_and_rendered_as_codex_config(self) -> None:
         args = adapter.parse_args(

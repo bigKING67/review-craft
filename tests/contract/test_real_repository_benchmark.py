@@ -523,6 +523,10 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                     "eventCount": 2,
                     "itemEventCount": 0,
                     "timeToFirstItemSeconds": None,
+                    "inactivityWarningSeconds": 3,
+                    "inactivityDiagnosticSeconds": 6,
+                    "inactivityState": "DIAGNOSTIC",
+                    "inactivityAgeSeconds": 6.5,
                     "terminationReason": None,
                     "processTreeCleanup": "NOT_VERIFIED",
                     "unavailableReason": None,
@@ -555,6 +559,13 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             self.assertEqual(sample["lifecycle"]["lastEventType"], "turn.started")
             self.assertEqual(sample["lifecycle"]["terminationReason"], "TIMEOUT")
             self.assertEqual(sample["lifecycle"]["processTreeCleanup"], "COMPLETED")
+            self.assertEqual(
+                sample["lifecycle"]["inactivityState"],
+                "TIMED_OUT_BEFORE_FIRST_ITEM",
+            )
+            self.assertEqual(
+                sample["lifecycle"]["maximumPreItemInactivitySeconds"], 6.5
+            )
             sample_dir = next((root / "run/samples").iterdir())
             self.assertEqual(
                 (sample_dir / "stdout.txt").read_text(encoding="utf-8"),
@@ -727,6 +738,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["minimumRepetitions"], 3)
         self.assertEqual(report["metrics"]["findingOverlap"]["value"], 1)
         self.assertEqual(report["metrics"]["rootCauseOverlap"]["value"], 1)
+        self.assertEqual(report["metrics"]["rootCauseIdentityOverlap"]["value"], 1)
         self.assertEqual(report["metrics"]["decisionStability"]["value"], 1)
         self.assertEqual(report["metrics"]["severityAgreement"]["value"], 1)
         self.assertEqual(report["metrics"]["scoreVariance"]["medianAbsoluteDeviation"], 2)
@@ -741,6 +753,72 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         self.assertEqual(
             contracts.validate_stability_report(report, self.suite, campaign, None),
             [],
+        )
+
+    def test_normalized_root_cause_identity_ignores_free_text_key_drift(self) -> None:
+        campaign, _blind = self._campaign()
+        for sample in campaign["samples"]:
+            for probe in sample["output"]["probes"]:
+                if probe["disposition"] == "VALIDATED" and probe["severity"] is not None:
+                    probe["rootCauseKey"] = "free-text-" + sample["sampleId"]
+        campaign["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in campaign.items() if key != "contentSha256"}
+        )
+        report = contracts.build_stability_report(self.suite, campaign)
+        self.assertEqual(report["metrics"]["rootCauseOverlap"]["value"], 0)
+        self.assertEqual(
+            report["metrics"]["rootCauseIdentityOverlap"]["value"], 1
+        )
+
+        legacy = copy.deepcopy(report)
+        del legacy["metrics"]["rootCauseIdentityOverlap"]
+        legacy["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in legacy.items() if key != "contentSha256"}
+        )
+        self.assertEqual(
+            contracts.validate_stability_report(legacy, self.suite, campaign), []
+        )
+
+    def test_additional_finding_identity_uses_evidence_location(self) -> None:
+        campaign, _blind = self._campaign()
+        repository = self.suite["repositories"][0]
+        for index, sample in enumerate(campaign["samples"]):
+            sample["output"]["additionalFindings"] = [
+                {
+                    "findingId": f"finding-{index}",
+                    "title": f"Free text title {index}",
+                    "decision": "CLEAN_UP",
+                    "severity": "P3",
+                    "rootCauseKey": f"free-text-root-{index}",
+                    "locations": [
+                        {
+                            "path": repository["scope"][0],
+                            "lineStart": 1,
+                            "lineEnd": 1,
+                        }
+                    ],
+                    "evidence": [
+                        {
+                            "claim": f"Free text evidence {index}",
+                            "locations": [
+                                {
+                                    "path": repository["scope"][0],
+                                    "lineStart": 1,
+                                    "lineEnd": 1,
+                                }
+                            ],
+                        }
+                    ],
+                    "confidence": "MEDIUM",
+                }
+            ]
+        campaign["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in campaign.items() if key != "contentSha256"}
+        )
+        report = contracts.build_stability_report(self.suite, campaign)
+        self.assertLess(report["metrics"]["rootCauseOverlap"]["value"], 1)
+        self.assertEqual(
+            report["metrics"]["rootCauseIdentityOverlap"]["value"], 1
         )
 
     def test_independent_adjudication_covers_every_additional_finding(self) -> None:

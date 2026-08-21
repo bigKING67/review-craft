@@ -32,6 +32,31 @@
     "eventCount": {"type": "integer", "minimum": 0},
     "itemEventCount": {"type": "integer", "minimum": 0},
     "timeToFirstItemSeconds": {"type": ["number", "null"], "minimum": 0},
+    "timeToThreadStartedSeconds": {"type": ["number", "null"], "minimum": 0},
+    "timeToTurnStartedSeconds": {"type": ["number", "null"], "minimum": 0},
+    "firstToolCallAt": {"type": ["string", "null"], "format": "date-time"},
+    "timeToFirstToolCallSeconds": {"type": ["number", "null"], "minimum": 0},
+    "lastSemanticProgressAt": {"type": ["string", "null"], "format": "date-time"},
+    "lastSemanticProgressType": {"type": ["string", "null"], "minLength": 1},
+    "semanticProgressEventCount": {"type": "integer", "minimum": 0},
+    "inactivityWarningSeconds": {"type": ["integer", "null"], "minimum": 1},
+    "inactivityDiagnosticSeconds": {"type": ["integer", "null"], "minimum": 1},
+    "inactivityState": {
+      "enum": [
+        "NOT_CONFIGURED",
+        "NORMAL",
+        "WARNING",
+        "DIAGNOSTIC",
+        "RECOVERED_WARNING",
+        "RECOVERED_DIAGNOSTIC",
+        "TIMED_OUT_BEFORE_FIRST_ITEM",
+        "NO_ITEM_BEFORE_EXIT"
+      ]
+    },
+    "inactivityAgeSeconds": {"type": ["number", "null"], "minimum": 0},
+    "maximumPreItemInactivitySeconds": {"type": ["number", "null"], "minimum": 0},
+    "diagnosticCapturedAt": {"type": ["string", "null"], "format": "date-time"},
+    "processAliveWhenDiagnosticCaptured": {"type": ["boolean", "null"]},
     "terminationReason": {
       "enum": [null, "PROCESS_EXIT", "TIMEOUT", "ADAPTER_UNAVAILABLE"]
     },

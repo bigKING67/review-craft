@@ -107,7 +107,13 @@
         "maxConsecutiveInfrastructureFailures": {"type": "integer", "minimum": 1},
         "maxUnknownUsageSamples": {"type": "integer", "minimum": 1},
         "maxTimedOutSamplesPerModelProfile": {"type": "integer", "minimum": 1},
-        "maxArtifactInvalidSamples": {"type": "integer", "minimum": 1}
+        "maxArtifactInvalidSamples": {"type": "integer", "minimum": 1},
+        "inactivityWarningSeconds": {"type": "integer", "minimum": 1},
+        "inactivityDiagnosticSeconds": {"type": "integer", "minimum": 1},
+        "maxRecoveredInactivitySamplesPerModelProfile": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "samples": {

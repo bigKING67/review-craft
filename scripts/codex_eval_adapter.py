@@ -21,6 +21,9 @@ PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
+INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
+INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
+INACTIVITY_POLL_SECONDS = 0.25
 USAGE_COLLECTOR = {
     "name": "codex-cli",
     "version": ADAPTER_VERSION,
@@ -311,10 +314,43 @@ def new_progress_receipt(started_at: str) -> dict[str, Any]:
         "eventCount": 0,
         "itemEventCount": 0,
         "timeToFirstItemSeconds": None,
+        "timeToThreadStartedSeconds": None,
+        "timeToTurnStartedSeconds": None,
+        "firstToolCallAt": None,
+        "timeToFirstToolCallSeconds": None,
+        "lastSemanticProgressAt": None,
+        "lastSemanticProgressType": None,
+        "semanticProgressEventCount": 0,
+        "inactivityWarningSeconds": None,
+        "inactivityDiagnosticSeconds": None,
+        "inactivityState": "NOT_CONFIGURED",
+        "inactivityAgeSeconds": None,
+        "maximumPreItemInactivitySeconds": None,
+        "diagnosticCapturedAt": None,
+        "processAliveWhenDiagnosticCaptured": None,
         "terminationReason": None,
         "processTreeCleanup": "NOT_VERIFIED",
         "unavailableReason": "HOST_OUTPUT_EMPTY",
     }
+
+
+def inactivity_thresholds() -> tuple[int | None, int | None]:
+    raw_warning = os.environ.get(INACTIVITY_WARNING_ENV)
+    raw_diagnostic = os.environ.get(INACTIVITY_DIAGNOSTIC_ENV)
+    if raw_warning is None and raw_diagnostic is None:
+        return None, None
+    if raw_warning is None or raw_diagnostic is None:
+        raise AdapterError("inactivity warning and diagnostic thresholds must be set together")
+    try:
+        warning = int(raw_warning)
+        diagnostic = int(raw_diagnostic)
+    except ValueError as error:
+        raise AdapterError("inactivity thresholds must be positive integers") from error
+    if warning < 1 or diagnostic < 1:
+        raise AdapterError("inactivity thresholds must be positive integers")
+    if warning >= diagnostic:
+        raise AdapterError("inactivity warning threshold must be below diagnostic threshold")
+    return warning, diagnostic
 
 
 def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
@@ -555,6 +591,14 @@ def run_codex_process(
     progress_started = time.monotonic()
     turn_started: float | None = None
     progress_invalid = False
+    warning_seconds, diagnostic_seconds = inactivity_thresholds()
+    progress["inactivityWarningSeconds"] = warning_seconds
+    progress["inactivityDiagnosticSeconds"] = diagnostic_seconds
+    if warning_seconds is not None:
+        progress["inactivityState"] = "NORMAL"
+    progress_lock = threading.Lock()
+    sidecar_lock = threading.Lock()
+    monitor_stop = threading.Event()
 
     def record_progress(line: str) -> None:
         nonlocal progress_invalid, turn_started
@@ -566,36 +610,97 @@ def run_codex_process(
             event = None
         event_type = event.get("type") if isinstance(event, dict) else None
         if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
-            progress_invalid = True
-            progress["availability"] = "UNAVAILABLE"
-            progress["unavailableReason"] = "HOST_OUTPUT_INVALID"
+            with progress_lock:
+                progress_invalid = True
+                progress["availability"] = "UNAVAILABLE"
+                progress["unavailableReason"] = "HOST_OUTPUT_INVALID"
             return
-        if not progress_invalid:
-            progress["availability"] = "AVAILABLE"
-            progress["unavailableReason"] = None
-        progress["eventCount"] += 1
-        progress["lastEventAt"] = observed_at
-        progress["lastEventType"] = event_type
-        if event_type == "thread.started" and progress["threadStartedAt"] is None:
-            progress["threadStartedAt"] = observed_at
-        if event_type == "turn.started" and progress["turnStartedAt"] is None:
-            progress["turnStartedAt"] = observed_at
-            turn_started = observed_monotonic
-        if event_type.startswith("item."):
-            progress["itemEventCount"] += 1
-            if progress["firstItemAt"] is None:
-                progress["firstItemAt"] = observed_at
-                baseline = turn_started or progress_started
-                progress["timeToFirstItemSeconds"] = max(
-                    0.0, round(observed_monotonic - baseline, 3)
+        with progress_lock:
+            if not progress_invalid:
+                progress["availability"] = "AVAILABLE"
+                progress["unavailableReason"] = None
+            progress["eventCount"] += 1
+            progress["lastEventAt"] = observed_at
+            progress["lastEventType"] = event_type
+            if event_type == "thread.started" and progress["threadStartedAt"] is None:
+                progress["threadStartedAt"] = observed_at
+                progress["timeToThreadStartedSeconds"] = max(
+                    0.0, round(observed_monotonic - progress_started, 3)
                 )
+            if event_type == "turn.started" and progress["turnStartedAt"] is None:
+                progress["turnStartedAt"] = observed_at
+                progress["timeToTurnStartedSeconds"] = max(
+                    0.0, round(observed_monotonic - progress_started, 3)
+                )
+                turn_started = observed_monotonic
+            if event_type.startswith("item."):
+                progress["itemEventCount"] += 1
+                progress["semanticProgressEventCount"] += 1
+                progress["lastSemanticProgressAt"] = observed_at
+                item = event.get("item") if isinstance(event, dict) else None
+                item_type = item.get("type") if isinstance(item, dict) else None
+                progress["lastSemanticProgressType"] = (
+                    f"{event_type}:{item_type}" if isinstance(item_type, str) else event_type
+                )
+                baseline = turn_started or progress_started
+                if progress["firstItemAt"] is None:
+                    elapsed = max(0.0, round(observed_monotonic - baseline, 3))
+                    progress["firstItemAt"] = observed_at
+                    progress["timeToFirstItemSeconds"] = elapsed
+                    progress["maximumPreItemInactivitySeconds"] = elapsed
+                    progress["inactivityAgeSeconds"] = 0.0
+                    if progress["inactivityState"] == "DIAGNOSTIC":
+                        progress["inactivityState"] = "RECOVERED_DIAGNOSTIC"
+                    elif progress["inactivityState"] == "WARNING":
+                        progress["inactivityState"] = "RECOVERED_WARNING"
+                if (
+                    item_type in TOOL_ITEM_TYPES
+                    and progress["firstToolCallAt"] is None
+                ):
+                    progress["firstToolCallAt"] = observed_at
+                    progress["timeToFirstToolCallSeconds"] = max(
+                        0.0, round(observed_monotonic - baseline, 3)
+                    )
+
+    def progress_snapshot() -> dict[str, Any]:
+        with progress_lock:
+            return dict(progress)
 
     def persist_stdout() -> None:
-        rendered = "".join(stdout_lines)
-        write_usage_output(parse_codex_jsonl(rendered))
-        write_progress_output(progress)
-        # A populated trace is the commit marker for matching usage and progress.
-        write_tool_trace_output(parse_tool_trace(rendered, replacements))
+        with sidecar_lock:
+            rendered = "".join(stdout_lines)
+            write_usage_output(parse_codex_jsonl(rendered))
+            write_progress_output(progress_snapshot())
+            # A populated trace is the commit marker for matching usage and progress.
+            write_tool_trace_output(parse_tool_trace(rendered, replacements))
+
+    def persist_progress() -> None:
+        with sidecar_lock:
+            write_progress_output(progress_snapshot())
+
+    def monitor_inactivity() -> None:
+        if warning_seconds is None or diagnostic_seconds is None:
+            return
+        while not monitor_stop.wait(INACTIVITY_POLL_SECONDS):
+            persist = False
+            with progress_lock:
+                if progress["firstItemAt"] is not None:
+                    return
+                baseline = turn_started or progress_started
+                age = max(0.0, round(time.monotonic() - baseline, 3))
+                progress["inactivityAgeSeconds"] = age
+                if age >= diagnostic_seconds and progress["inactivityState"] != "DIAGNOSTIC":
+                    progress["inactivityState"] = "DIAGNOSTIC"
+                    progress["diagnosticCapturedAt"] = utc_now()
+                    progress["processAliveWhenDiagnosticCaptured"] = (
+                        process.poll() is None
+                    )
+                    persist = True
+                elif age >= warning_seconds and progress["inactivityState"] == "NORMAL":
+                    progress["inactivityState"] = "WARNING"
+                    persist = True
+            if persist:
+                persist_progress()
 
     def drain(
         stream: Any,
@@ -647,6 +752,8 @@ def run_codex_process(
     )
     stdout_thread.start()
     stderr_thread.start()
+    monitor_thread = threading.Thread(target=monitor_inactivity, daemon=True)
+    monitor_thread.start()
     try:
         process.stdin.write(prompt)
         process.stdin.flush()
@@ -656,12 +763,20 @@ def run_codex_process(
         process.stdin.close()
 
     returncode = process.wait()
+    monitor_stop.set()
+    monitor_thread.join()
     stdout_thread.join()
     stderr_thread.join()
     if reader_errors:
         raise AdapterError(f"codex stream reader failed: {reader_errors[0]}")
-    progress["terminationReason"] = "PROCESS_EXIT"
-    progress["processTreeCleanup"] = "NOT_REQUIRED"
+    with progress_lock:
+        if (
+            warning_seconds is not None
+            and progress["firstItemAt"] is None
+        ):
+            progress["inactivityState"] = "NO_ITEM_BEFORE_EXIT"
+        progress["terminationReason"] = "PROCESS_EXIT"
+        progress["processTreeCleanup"] = "NOT_REQUIRED"
     persist_stdout()
     return returncode
 

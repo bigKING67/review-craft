@@ -48,6 +48,9 @@ uv run --locked python scripts/real_repository_benchmark.py plan-campaign \
   --max-unknown-usage-samples 1 \
   --max-timed-out-samples-per-model-profile 1 \
   --max-artifact-invalid-samples 1 \
+  --inactivity-warning-seconds 300 \
+  --inactivity-diagnostic-seconds 600 \
+  --max-recovered-inactivity-samples-per-model-profile 2 \
   --output <external-path>/campaign-plan.json
 
 uv run --locked python scripts/real_repository_benchmark.py \
@@ -114,9 +117,12 @@ uv run --locked python scripts/real_repository_benchmark.py analyze-stability \
 ```
 
 New plans stop before scheduling another sample after the cumulative unknown-usage,
-artifact-invalid, or any single model-profile timeout budget is reached. These fail-closed
-limits apply across repository shards through the shared budget ledger; they do not increase
-the per-sample timeout. Prompted output invariants are not hidden post-processing rules:
+artifact-invalid, or any single model-profile timeout budget is reached. They also capture a
+live progress diagnostic after 600 seconds without a first semantic item. A recovered diagnostic
+stall is counted by model profile: the first continues, while the second stops subsequent
+scheduling. These fail-closed limits apply across repository shards through the shared budget
+ledger; they do not shorten or increase the per-sample timeout. Prompted output invariants are
+not hidden post-processing rules:
 `BLOCKED` probes must use null severity, and every reported location must stay inside the
 declared benchmark scope.
 
@@ -136,7 +142,8 @@ plan execution or campaign-level budget enforcement. A plan binds the suite, bli
 materialization receipt, adapter configuration, live REAL_HOST descriptions, deterministic
 sample order, per-sample timeout, global token and wall-time ceilings, and infrastructure
 circuit-breaker threshold. New plans also bind cumulative unknown-usage, artifact-invalid,
-and per-model-profile timeout ceilings.
+and per-model-profile timeout ceilings, plus inactivity warning/diagnostic thresholds and the
+recovered-inactivity ceiling.
 
 Each sample commits an atomic `checkpoint.json` marker containing the exact content-bound run
 state before replacing the `campaign.json` and `run-state.json` mirrors. Resume trusts the
@@ -150,8 +157,8 @@ Every shard in one plan must use the same external `--budget-ledger`. The runner
 exclusive lock for the complete shard invocation, reserves one shard before creating its run
 state, and refuses a new shard while the latest shard is still `RUNNING`. The content-bound
 ledger aggregates reported tokens, unknown-usage samples, artifact-invalid samples, active
-runner time, and the per-model-profile timeout counts plus consecutive infrastructure-failure
-tail across the serial shard order. A resume repairs the latest ledger contribution from the
+runner time, per-model-profile timeout and recovered-inactivity counts, plus the consecutive
+infrastructure-failure tail across the serial shard order. A resume repairs the latest ledger contribution from the
 committed checkpoint; it cannot recreate a missing ledger or switch to an older shard. Token
 usage is known only after an adapter checkpoint, so the hard reported-token ceiling stops before
 the next sample and may be exceeded by the final completed sample's reported usage.
@@ -172,3 +179,12 @@ human adjudication completion gate.
 The coordinator-only mapping is required to assemble the two completed submissions; a blank
 template or a single reviewer cannot produce a valid v2 adjudication. Legacy v1 adjudication
 remains validation-compatible for historical campaigns, but it covers additional findings only.
+
+The stability report exposes two distinct root-cause signals. `rootCauseOverlap` preserves the
+raw model-authored keys for continuity. `rootCauseIdentityOverlap` removes wording drift by using
+the declared probe ID for controlled probes and a hash of the exact evidence-location set for
+additional findings. Location-range drift can still reduce the latter, intentionally: the
+normalizer does not infer unrecorded semantics. Conversely, two additional findings on the exact
+same location set can over-match, so this metric remains a location-backed proxy rather than
+human root-cause equivalence. Historical stability reports without the additive identity metric
+remain validation-compatible.

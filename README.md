@@ -767,8 +767,19 @@ High-cost execution uses a content-bound deterministic plan, resumable exact-pre
 checkpoints, serial repository shards, a shared content-bound budget ledger, validated merge
 receipts, global reported-token and active runner-time ceilings, and a cross-shard consecutive
 infrastructure-failure circuit breaker. New plans also stop after the declared cumulative
-unknown-usage, artifact-invalid, or per-model-profile timeout limit; lifecycle receipts preserve the last
-observed host event and timeout cleanup outcome. The legacy direct `run`
+unknown-usage, artifact-invalid, or per-model-profile timeout limit. New plans also bind a
+300-second inactivity warning, a 600-second live diagnostic capture, and a two-recovered-stall
+per-model-profile ceiling. The first recovered diagnostic stall remains evidence and execution
+continues; the second for that model profile stops before another sample is scheduled across
+repository shards. This policy does not shorten the declared per-sample timeout. Lifecycle
+receipts preserve thread/turn/item/tool timing, last semantic progress, the diagnostic process
+liveness observation, and timeout cleanup outcome. The stability report keeps the raw
+model-authored `rootCauseOverlap` and adds `rootCauseIdentityOverlap`, which uses canonical probe
+identity or exact evidence locations rather than free-text root-cause wording. The location
+projection is a conservative proxy: range drift can under-match, while two findings on the exact
+same span can over-match. Legacy plans,
+lifecycle receipts, ledgers, run states, and stability reports remain validation-compatible. The
+legacy direct `run`
 command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,
 `validate-campaign-run`, and `merge-campaign-runs` for a full campaign. A campaign is Golden
 only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions

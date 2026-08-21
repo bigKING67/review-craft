@@ -19,6 +19,7 @@ from eval_output_safety import (
 from eval_output_safety import redact_output as _redact_output
 from real_repository_campaign import (
     budget_ledger_artifact_invalid_samples,
+    budget_ledger_recovered_inactivity_samples_by_model_profile,
     budget_ledger_timed_out_samples_by_model_profile,
     budget_ledger_totals,
     budget_stop_reason,
@@ -76,6 +77,8 @@ DEFAULT_EVIDENCE_ROOT = ROOT / "evals/real-repositories/verifiers"
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
+INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
+INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.locking import exclusive_file_lock  # noqa: E402
@@ -321,6 +324,20 @@ def _unavailable_progress(started_at: str, reason: str) -> dict[str, Any]:
         "eventCount": 0,
         "itemEventCount": 0,
         "timeToFirstItemSeconds": None,
+        "timeToThreadStartedSeconds": None,
+        "timeToTurnStartedSeconds": None,
+        "firstToolCallAt": None,
+        "timeToFirstToolCallSeconds": None,
+        "lastSemanticProgressAt": None,
+        "lastSemanticProgressType": None,
+        "semanticProgressEventCount": 0,
+        "inactivityWarningSeconds": None,
+        "inactivityDiagnosticSeconds": None,
+        "inactivityState": "NOT_CONFIGURED",
+        "inactivityAgeSeconds": None,
+        "maximumPreItemInactivitySeconds": None,
+        "diagnosticCapturedAt": None,
+        "processAliveWhenDiagnosticCaptured": None,
         "terminationReason": None,
         "processTreeCleanup": "NOT_VERIFIED",
         "unavailableReason": reason,
@@ -354,6 +371,14 @@ def _finalize_progress(
     elif completed.timed_out:
         progress["terminationReason"] = "TIMEOUT"
         progress["processTreeCleanup"] = "COMPLETED"
+        if (
+            progress.get("inactivityWarningSeconds") is not None
+            and progress.get("firstItemAt") is None
+        ):
+            progress["inactivityState"] = "TIMED_OUT_BEFORE_FIRST_ITEM"
+            progress["maximumPreItemInactivitySeconds"] = progress.get(
+                "inactivityAgeSeconds"
+            )
     else:
         progress["terminationReason"] = "PROCESS_EXIT"
         progress["processTreeCleanup"] = "NOT_REQUIRED"
@@ -532,6 +557,8 @@ def _run_sample(
     timeout_seconds: int,
     skill_root: Path,
     evidence_root: Path,
+    inactivity_warning_seconds: int | None = None,
+    inactivity_diagnostic_seconds: int | None = None,
 ) -> dict[str, Any]:
     sample_id = (
         f"{repository['id']}--{treatment.lower().replace('_', '-')}--{adapter['id']}--r{repetition}"
@@ -582,6 +609,13 @@ def _run_sample(
     stderr = b""
     completed: ProcessResult | None = None
     try:
+        inactivity_env = {}
+        if inactivity_warning_seconds is not None:
+            inactivity_env[INACTIVITY_WARNING_ENV] = str(inactivity_warning_seconds)
+        if inactivity_diagnostic_seconds is not None:
+            inactivity_env[INACTIVITY_DIAGNOSTIC_ENV] = str(
+                inactivity_diagnostic_seconds
+            )
         completed = run_process(
             command,
             cwd=ROOT,
@@ -591,6 +625,7 @@ def _run_sample(
                 USAGE_OUTPUT_ENV: str(adapter_usage_path),
                 TOOL_TRACE_OUTPUT_ENV: str(tool_trace_path),
                 PROGRESS_OUTPUT_ENV: str(progress_path),
+                **inactivity_env,
             },
         )
         stdout = completed.stdout
@@ -1357,6 +1392,11 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
             args.max_timed_out_samples_per_model_profile
         ),
         max_artifact_invalid_samples=args.max_artifact_invalid_samples,
+        inactivity_warning_seconds=args.inactivity_warning_seconds,
+        inactivity_diagnostic_seconds=args.inactivity_diagnostic_seconds,
+        max_recovered_inactivity_samples_per_model_profile=(
+            args.max_recovered_inactivity_samples_per_model_profile
+        ),
     )
     output = Path(args.output).expanduser().resolve()
     if output.exists():
@@ -1757,6 +1797,9 @@ def _command_run_campaign_plan_locked(
         )
         timeout_counts = budget_ledger_timed_out_samples_by_model_profile(ledger)
         artifact_invalid = budget_ledger_artifact_invalid_samples(ledger)
+        recovered_inactivity = (
+            budget_ledger_recovered_inactivity_samples_by_model_profile(ledger)
+        )
         global_elapsed = (
             ledger_elapsed
             - ledger["elapsedSecondsByShard"][shard_id]
@@ -1770,6 +1813,7 @@ def _command_run_campaign_plan_locked(
             unknown_usage_samples=unknown_usage,
             timed_out_samples_by_model_profile=timeout_counts,
             artifact_invalid_samples=artifact_invalid,
+            recovered_inactivity_samples_by_model_profile=recovered_inactivity,
         )
         if budget_reason is not None:
             state_status, stop_reason = "STOPPED", budget_reason
@@ -1795,6 +1839,10 @@ def _command_run_campaign_plan_locked(
             timeout_seconds=timeout_seconds,
             skill_root=skill_root,
             evidence_root=evidence_root,
+            inactivity_warning_seconds=budgets.get("inactivityWarningSeconds"),
+            inactivity_diagnostic_seconds=budgets.get(
+                "inactivityDiagnosticSeconds"
+            ),
         )
         sample_errors = validate_sample_against_plan(sample, plan_sample, models)
         if sample_errors:
@@ -1815,6 +1863,9 @@ def _command_run_campaign_plan_locked(
         )
         timeout_counts = budget_ledger_timed_out_samples_by_model_profile(ledger)
         artifact_invalid = budget_ledger_artifact_invalid_samples(ledger)
+        recovered_inactivity = (
+            budget_ledger_recovered_inactivity_samples_by_model_profile(ledger)
+        )
         budget_reason = budget_stop_reason(
             budgets=budgets,
             elapsed_seconds=global_elapsed,
@@ -1823,6 +1874,7 @@ def _command_run_campaign_plan_locked(
             unknown_usage_samples=unknown_usage,
             timed_out_samples_by_model_profile=timeout_counts,
             artifact_invalid_samples=artifact_invalid,
+            recovered_inactivity_samples_by_model_profile=recovered_inactivity,
         )
         state_status, stop_reason = _terminal_run_state(
             sample.get("failureClass"), budget_reason
@@ -1905,6 +1957,11 @@ def _command_run_campaign_plan_locked(
                 ),
                 "globalArtifactInvalidSamples": (
                     budget_ledger_artifact_invalid_samples(ledger)
+                ),
+                "globalRecoveredInactivitySamplesByModelProfile": (
+                    budget_ledger_recovered_inactivity_samples_by_model_profile(
+                        ledger
+                    )
                 ),
                 "globalElapsedSeconds": global_elapsed,
                 "globalInfrastructureFailureTail": infrastructure_tail,
@@ -2312,6 +2369,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_campaign.add_argument(
         "--max-artifact-invalid-samples", type=int, default=1
+    )
+    plan_campaign.add_argument(
+        "--inactivity-warning-seconds", type=int, default=300
+    )
+    plan_campaign.add_argument(
+        "--inactivity-diagnostic-seconds", type=int, default=600
+    )
+    plan_campaign.add_argument(
+        "--max-recovered-inactivity-samples-per-model-profile",
+        type=int,
+        default=2,
     )
     plan_campaign.set_defaults(handler=command_plan_campaign)
 

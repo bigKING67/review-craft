@@ -39,6 +39,13 @@
       "type": "object",
       "additionalProperties": {"type": "integer", "minimum": 0}
     },
+    "recoveredInactivitySamplesByModelProfileByShard": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {"type": "integer", "minimum": 1}
+      }
+    },
     "elapsedSecondsByShard": {
       "type": "object",
       "additionalProperties": {"type": "number", "minimum": 0}

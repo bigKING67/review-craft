@@ -30,6 +30,7 @@
       "properties": {
         "findingOverlap": {"$ref": "#/$defs/ratio"},
         "rootCauseOverlap": {"$ref": "#/$defs/ratio"},
+        "rootCauseIdentityOverlap": {"$ref": "#/$defs/ratio"},
         "decisionStability": {"$ref": "#/$defs/ratio"},
         "severityAgreement": {"$ref": "#/$defs/ratio"},
         "scoreVariance": {

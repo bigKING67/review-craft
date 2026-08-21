@@ -67,6 +67,9 @@ def build_campaign_plan(
     max_unknown_usage_samples: int = 1,
     max_timed_out_samples_per_model_profile: int = 1,
     max_artifact_invalid_samples: int = 1,
+    inactivity_warning_seconds: int = 300,
+    inactivity_diagnostic_seconds: int = 600,
+    max_recovered_inactivity_samples_per_model_profile: int = 2,
 ) -> dict[str, Any]:
     model_ids = [row["id"] for row in model_configurations]
     all_repository_ids = [row["id"] for row in source_suite["repositories"]]
@@ -129,6 +132,11 @@ def build_campaign_plan(
                 max_timed_out_samples_per_model_profile
             ),
             "maxArtifactInvalidSamples": max_artifact_invalid_samples,
+            "inactivityWarningSeconds": inactivity_warning_seconds,
+            "inactivityDiagnosticSeconds": inactivity_diagnostic_seconds,
+            "maxRecoveredInactivitySamplesPerModelProfile": (
+                max_recovered_inactivity_samples_per_model_profile
+            ),
         },
         "samples": samples,
         "contentSha256": "0" * 64,
@@ -197,6 +205,21 @@ def _plan_selection_errors(
         errors.append(
             "campaign plan cumulative failure budgets must be declared together"
         )
+    inactivity_budgets = {
+        "inactivityWarningSeconds",
+        "inactivityDiagnosticSeconds",
+        "maxRecoveredInactivitySamplesPerModelProfile",
+    }
+    present_inactivity_budgets = frozenset(inactivity_budgets.intersection(budgets))
+    if present_inactivity_budgets not in {frozenset(), frozenset(inactivity_budgets)}:
+        errors.append("campaign plan inactivity budgets must be declared together")
+    elif present_inactivity_budgets:
+        warning = budgets["inactivityWarningSeconds"]
+        diagnostic = budgets["inactivityDiagnosticSeconds"]
+        if warning >= diagnostic:
+            errors.append(
+                "campaign plan inactivity warning must be below diagnostic threshold"
+            )
 
     expected_full_matrix = (
         repository_ids == suite_repository_ids
@@ -328,6 +351,21 @@ def timed_out_samples_by_model_profile(
     return counts
 
 
+def recovered_inactivity_samples_by_model_profile(
+    samples: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for sample in samples:
+        lifecycle = sample.get("lifecycle")
+        if not isinstance(lifecycle, dict):
+            continue
+        if lifecycle.get("inactivityState") != "RECOVERED_DIAGNOSTIC":
+            continue
+        model_id = sample["modelConfiguration"]["id"]
+        counts[model_id] = counts.get(model_id, 0) + 1
+    return counts
+
+
 def artifact_invalid_samples(samples: list[dict[str, Any]]) -> int:
     return sum(
         sample.get("failureClass") == "ARTIFACT_INVALID" for sample in samples
@@ -361,6 +399,8 @@ def new_run_state(
     }
     if "maxArtifactInvalidSamples" in plan["budgets"]:
         state["artifactInvalidSamples"] = 0
+    if "maxRecoveredInactivitySamplesPerModelProfile" in plan["budgets"]:
+        state["recoveredInactivitySamplesByModelProfile"] = {}
     return seal(state)
 
 
@@ -381,6 +421,8 @@ def new_budget_ledger(plan: dict[str, Any], *, now: str) -> dict[str, Any]:
     }
     if "maxArtifactInvalidSamples" in plan["budgets"]:
         ledger["artifactInvalidSamplesByShard"] = {}
+    if "maxRecoveredInactivitySamplesPerModelProfile" in plan["budgets"]:
+        ledger["recoveredInactivitySamplesByModelProfileByShard"] = {}
     return seal(ledger)
 
 
@@ -409,6 +451,11 @@ def validate_budget_ledger(
     artifact_map = ledger.get("artifactInvalidSamplesByShard")
     if artifact_map is not None:
         key_sets.add(frozenset(artifact_map))
+    inactivity_map = ledger.get(
+        "recoveredInactivitySamplesByModelProfileByShard"
+    )
+    if inactivity_map is not None:
+        key_sets.add(frozenset(inactivity_map))
     if (
         "maxTimedOutSamplesPerModelProfile" in plan["budgets"]
         and timeout_map is None
@@ -419,6 +466,13 @@ def validate_budget_ledger(
     if "maxArtifactInvalidSamples" in plan["budgets"] and artifact_map is None:
         errors.append(
             "campaign budget ledger is missing artifact-invalid accounting"
+        )
+    if (
+        "maxRecoveredInactivitySamplesPerModelProfile" in plan["budgets"]
+        and inactivity_map is None
+    ):
+        errors.append(
+            "campaign budget ledger is missing recovered-inactivity accounting"
         )
     if len(key_sets) != 1:
         errors.append("campaign budget ledger shard sets differ")
@@ -464,6 +518,21 @@ def validate_budget_ledger(
                 f"campaign budget ledger shard {shard_id} artifact-invalid count "
                 "exceeds attempts"
             )
+        if inactivity_map is not None:
+            inactivity_counts = inactivity_map[shard_id]
+            known_model_ids = {row["id"] for row in plan["modelConfigurations"]}
+            unknown_model_ids = set(inactivity_counts) - known_model_ids
+            if unknown_model_ids:
+                errors.append(
+                    f"campaign budget ledger shard {shard_id} contains unknown "
+                    "inactivity model profiles: "
+                    + ", ".join(sorted(unknown_model_ids))
+                )
+            if sum(inactivity_counts.values()) > attempted:
+                errors.append(
+                    f"campaign budget ledger shard {shard_id} recovered-inactivity "
+                    "count exceeds attempts"
+                )
     running = [
         shard_id
         for shard_id, status in ledger["statusByShard"].items()
@@ -512,6 +581,10 @@ def update_budget_ledger(
         ledger["artifactInvalidSamplesByShard"][shard_id] = state.get(
             "artifactInvalidSamples", 0
         )
+    if "recoveredInactivitySamplesByModelProfileByShard" in ledger:
+        ledger["recoveredInactivitySamplesByModelProfileByShard"][shard_id] = (
+            state.get("recoveredInactivitySamplesByModelProfile", {})
+        )
     ledger["elapsedSecondsByShard"][shard_id] = state["elapsedSeconds"]
     ledger["attemptedSamplesByShard"][shard_id] = len(
         state["attemptedSampleIds"]
@@ -559,6 +632,18 @@ def budget_ledger_artifact_invalid_samples(ledger: dict[str, Any]) -> int:
     return sum(ledger.get("artifactInvalidSamplesByShard", {}).values())
 
 
+def budget_ledger_recovered_inactivity_samples_by_model_profile(
+    ledger: dict[str, Any],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for profile_counts in ledger.get(
+        "recoveredInactivitySamplesByModelProfileByShard", {}
+    ).values():
+        for model_id, count in profile_counts.items():
+            counts[model_id] = counts.get(model_id, 0) + count
+    return counts
+
+
 def validate_budget_ledger_state(
     ledger: dict[str, Any], state: dict[str, Any]
 ) -> list[str]:
@@ -581,6 +666,11 @@ def validate_budget_ledger_state(
         or "artifactInvalidSamples" in state
     ):
         maps = (*maps, "artifactInvalidSamplesByShard")
+    if (
+        "recoveredInactivitySamplesByModelProfileByShard" in ledger
+        or "recoveredInactivitySamplesByModelProfile" in state
+    ):
+        maps = (*maps, "recoveredInactivitySamplesByModelProfileByShard")
     if any(shard_id not in ledger.get(key, {}) for key in maps):
         return [f"campaign budget ledger is missing shard: {shard_id}"]
     expected = (
@@ -595,6 +685,11 @@ def validate_budget_ledger_state(
         expected = (*expected, state.get("timedOutSamplesByModelProfile", {}))
     if "artifactInvalidSamplesByShard" in maps:
         expected = (*expected, state.get("artifactInvalidSamples", 0))
+    if "recoveredInactivitySamplesByModelProfileByShard" in maps:
+        expected = (
+            *expected,
+            state.get("recoveredInactivitySamplesByModelProfile", {}),
+        )
     actual = (
         ledger["reportedTokensByShard"][shard_id],
         ledger["unknownUsageSamplesByShard"][shard_id],
@@ -610,6 +705,11 @@ def validate_budget_ledger_state(
         )
     if "artifactInvalidSamplesByShard" in maps:
         actual = (*actual, ledger["artifactInvalidSamplesByShard"][shard_id])
+    if "recoveredInactivitySamplesByModelProfileByShard" in maps:
+        actual = (
+            *actual,
+            ledger["recoveredInactivitySamplesByModelProfileByShard"][shard_id],
+        )
     if actual != expected:
         return [f"campaign budget ledger shard {shard_id} differs from run state"]
     return []
@@ -644,6 +744,10 @@ def update_run_state(
     if "artifactInvalidSamples" in state:
         state["artifactInvalidSamples"] = artifact_invalid_samples(
             campaign["samples"]
+        )
+    if "recoveredInactivitySamplesByModelProfile" in state:
+        state["recoveredInactivitySamplesByModelProfile"] = (
+            recovered_inactivity_samples_by_model_profile(campaign["samples"])
         )
     return seal(state)
 
@@ -688,6 +792,14 @@ def validate_run_state(
         or "artifactInvalidSamples" in state
     ) and state.get("artifactInvalidSamples") != expected_artifact_invalid:
         errors.append("campaign run state artifact-invalid accounting mismatch")
+    expected_inactivity = recovered_inactivity_samples_by_model_profile(
+        campaign["samples"]
+    )
+    if (
+        "maxRecoveredInactivitySamplesPerModelProfile" in plan["budgets"]
+        or "recoveredInactivitySamplesByModelProfile" in state
+    ) and state.get("recoveredInactivitySamplesByModelProfile") != expected_inactivity:
+        errors.append("campaign run state recovered-inactivity accounting mismatch")
     if state["consecutiveInfrastructureFailures"] != failure_tail(
         campaign["samples"]
     ):
@@ -714,6 +826,7 @@ def _run_state_status_errors(
         "INFRASTRUCTURE_CIRCUIT_BREAKER",
         "UNKNOWN_USAGE_BUDGET_EXCEEDED",
         "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
+        "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
         "ARTIFACT_INVALID_BUDGET_EXCEEDED",
     }:
         errors.append("stopped campaign run state requires a budget or circuit stop")
@@ -804,6 +917,7 @@ def budget_stop_reason(
     unknown_usage_samples: int = 0,
     timed_out_samples_by_model_profile: dict[str, int] | None = None,
     artifact_invalid_samples: int = 0,
+    recovered_inactivity_samples_by_model_profile: dict[str, int] | None = None,
 ) -> str | None:
     if reported_tokens >= budgets["hardReportedTokenCeiling"]:
         return "TOKEN_CEILING"
@@ -827,6 +941,16 @@ def budget_stop_reason(
         and unknown_usage_samples >= max_unknown_usage
     ):
         return "UNKNOWN_USAGE_BUDGET_EXCEEDED"
+    max_recovered_inactivity = budgets.get(
+        "maxRecoveredInactivitySamplesPerModelProfile"
+    )
+    if max_recovered_inactivity is not None and any(
+        count >= max_recovered_inactivity
+        for count in (
+            recovered_inactivity_samples_by_model_profile or {}
+        ).values()
+    ):
+        return "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED"
     if elapsed_seconds >= budgets["softWallTimeSeconds"]:
         return "SOFT_WALL_TIME"
     if (
