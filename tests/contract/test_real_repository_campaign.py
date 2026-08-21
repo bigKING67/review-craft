@@ -357,6 +357,112 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             runner._redact_output(b"Authorization: Bearer fixture-secret"),
             b"Authorization: Bearer [REDACTED]",
         )
+        for source_expression in (
+            b"user, password, ok := request.BasicAuth()",
+            b"password == expected",
+            b"password => handler",
+        ):
+            with self.subTest(source_expression=source_expression):
+                self.assertFalse(runner._contains_sensitive_output(source_expression))
+                self.assertEqual(runner._redact_output(source_expression), source_expression)
+        for credential_echo, redacted in (
+            (b"password=fixture-secret", b"password=[REDACTED]"),
+            (b"password: fixture-secret", b"password: [REDACTED]"),
+            (
+                b'{"password": "fixture-secret"}',
+                b'{"password": "[REDACTED]"}',
+            ),
+            (
+                b'{"Authorization": "Bearer fixture-secret"}',
+                b'{"Authorization": "Bearer [REDACTED]"}',
+            ),
+            (
+                b"Incorrect API key provided: 'fixture-secret'",
+                b"Incorrect API key provided: '[REDACTED]'",
+            ),
+        ):
+            with self.subTest(credential_echo=credential_echo):
+                self.assertTrue(runner._contains_sensitive_output(credential_echo))
+                self.assertEqual(runner._redact_output(credential_echo), redacted)
+
+        source_output = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "sed -n '1,240p' README.md",
+                    "aggregated_output": "password=fixture-secret\n",
+                    "status": "completed",
+                    "exit_code": 0,
+                },
+            }
+        ).encode()
+        self.assertFalse(runner._contains_sensitive_output(source_output))
+        nested_json_output = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "sed -n '1,240p' config.json",
+                    "aggregated_output": '{"password": "fixture-secret"}',
+                    "status": "completed",
+                    "exit_code": 0,
+                },
+            }
+        ).encode()
+        self.assertFalse(runner._contains_sensitive_output(nested_json_output))
+        redacted_nested_json = runner._redact_output(nested_json_output)
+        self.assertNotIn(b"fixture-secret", redacted_nested_json)
+        json.loads(redacted_nested_json)
+        environment_output = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "printenv",
+                    "aggregated_output": "password=fixture-secret\n",
+                    "status": "completed",
+                    "exit_code": 0,
+                },
+            }
+        ).encode()
+        self.assertTrue(runner._contains_sensitive_output(environment_output))
+        source_search_output = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": 'rg -n "env|password" .',
+                    "aggregated_output": "password=fixture-secret\n",
+                    "status": "completed",
+                    "exit_code": 0,
+                },
+            }
+        ).encode()
+        self.assertFalse(runner._contains_sensitive_output(source_search_output))
+        bearer_source_output = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "sed -n '1,240p' README.md",
+                    "aggregated_output": "Authorization: Bearer fixture-secret\n",
+                    "status": "completed",
+                    "exit_code": 0,
+                },
+            }
+        ).encode()
+        self.assertTrue(runner._contains_sensitive_output(bearer_source_output))
+        shaped_token = b"sk-" + b"x" * 20
+        self.assertTrue(runner._contains_sensitive_output(shaped_token))
+        self.assertEqual(runner._redact_output(shaped_token), b"[REDACTED]")
+        private_key = (
+            b"-----BEGIN "
+            b"PRIVATE KEY-----\nfixture-only\n-----END "
+            b"PRIVATE KEY-----"
+        )
+        self.assertTrue(runner._contains_sensitive_output(private_key))
+        self.assertEqual(runner._redact_output(private_key), b"[REDACTED]")
 
     def test_checkpoint_atomically_binds_campaign_and_exact_run_state(self) -> None:
         plan = self._plan(repositories=[self.suite["repositories"][0]["id"]])

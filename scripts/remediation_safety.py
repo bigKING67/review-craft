@@ -3,7 +3,6 @@ from __future__ import annotations
 import difflib
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -33,6 +32,7 @@ from eval_contracts import (
     write_bytes,
     write_json,
 )
+from eval_output_safety import redact_output as _redact_adapter_output
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUITE = ROOT / "evals/specs/remediation-safety-cases.json"
@@ -57,14 +57,6 @@ GATED_ARM = "REVIEW_CRAFT_EVIDENCE_GATED_LOOP"
 ACTIONABLE_DECISIONS = {"CLEAN_UP", "MERGE", "REPLACE", "REWRITE", "DELETE"}
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
-SENSITIVE_OUTPUT_PATTERNS = (
-    re.compile(r"(?i)(Incorrect API key provided:\s*)[^\s,\"']+"),
-    re.compile(
-        r"(?i)((?:api[-_]?key|password|secret|access[-_]?token|refresh[-_]?token)"
-        r"\s*[:=]\s*)[^\s,\"']+"
-    ),
-    re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,\"']+"),
-)
 
 
 def _percent(numerator: int, denominator: int) -> dict[str, int | float | None]:
@@ -82,13 +74,6 @@ def _safe_relative(value: str) -> bool:
     return not path.is_absolute() and ".." not in path.parts and not any(
         ":" in part for part in path.parts
     )
-
-
-def _redact_adapter_output(value: bytes) -> bytes:
-    rendered = value.decode("utf-8", errors="replace")
-    for pattern in SENSITIVE_OUTPUT_PATTERNS:
-        rendered = pattern.sub(r"\1[REDACTED]", rendered)
-    return rendered.encode("utf-8")
 
 
 def validate_remediation_suite(payload: dict[str, Any]) -> list[str]:

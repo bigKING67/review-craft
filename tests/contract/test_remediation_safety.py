@@ -160,6 +160,21 @@ class RemediationSafetyContractTests(unittest.TestCase):
         self.assertNotIn(b"second-secret", redacted)
         self.assertNotIn(b"third-secret", redacted)
         self.assertEqual(redacted.count(b"[REDACTED]"), 3)
+        source_expression = b"user, password, ok := request.BasicAuth()"
+        self.assertEqual(
+            remediation._redact_adapter_output(source_expression),
+            source_expression,
+        )
+        self.assertEqual(
+            remediation._redact_adapter_output(b'{"password": "fixture-secret"}'),
+            b'{"password": "[REDACTED]"}',
+        )
+        nested_json = json.dumps(
+            {"aggregated_output": '{"password": "fixture-secret"}'}
+        ).encode()
+        redacted_nested_json = remediation._redact_adapter_output(nested_json)
+        self.assertNotIn(b"fixture-secret", redacted_nested_json)
+        json.loads(redacted_nested_json)
 
     def test_decision_disposition_uses_expected_then_prohibited_contracts(self) -> None:
         case = json.loads(SUITE.read_text(encoding="utf-8"))["cases"][0]

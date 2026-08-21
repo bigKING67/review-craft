@@ -161,6 +161,7 @@ REQUIRED_FILES = (
     "scripts/benchmark_runtime.py",
     "scripts/complexity_budget.py",
     "scripts/eval_contracts.py",
+    "scripts/eval_output_safety.py",
     "scripts/package_check.py",
     "scripts/package_e2e_fixture.py",
     "scripts/real_repository_benchmark.py",

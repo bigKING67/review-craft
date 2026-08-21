@@ -13,6 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from eval_output_safety import (
+    contains_sensitive_output as _contains_sensitive_output,
+)
+from eval_output_safety import redact_output as _redact_output
 from real_repository_campaign import (
     budget_ledger_totals,
     budget_stop_reason,
@@ -74,14 +78,6 @@ from review_craft.locking import exclusive_file_lock  # noqa: E402
 from review_craft.process_lifecycle import ProcessResult, run_process  # noqa: E402
 
 SENSITIVE_ARGUMENT = re.compile(r"^--?(?:api[-_]?key|password|secret|token)(?:=|$)", re.IGNORECASE)
-SENSITIVE_OUTPUT_PATTERNS = (
-    re.compile(r"(?i)(Incorrect API key provided:\s*)[^\s,\"']+"),
-    re.compile(
-        r"(?i)((?:api[-_]?key|password|secret|access[-_]?token|refresh[-_]?token)"
-        r"\s*[:=]\s*)[^\s,\"']+"
-    ),
-    re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,\"']+"),
-)
 AUTHENTICATION_FAILURE = re.compile(
     r"(?i)(?:\b401\b|unauthori[sz]ed|authentication failed|login required|invalid credentials)"
 )
@@ -119,20 +115,6 @@ def write_bytes(path: Path, payload: bytes) -> None:
 
 def sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-def _redact_output(payload: bytes) -> bytes:
-    rendered = payload.decode("utf-8", errors="replace")
-    for pattern in SENSITIVE_OUTPUT_PATTERNS:
-        rendered = pattern.sub(r"\1[REDACTED]", rendered)
-    return rendered.encode("utf-8")
-
-
-def _contains_sensitive_output(*payloads: bytes) -> bool:
-    rendered = "\n".join(
-        payload.decode("utf-8", errors="replace") for payload in payloads
-    )
-    return any(pattern.search(rendered) for pattern in SENSITIVE_OUTPUT_PATTERNS)
 
 
 def _adapter_failure_class(stdout: bytes, stderr: bytes) -> str:
