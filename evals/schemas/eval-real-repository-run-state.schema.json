@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-run-state.schema.json",
+  "title": "Real-repository benchmark resumable run state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "planContentSha256",
+    "campaignId",
+    "shardId",
+    "status",
+    "stopReason",
+    "startedAt",
+    "updatedAt",
+    "elapsedSeconds",
+    "reportedTokens",
+    "unknownUsageSamples",
+    "consecutiveInfrastructureFailures",
+    "attemptedSampleIds",
+    "campaignContentSha256",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-run-state.v1"},
+    "planContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "campaignId": {"type": "string", "minLength": 1},
+    "shardId": {"type": "string", "minLength": 1},
+    "status": {"enum": ["RUNNING", "COMPLETED", "STOPPED", "FAILED"]},
+    "stopReason": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "SCHEDULE_COMPLETE",
+        "SOFT_WALL_TIME",
+        "HARD_WALL_TIME",
+        "TOKEN_CEILING",
+        "INFRASTRUCTURE_CIRCUIT_BREAKER",
+        "SOURCE_MUTATION",
+        "CREDENTIAL_EXPOSURE",
+        "INTEGRITY_FAILURE"
+      ]
+    },
+    "startedAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "elapsedSeconds": {"type": "number", "minimum": 0},
+    "reportedTokens": {"type": "integer", "minimum": 0},
+    "unknownUsageSamples": {"type": "integer", "minimum": 0},
+    "consecutiveInfrastructureFailures": {"type": "integer", "minimum": 0},
+    "attemptedSampleIds": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "campaignContentSha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

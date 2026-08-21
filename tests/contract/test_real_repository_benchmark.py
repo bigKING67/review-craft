@@ -443,6 +443,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 )
 
             self.assertEqual(sample["status"], "TIMED_OUT")
+            self.assertEqual(sample["failureClass"], "TIMEOUT")
             self.assertEqual(sample["usage"]["toolCalls"], 1)
             self.assertIsNotNone(sample["artifacts"]["toolTraceSha256"])
             sample_dir = next((root / "run/samples").iterdir())
@@ -452,6 +453,23 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             )
             self.assertTrue((sample_dir / "tool-trace.json").is_file())
             self.assertFalse(sample["sourceMutationDetected"])
+            with self.assertRaisesRegex(
+                contracts.RealRepositoryError,
+                "will not be overwritten",
+            ):
+                runner._run_sample(
+                    run_dir=root / "run",
+                    sample_ordinal=1,
+                    repository=repository,
+                    repository_root=repository_root,
+                    treatment="ORDINARY_PROMPT",
+                    repetition=1,
+                    adapter={"id": "fixture", "command": ["fixture-adapter"]},
+                    description=description,
+                    timeout_seconds=7,
+                    skill_root=ROOT / "skills/review-craft",
+                    evidence_root=ROOT / "evals/real-repositories/verifiers",
+                )
 
     def test_blinded_adjudication_packets_cover_probes_and_additional_findings(self) -> None:
         campaign, blind = self._campaign(additional_finding=True)

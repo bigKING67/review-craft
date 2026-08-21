@@ -763,8 +763,13 @@ adjudication workflow emits two separately ordered, opaque-ID packets covering a
 probe responses and additional findings, with a coordinator-only mapping and content-bound
 submission finalization. The runner preserves partial streamed stdout and sanitized tool-call
 checkpoints across timeouts while the canonical lifecycle boundary terminates the process tree.
-A campaign
-is Golden only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions
+High-cost execution uses a content-bound deterministic plan, resumable exact-prefix
+checkpoints, serial repository shards, a shared content-bound budget ledger, validated merge
+receipts, global reported-token and active runner-time ceilings, and a cross-shard consecutive
+infrastructure-failure circuit breaker. The legacy direct `run`
+command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,
+`validate-campaign-run`, and `merge-campaign-runs` for a full campaign. A campaign is Golden
+only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions
 matrix completes and independent adjudication validates; the checked-in materialization
 receipt alone makes no model-quality claim.
 

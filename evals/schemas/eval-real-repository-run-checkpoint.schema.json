@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-run-checkpoint.schema.json",
+  "title": "Real-repository benchmark run checkpoint commit marker",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "planContentSha256",
+    "campaignContentSha256",
+    "state",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-run-checkpoint.v1"},
+    "planContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "campaignContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "state": {"type": "object"},
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

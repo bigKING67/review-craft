@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def parse_args() -> argparse.Namespace:
             "negative-finding",
             "usage",
             "invalid-usage",
+            "real-repository",
             "remediation-claimed-mismatch",
             "remediation-broad-hoist-regression",
             "remediation-regression",
@@ -108,7 +110,7 @@ def main() -> int:
     }
     if args.mode == "timeout":
         time.sleep(2)
-    if args.treatment in ablation_treatments:
+    if args.treatment in ablation_treatments and args.mode != "real-repository":
         skill_entries = list(Path(args.skill_root).iterdir())
         evidence_expected = args.treatment == "REVIEW_CRAFT_EVIDENCE_LOOP"
         if evidence_expected:
@@ -126,7 +128,42 @@ def main() -> int:
         (mutation_root / ".eval-source-mutation-test").write_text(
             "mutated\n", encoding="utf-8"
         )
-    if args.treatment == "ROUTING_DECISION":
+    if args.mode == "real-repository":
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+        probe_ids = re.findall(r"^\d+\. \[([^]]+)\]", prompt, flags=re.MULTILINE)
+        if len(probe_ids) != 5:
+            return 5
+        dispositions = (
+            ("VALIDATED", "CLEAN_UP", "P2", "synthetic-root"),
+            ("VALIDATED", "KEEP", None, "synthetic-keep"),
+            ("FALSIFIED", "KEEP", None, None),
+            ("BLOCKED", "MEASURE", None, None),
+            ("BLOCKED", "DEFER", None, None),
+        )
+        output = {
+            "schema": "review-craft.eval-real-repository-output.v1",
+            "repositoryId": args.case_id,
+            "score": {"status": "FINAL", "value": 88},
+            "probes": [
+                {
+                    "probeId": probe_id,
+                    "disposition": disposition,
+                    "decision": decision,
+                    "severity": severity,
+                    "rootCauseKey": root_cause,
+                    "locations": [],
+                    "evidence": [],
+                    "confidence": "HIGH",
+                    "rationale": "Synthetic full-schedule process rehearsal.",
+                }
+                for probe_id, (disposition, decision, severity, root_cause) in zip(
+                    probe_ids, dispositions, strict=True
+                )
+            ],
+            "additionalFindings": [],
+            "summary": "Synthetic full-schedule process rehearsal.",
+        }
+    elif args.treatment == "ROUTING_DECISION":
         identifier = args.case_id or ""
         route = next(
             (
@@ -399,7 +436,7 @@ def main() -> int:
     )
     Path(args.output_file).write_text(rendered, encoding="utf-8")
     usage_output = os.environ.get("REVIEW_CRAFT_EVAL_USAGE_OUTPUT")
-    if usage_output and args.mode == "usage":
+    if usage_output and args.mode in {"usage", "real-repository"}:
         Path(usage_output).write_text(
             json.dumps(
                 {

@@ -432,6 +432,10 @@ def validate_campaign(
                 errors.append(
                     f"campaign sample {sample_id} completed with a failureReason"
                 )
+            if sample.get("failureClass") is not None:
+                errors.append(
+                    f"campaign sample {sample_id} completed with a failureClass"
+                )
             if sample["artifacts"]["outputSha256"] is None:
                 errors.append(
                     f"campaign sample {sample_id} completed without outputSha256"
@@ -452,6 +456,10 @@ def validate_campaign(
                 errors.append(
                     f"campaign sample {sample_id} requires a failureReason when status is "
                     f"{sample['status']}"
+                )
+            if "failureClass" in sample and sample["failureClass"] is None:
+                errors.append(
+                    f"campaign sample {sample_id} requires failureClass when present"
                 )
             if sample["artifacts"]["outputSha256"] is not None:
                 errors.append(

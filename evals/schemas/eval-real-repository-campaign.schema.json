@@ -3,6 +3,34 @@
   "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-campaign.schema.json",
   "title": "Real-repository benchmark campaign",
   "type": "object",
+  "$defs": {
+    "modelConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "model",
+        "reasoning",
+        "adapterName",
+        "adapterVersion",
+        "hostVersion",
+        "evidenceKind",
+        "providerName",
+        "isolationSha256"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "reasoning": {"type": "string", "minLength": 1},
+        "adapterName": {"type": "string", "minLength": 1},
+        "adapterVersion": {"type": "string", "minLength": 1},
+        "hostVersion": {"type": "string", "minLength": 1},
+        "evidenceKind": {"const": "REAL_HOST"},
+        "providerName": {"type": "string", "minLength": 1},
+        "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  },
   "additionalProperties": false,
   "required": ["schema", "campaignId", "status", "suiteSha256", "blindSuiteSha256", "samples", "contentSha256"],
   "properties": {
@@ -35,32 +63,7 @@
           "sampleId": {"type": "string", "minLength": 1},
           "repositoryId": {"type": "string", "minLength": 1},
           "treatment": {"enum": ["ORDINARY_PROMPT", "RISK_LENS_REVIEW", "REVIEW_CRAFT_EVIDENCE_LOOP"]},
-          "modelConfiguration": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "id",
-              "model",
-              "reasoning",
-              "adapterName",
-              "adapterVersion",
-              "hostVersion",
-              "evidenceKind",
-              "providerName",
-              "isolationSha256"
-            ],
-            "properties": {
-              "id": {"type": "string", "minLength": 1},
-              "model": {"type": "string", "minLength": 1},
-              "reasoning": {"type": "string", "minLength": 1},
-              "adapterName": {"type": "string", "minLength": 1},
-              "adapterVersion": {"type": "string", "minLength": 1},
-              "hostVersion": {"type": "string", "minLength": 1},
-              "evidenceKind": {"const": "REAL_HOST"},
-              "providerName": {"type": "string", "minLength": 1},
-              "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-            }
-          },
+          "modelConfiguration": {"$ref": "#/$defs/modelConfiguration"},
           "repetition": {"type": "integer", "minimum": 1},
           "status": {"enum": ["COMPLETED", "FAILED", "TIMED_OUT"]},
           "durationSeconds": {"type": "number", "minimum": 0},
@@ -78,6 +81,21 @@
           "sourceMutationDetected": {"type": "boolean"},
           "output": {"type": ["object", "null"]},
           "failureReason": {"type": ["string", "null"]},
+          "failureClass": {
+            "type": ["string", "null"],
+            "enum": [
+              null,
+              "AUTHENTICATION",
+              "PROVIDER_CONNECTIVITY",
+              "ADAPTER_CONTRACT",
+              "MODEL_UNAVAILABLE",
+              "TIMEOUT",
+              "REVIEW_FAILURE",
+              "SOURCE_MUTATION",
+              "ARTIFACT_INVALID",
+              "CREDENTIAL_EXPOSURE"
+            ]
+          },
           "artifacts": {
             "type": "object",
             "additionalProperties": false,

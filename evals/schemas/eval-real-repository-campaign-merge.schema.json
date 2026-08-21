@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-campaign-merge.schema.json",
+  "title": "Real-repository benchmark campaign merge receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "planContentSha256",
+    "campaignContentSha256",
+    "budgetLedgerContentSha256",
+    "status",
+    "samples",
+    "inputs",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-campaign-merge.v1"},
+    "planContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "campaignContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "budgetLedgerContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"enum": ["COMPLETED", "PARTIAL", "FAILED"]},
+    "samples": {"type": "integer", "minimum": 1},
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "shardId",
+          "campaignContentSha256",
+          "stateContentSha256",
+          "checkpointContentSha256",
+          "samples"
+        ],
+        "properties": {
+          "shardId": {"type": "string", "minLength": 1},
+          "campaignContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "stateContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "checkpointContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "samples": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

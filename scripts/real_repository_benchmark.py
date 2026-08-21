@@ -13,6 +13,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from real_repository_campaign import (
+    budget_ledger_totals,
+    budget_stop_reason,
+    build_campaign_plan,
+    build_checkpoint,
+    build_merge_receipt,
+    campaign_status,
+    effective_sample_timeout,
+    merge_campaigns,
+    new_budget_ledger,
+    new_run_state,
+    seal,
+    selected_plan_samples,
+    update_budget_ledger,
+    update_run_state,
+    validate_budget_ledger,
+    validate_budget_ledger_state,
+    validate_campaign_plan,
+    validate_checkpoint,
+    validate_plan_inputs,
+    validate_run_state,
+    validate_sample_against_plan,
+)
 from real_repository_contracts import (
     ADJUDICATION_MAPPING_SCHEMA,
     ADJUDICATION_PACKET_SCHEMA,
@@ -47,6 +70,7 @@ USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 sys.path.insert(0, str(RUNTIME_LIB))
 
+from review_craft.locking import exclusive_file_lock  # noqa: E402
 from review_craft.process_lifecycle import ProcessResult, run_process  # noqa: E402
 
 SENSITIVE_ARGUMENT = re.compile(r"^--?(?:api[-_]?key|password|secret|token)(?:=|$)", re.IGNORECASE)
@@ -57,6 +81,16 @@ SENSITIVE_OUTPUT_PATTERNS = (
         r"\s*[:=]\s*)[^\s,\"']+"
     ),
     re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,\"']+"),
+)
+AUTHENTICATION_FAILURE = re.compile(
+    r"(?i)(?:\b401\b|unauthori[sz]ed|authentication failed|login required|invalid credentials)"
+)
+MODEL_UNAVAILABLE_FAILURE = re.compile(
+    r"(?i)(?:model (?:not found|unavailable|unsupported)|unsupported model|unknown model)"
+)
+PROVIDER_CONNECTIVITY_FAILURE = re.compile(
+    r"(?i)(?:connection (?:refused|reset|failed)|connect error|dns|timed out connecting|"
+    r"network is unreachable|service unavailable|\b502\b|\b503\b|\b504\b)"
 )
 
 
@@ -92,6 +126,59 @@ def _redact_output(payload: bytes) -> bytes:
     for pattern in SENSITIVE_OUTPUT_PATTERNS:
         rendered = pattern.sub(r"\1[REDACTED]", rendered)
     return rendered.encode("utf-8")
+
+
+def _contains_sensitive_output(*payloads: bytes) -> bool:
+    rendered = "\n".join(
+        payload.decode("utf-8", errors="replace") for payload in payloads
+    )
+    return any(pattern.search(rendered) for pattern in SENSITIVE_OUTPUT_PATTERNS)
+
+
+def _adapter_failure_class(stdout: bytes, stderr: bytes) -> str:
+    rendered = b"\n".join((stdout, stderr)).decode("utf-8", errors="replace")
+    if AUTHENTICATION_FAILURE.search(rendered):
+        return "AUTHENTICATION"
+    if MODEL_UNAVAILABLE_FAILURE.search(rendered):
+        return "MODEL_UNAVAILABLE"
+    if PROVIDER_CONNECTIVITY_FAILURE.search(rendered):
+        return "PROVIDER_CONNECTIVITY"
+    return "REVIEW_FAILURE"
+
+
+def _adapter_outcome(
+    completed: ProcessResult,
+    *,
+    output_path: Path,
+    repository: dict[str, Any],
+    timeout_seconds: int,
+) -> tuple[str, str | None, str | None]:
+    if completed.timed_out:
+        return (
+            "TIMED_OUT",
+            f"adapter timed out after {timeout_seconds} seconds",
+            "TIMEOUT",
+        )
+    if completed.returncode != 0:
+        return (
+            "FAILED",
+            f"adapter exited with code {completed.returncode}",
+            _adapter_failure_class(completed.stdout, completed.stderr),
+        )
+    if not output_path.is_file():
+        return "FAILED", "adapter did not create normalized output", "ADAPTER_CONTRACT"
+    try:
+        output = read_json(output_path)
+    except (OSError, json.JSONDecodeError) as error:
+        return "FAILED", f"normalized output is invalid JSON: {error}", "ARTIFACT_INVALID"
+    output_errors = validate_host_output(output, repository)
+    if output_errors:
+        return (
+            "FAILED",
+            "normalized output failed: " + "; ".join(output_errors),
+            "ARTIFACT_INVALID",
+        )
+    return "COMPLETED", None, None
 
 
 def _validate_adapter_command(command: list[str]) -> None:
@@ -409,6 +496,10 @@ def _run_sample(
         f"{repository['id']}--{treatment.lower().replace('_', '-')}--{adapter['id']}--r{repetition}"
     )
     sample_dir = run_dir / "samples" / f"{sample_ordinal:04d}-{sample_id}"
+    if sample_dir.exists():
+        raise RealRepositoryError(
+            f"sample artifact directory already exists and will not be overwritten: {sample_dir}"
+        )
     prompt_path = sample_dir / "prompt.md"
     stdout_path = sample_dir / "stdout.txt"
     stderr_path = sample_dir / "stderr.txt"
@@ -443,6 +534,7 @@ def _run_sample(
     started = time.monotonic()
     status = "FAILED"
     failure_reason: str | None = None
+    failure_class: str | None = None
     stdout = b""
     stderr = b""
     try:
@@ -458,28 +550,22 @@ def _run_sample(
         )
         stdout = completed.stdout
         stderr = completed.stderr
-        if completed.timed_out:
-            status = "TIMED_OUT"
-            failure_reason = f"adapter timed out after {timeout_seconds} seconds"
+        status, failure_reason, failure_class = _adapter_outcome(
+            completed,
+            output_path=output_path,
+            repository=repository,
+            timeout_seconds=timeout_seconds,
+        )
+        if completed.timed_out and failure_reason is not None:
             stderr += (failure_reason + "\n").encode("utf-8")
-        elif completed.returncode != 0:
-            failure_reason = f"adapter exited with code {completed.returncode}"
-        elif not output_path.is_file():
-            failure_reason = "adapter did not create normalized output"
-        else:
-            try:
-                output = read_json(output_path)
-            except (OSError, json.JSONDecodeError) as error:
-                failure_reason = f"normalized output is invalid JSON: {error}"
-            else:
-                output_errors = validate_host_output(output, repository)
-                if output_errors:
-                    failure_reason = "normalized output failed: " + "; ".join(output_errors)
-                else:
-                    status = "COMPLETED"
     except FileNotFoundError as error:
         failure_reason = f"adapter executable unavailable: {error}"
+        failure_class = "ADAPTER_CONTRACT"
         stderr = (failure_reason + "\n").encode("utf-8")
+    if _contains_sensitive_output(stdout, stderr):
+        status = "FAILED"
+        failure_reason = "credential-like data detected and redacted from adapter output"
+        failure_class = "CREDENTIAL_EXPOSURE"
     duration = max(0.0, round(time.monotonic() - started, 3))
     write_bytes(stdout_path, _redact_output(stdout))
     write_bytes(stderr_path, _redact_output(stderr))
@@ -507,11 +593,13 @@ def _run_sample(
     if mutation_detected:
         status = "FAILED"
         failure_reason = "source mutation detected after adapter invocation"
+        failure_class = "SOURCE_MUTATION"
 
     canonical_output = None
     if status == "COMPLETED":
         canonical_output = read_json(output_path)
         failure_reason = None
+        failure_class = None
     return {
         "sampleId": sample_id,
         "repositoryId": repository["id"],
@@ -524,6 +612,7 @@ def _run_sample(
         "sourceMutationDetected": mutation_detected,
         "output": canonical_output,
         "failureReason": failure_reason,
+        "failureClass": failure_class,
         "artifacts": {
             "promptSha256": _file_sha256(prompt_path),
             "stdoutSha256": _file_sha256(stdout_path),
@@ -1144,6 +1233,752 @@ def command_validate_stability(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_campaign_plan_context(
+    args: argparse.Namespace,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    suite_errors = validate_suite(suite)
+    if suite_errors:
+        raise RealRepositoryError("invalid suite: " + "; ".join(suite_errors))
+    blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
+    blind_errors = validate_blind_suite(blind, suite)
+    if blind_errors:
+        raise RealRepositoryError("invalid blind suite: " + "; ".join(blind_errors))
+    receipt = read_json(Path(args.materialization).expanduser().resolve(strict=True))
+    receipt_errors = validate_materialization_receipt(receipt, suite)
+    if receipt_errors:
+        raise RealRepositoryError("invalid materialization: " + "; ".join(receipt_errors))
+    adapter_config = read_json(Path(args.adapter_config).expanduser().resolve(strict=True))
+    adapter_errors = validate_adapter_config(adapter_config)
+    if adapter_errors:
+        raise RealRepositoryError("invalid adapter configuration: " + "; ".join(adapter_errors))
+    descriptions = {
+        adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
+        for adapter in adapter_config["adapters"]
+    }
+    model_configurations = [
+        _model_configuration(adapter["id"], descriptions[adapter["id"]])
+        for adapter in adapter_config["adapters"]
+    ]
+    return suite, blind, receipt, adapter_config, descriptions, model_configurations
+
+
+def command_plan_campaign(args: argparse.Namespace) -> int:
+    (
+        suite,
+        blind,
+        receipt,
+        adapter_config,
+        _descriptions,
+        model_configurations,
+    ) = _load_campaign_plan_context(args)
+    repositories = _selected_repositories(suite, args.repository)
+    requested_treatments = set(args.treatment or TREATMENTS)
+    treatments = [row for row in TREATMENTS if row in requested_treatments]
+    repetitions = args.repetitions or suite["protocol"]["repetitions"]
+    plan = build_campaign_plan(
+        source_suite=suite,
+        blind_suite=blind,
+        materialization=receipt,
+        adapter_config=adapter_config,
+        model_configurations=model_configurations,
+        campaign_id=args.campaign_id,
+        repository_ids=[row["id"] for row in repositories],
+        treatments=treatments,
+        repetitions=repetitions,
+        sample_timeout_seconds=args.timeout_seconds,
+        soft_wall_time_seconds=args.soft_wall_seconds,
+        hard_wall_time_seconds=args.hard_wall_seconds,
+        hard_reported_token_ceiling=args.hard_reported_token_ceiling,
+        max_consecutive_infrastructure_failures=(
+            args.max_consecutive_infrastructure_failures
+        ),
+    )
+    output = Path(args.output).expanduser().resolve()
+    if output.exists():
+        raise RealRepositoryError(f"campaign plan output already exists: {output}")
+    write_json(output, plan)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "samples": len(plan["samples"]),
+                "shards": len({row["shardId"] for row in plan["samples"]}),
+                "fullMatrix": plan["selection"]["fullMatrix"],
+                "contentSha256": plan["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_validate_campaign_plan(args: argparse.Namespace) -> int:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
+    plan = read_json(Path(args.plan).expanduser().resolve(strict=True))
+    errors = validate_campaign_plan(plan, suite, blind)
+    if errors:
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "samples": len(plan["samples"]),
+                "fullMatrix": plan["selection"]["fullMatrix"],
+                "contentSha256": plan["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _campaign_from_plan(plan: dict[str, Any], shard_id: str) -> dict[str, Any]:
+    campaign_id = (
+        plan["campaignId"]
+        if shard_id == "ALL"
+        else f"{plan['campaignId']}--shard-{shard_id}"
+    )
+    return {
+        "schema": "review-craft.eval-real-repository-campaign.v1",
+        "campaignId": campaign_id,
+        "status": "FAILED",
+        "suiteSha256": plan["suiteSha256"],
+        "blindSuiteSha256": plan["blindSuiteSha256"],
+        "samples": [],
+        "contentSha256": "0" * 64,
+    }
+
+
+def _campaign_checkpoint(
+    *,
+    campaign: dict[str, Any],
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    campaign_path: Path,
+    ledger: dict[str, Any],
+    ledger_path: Path,
+    checkpoint_path: Path,
+    state_path: Path,
+    suite: dict[str, Any],
+    blind: dict[str, Any],
+    elapsed_seconds: float,
+    state_status: str = "RUNNING",
+    stop_reason: str | None = None,
+) -> None:
+    campaign["status"] = campaign_status(campaign["samples"], plan)
+    seal(campaign)
+    campaign_errors = validate_campaign(campaign, suite, blind)
+    if campaign_errors:
+        raise RealRepositoryError(
+            "generated campaign checkpoint is invalid: "
+            + "; ".join(campaign_errors)
+        )
+    update_run_state(
+        state,
+        campaign=campaign,
+        elapsed_seconds=elapsed_seconds,
+        now=utc_now(),
+        status=state_status,
+        stop_reason=stop_reason,
+    )
+    state_errors = validate_run_state(state, plan, campaign)
+    if state_errors:
+        raise RealRepositoryError(
+            "generated campaign run state is invalid: " + "; ".join(state_errors)
+        )
+    update_budget_ledger(ledger, state, now=utc_now())
+    _write_campaign_budget_ledger(
+        ledger=ledger,
+        plan=plan,
+        ledger_path=ledger_path,
+        label="generated campaign budget ledger is invalid",
+    )
+    checkpoint = build_checkpoint(plan=plan, campaign=campaign, state=state)
+    write_json(checkpoint_path, checkpoint)
+    write_json(campaign_path, campaign)
+    write_json(state_path, state)
+
+
+def _verify_plan_workspaces(
+    *,
+    plan: dict[str, Any],
+    suite: dict[str, Any],
+    receipt: dict[str, Any],
+    workspace_root: Path,
+) -> dict[str, Path]:
+    repositories = {row["id"]: row for row in suite["repositories"]}
+    materialized = {row["id"]: row for row in receipt["repositories"]}
+    roots: dict[str, Path] = {}
+    for repository_id in plan["selection"]["repositories"]:
+        repository = repositories[repository_id]
+        receipt_row = materialized[repository_id]
+        repository_root = (workspace_root / receipt_row["checkout"]).resolve(strict=True)
+        try:
+            repository_root.relative_to(workspace_root)
+        except ValueError as error:
+            raise RealRepositoryError(
+                f"materialized checkout escapes workspace: {repository_root}"
+            ) from error
+        expected_state = {
+            "head": repository["revision"],
+            "tree": receipt_row["tree"],
+            "status": "",
+        }
+        if _repository_state(repository_root) != expected_state:
+            raise RealRepositoryError(
+                f"{repository_id}: live materialization state does not match receipt"
+            )
+        roots[repository_id] = repository_root
+    return roots
+
+
+def _resume_or_initialize_run(
+    *,
+    args: argparse.Namespace,
+    run_dir: Path,
+    plan: dict[str, Any],
+    shard_id: str,
+    suite: dict[str, Any],
+    blind: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan_path = run_dir / "plan.json"
+    campaign_path = run_dir / "campaign.json"
+    state_path = run_dir / "run-state.json"
+    checkpoint_path = run_dir / "checkpoint.json"
+    if args.resume:
+        stored_plan = read_json(plan_path.resolve(strict=True))
+        if stored_plan != plan:
+            raise RealRepositoryError("resume plan differs from the sealed run plan")
+        state = read_json(state_path.resolve(strict=True))
+        if campaign_path.is_file():
+            campaign = read_json(campaign_path)
+            campaign_errors = validate_campaign(campaign, suite, blind)
+            if campaign_errors:
+                raise RealRepositoryError(
+                    "invalid resume campaign: " + "; ".join(campaign_errors)
+                )
+            state_errors = validate_run_state(state, plan, campaign)
+            if checkpoint_path.is_file():
+                checkpoint = read_json(checkpoint_path)
+                if checkpoint.get("campaignContentSha256") == campaign["contentSha256"]:
+                    checkpoint_errors = validate_checkpoint(checkpoint, plan, campaign)
+                    if checkpoint_errors:
+                        raise RealRepositoryError(
+                            "invalid resume checkpoint: "
+                            + "; ".join(checkpoint_errors)
+                        )
+                    state = checkpoint["state"]
+                    write_json(state_path, state)
+                    state_errors = []
+            if state_errors:
+                raise RealRepositoryError(
+                    "invalid resume state: " + "; ".join(state_errors)
+                )
+        else:
+            if state["attemptedSampleIds"] or state["campaignContentSha256"] is not None:
+                raise RealRepositoryError("resume state references a missing campaign")
+            campaign = _campaign_from_plan(plan, shard_id)
+        if state["status"] != "RUNNING":
+            raise RealRepositoryError(
+                f"cannot resume terminal campaign run state: {state['status']}"
+            )
+        if state["shardId"] != shard_id:
+            raise RealRepositoryError("resume shard differs from the sealed run shard")
+        return campaign, state
+
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise RealRepositoryError(f"run directory must be empty: {run_dir}")
+    run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    campaign = _campaign_from_plan(plan, shard_id)
+    state = new_run_state(
+        plan=plan,
+        campaign_id=campaign["campaignId"],
+        shard_id=shard_id,
+        now=utc_now(),
+    )
+    write_json(plan_path, plan)
+    write_json(state_path, state)
+    return campaign, state
+
+
+def _terminal_run_state(
+    failure_class: str | None,
+    budget_reason: str | None,
+) -> tuple[str, str | None]:
+    if failure_class == "SOURCE_MUTATION":
+        return "FAILED", "SOURCE_MUTATION"
+    if failure_class == "CREDENTIAL_EXPOSURE":
+        return "FAILED", "CREDENTIAL_EXPOSURE"
+    if budget_reason is not None:
+        return "STOPPED", budget_reason
+    return "RUNNING", None
+
+
+def _write_campaign_budget_ledger(
+    *,
+    ledger: dict[str, Any],
+    plan: dict[str, Any],
+    ledger_path: Path,
+    label: str,
+) -> None:
+    errors = validate_budget_ledger(ledger, plan)
+    if errors:
+        raise RealRepositoryError(f"{label}: " + "; ".join(errors))
+    write_json(ledger_path, ledger)
+
+
+def _load_campaign_budget_ledger(
+    *,
+    ledger_path: Path,
+    plan: dict[str, Any],
+    resume: bool,
+) -> dict[str, Any]:
+    if not ledger_path.is_file():
+        if resume:
+            raise RealRepositoryError("resume requires the shared campaign budget ledger")
+        return new_budget_ledger(plan, now=utc_now())
+    ledger = read_json(ledger_path.resolve(strict=True))
+    errors = validate_budget_ledger(ledger, plan)
+    if errors:
+        raise RealRepositoryError(
+            "invalid campaign budget ledger: " + "; ".join(errors)
+        )
+    return ledger
+
+
+def _reserve_campaign_budget_shard(
+    *,
+    args: argparse.Namespace,
+    plan: dict[str, Any],
+    ledger: dict[str, Any],
+    ledger_path: Path,
+    shard_id: str,
+    run_dir: Path,
+) -> None:
+    if args.resume:
+        if shard_id not in ledger["statusByShard"]:
+            raise RealRepositoryError(
+                f"resume shard is missing from the campaign budget ledger: {shard_id}"
+            )
+        if ledger["executionOrder"][-1] != shard_id:
+            raise RealRepositoryError("resume shard is not the latest budget ledger shard")
+        return
+    if shard_id in ledger["statusByShard"]:
+        raise RealRepositoryError(
+            f"campaign budget ledger already contains shard: {shard_id}"
+        )
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise RealRepositoryError(f"run directory must be empty: {run_dir}")
+    reservation = new_run_state(
+        plan=plan,
+        campaign_id=_campaign_from_plan(plan, shard_id)["campaignId"],
+        shard_id=shard_id,
+        now=utc_now(),
+    )
+    update_budget_ledger(ledger, reservation, now=utc_now())
+    _write_campaign_budget_ledger(
+        ledger=ledger,
+        plan=plan,
+        ledger_path=ledger_path,
+        label="invalid campaign budget reservation",
+    )
+
+
+def command_run_campaign_plan(args: argparse.Namespace) -> int:
+    ledger_input = Path(args.budget_ledger).expanduser()
+    if ledger_input.is_symlink():
+        raise RealRepositoryError(
+            f"campaign budget ledger must not be a symlink: {ledger_input}"
+        )
+    ledger_path = ledger_input.resolve()
+    ledger_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with exclusive_file_lock(
+        ledger_path.parent,
+        name=f".{ledger_path.name}.lock",
+        wait_seconds=5,
+        timeout_message="another campaign shard holds the shared budget ledger lock",
+    ):
+        return _command_run_campaign_plan_locked(args, ledger_path)
+
+
+def _command_run_campaign_plan_locked(
+    args: argparse.Namespace, ledger_path: Path
+) -> int:
+    (
+        suite,
+        blind,
+        receipt,
+        adapter_config,
+        descriptions,
+        model_configurations,
+    ) = _load_campaign_plan_context(args)
+    plan = read_json(Path(args.plan).expanduser().resolve(strict=True))
+    plan_errors = validate_campaign_plan(plan, suite, blind)
+    if plan_errors:
+        raise RealRepositoryError("invalid campaign plan: " + "; ".join(plan_errors))
+    binding_errors = validate_plan_inputs(
+        plan,
+        materialization=receipt,
+        adapter_config=adapter_config,
+        model_configurations=model_configurations,
+    )
+    if binding_errors:
+        raise RealRepositoryError(
+            "campaign plan input binding failed: " + "; ".join(binding_errors)
+        )
+
+    shard_id = args.shard or "ALL"
+    scheduled = selected_plan_samples(plan, shard_id)
+    ledger = _load_campaign_budget_ledger(
+        ledger_path=ledger_path,
+        plan=plan,
+        resume=args.resume,
+    )
+    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
+    repository_roots = _verify_plan_workspaces(
+        plan=plan,
+        suite=suite,
+        receipt=receipt,
+        workspace_root=workspace_root,
+    )
+    run_dir = Path(args.run_dir).expanduser().resolve()
+    _reserve_campaign_budget_shard(
+        args=args,
+        plan=plan,
+        ledger=ledger,
+        ledger_path=ledger_path,
+        shard_id=shard_id,
+        run_dir=run_dir,
+    )
+    campaign, state = _resume_or_initialize_run(
+        args=args,
+        run_dir=run_dir,
+        plan=plan,
+        shard_id=shard_id,
+        suite=suite,
+        blind=blind,
+    )
+    update_budget_ledger(ledger, state, now=utc_now())
+    _write_campaign_budget_ledger(
+        ledger=ledger,
+        plan=plan,
+        ledger_path=ledger_path,
+        label="invalid synchronized campaign budget ledger",
+    )
+    campaign_path = run_dir / "campaign.json"
+    checkpoint_path = run_dir / "checkpoint.json"
+    state_path = run_dir / "run-state.json"
+    skill_root = Path(args.skill_root).expanduser().resolve(strict=True)
+    evidence_root = Path(args.evidence_root).expanduser().resolve(strict=True)
+    repositories = {row["id"]: row for row in suite["repositories"]}
+    adapters = {row["id"]: row for row in adapter_config["adapters"]}
+    models = {row["id"]: row for row in model_configurations}
+    elapsed_base = float(state["elapsedSeconds"])
+    session_started = time.monotonic()
+    attempted = len(campaign["samples"])
+    budgets = plan["budgets"]
+    state_status = "RUNNING"
+    stop_reason: str | None = None
+
+    for plan_sample in scheduled[attempted:]:
+        elapsed = elapsed_base + (time.monotonic() - session_started)
+        reported_tokens, _, ledger_elapsed, infrastructure_tail = (
+            budget_ledger_totals(ledger)
+        )
+        global_elapsed = (
+            ledger_elapsed
+            - ledger["elapsedSecondsByShard"][shard_id]
+            + elapsed
+        )
+        budget_reason = budget_stop_reason(
+            budgets=budgets,
+            elapsed_seconds=global_elapsed,
+            reported_tokens=reported_tokens,
+            consecutive_infrastructure_failures=infrastructure_tail,
+        )
+        if budget_reason is not None:
+            state_status, stop_reason = "STOPPED", budget_reason
+            break
+        timeout_seconds = effective_sample_timeout(
+            sample_timeout_seconds=plan_sample["timeoutSeconds"],
+            hard_wall_time_seconds=budgets["hardWallTimeSeconds"],
+            elapsed_seconds=global_elapsed,
+        )
+        if timeout_seconds == 0:
+            state_status, stop_reason = "STOPPED", "HARD_WALL_TIME"
+            break
+        adapter_id = plan_sample["modelConfigurationId"]
+        sample = _run_sample(
+            run_dir=run_dir,
+            sample_ordinal=plan_sample["ordinal"],
+            repository=repositories[plan_sample["repositoryId"]],
+            repository_root=repository_roots[plan_sample["repositoryId"]],
+            treatment=plan_sample["treatment"],
+            repetition=plan_sample["repetition"],
+            adapter=adapters[adapter_id],
+            description=descriptions[adapter_id],
+            timeout_seconds=timeout_seconds,
+            skill_root=skill_root,
+            evidence_root=evidence_root,
+        )
+        sample_errors = validate_sample_against_plan(sample, plan_sample, models)
+        if sample_errors:
+            state_status, stop_reason = "FAILED", "INTEGRITY_FAILURE"
+            break
+        campaign["samples"].append(sample)
+        elapsed = elapsed_base + (time.monotonic() - session_started)
+        seal(campaign)
+        update_run_state(
+            state,
+            campaign=campaign,
+            elapsed_seconds=elapsed,
+            now=utc_now(),
+        )
+        update_budget_ledger(ledger, state, now=utc_now())
+        reported_tokens, _, global_elapsed, infrastructure_tail = (
+            budget_ledger_totals(ledger)
+        )
+        budget_reason = budget_stop_reason(
+            budgets=budgets,
+            elapsed_seconds=global_elapsed,
+            reported_tokens=reported_tokens,
+            consecutive_infrastructure_failures=infrastructure_tail,
+        )
+        state_status, stop_reason = _terminal_run_state(
+            sample.get("failureClass"), budget_reason
+        )
+        _campaign_checkpoint(
+            campaign=campaign,
+            plan=plan,
+            state=state,
+            campaign_path=campaign_path,
+            ledger=ledger,
+            ledger_path=ledger_path,
+            checkpoint_path=checkpoint_path,
+            state_path=state_path,
+            suite=suite,
+            blind=blind,
+            elapsed_seconds=elapsed,
+            state_status=state_status,
+            stop_reason=stop_reason,
+        )
+        if state_status != "RUNNING":
+            break
+
+    attempted_ids = [row["sampleId"] for row in campaign["samples"]]
+    scheduled_ids = [row["sampleId"] for row in scheduled]
+    if state_status == "RUNNING" and attempted_ids == scheduled_ids:
+        state_status, stop_reason = "COMPLETED", "SCHEDULE_COMPLETE"
+    elapsed = elapsed_base + (time.monotonic() - session_started)
+    if campaign["samples"]:
+        _campaign_checkpoint(
+            campaign=campaign,
+            plan=plan,
+            state=state,
+            campaign_path=campaign_path,
+            ledger=ledger,
+            ledger_path=ledger_path,
+            checkpoint_path=checkpoint_path,
+            state_path=state_path,
+            suite=suite,
+            blind=blind,
+            elapsed_seconds=elapsed,
+            state_status=state_status,
+            stop_reason=stop_reason,
+        )
+    else:
+        state.update(
+            {
+                "status": state_status,
+                "stopReason": stop_reason,
+                "updatedAt": utc_now(),
+                "elapsedSeconds": max(0.0, round(elapsed, 3)),
+            }
+        )
+        seal(state)
+        update_budget_ledger(ledger, state, now=utc_now())
+        _write_campaign_budget_ledger(
+            ledger=ledger,
+            plan=plan,
+            ledger_path=ledger_path,
+            label="generated campaign budget ledger is invalid",
+        )
+        write_json(state_path, state)
+
+    global_tokens, unknown_usage, global_elapsed, infrastructure_tail = (
+        budget_ledger_totals(ledger)
+    )
+    print(
+        json.dumps(
+            {
+                "runDir": str(run_dir),
+                "state": state["status"],
+                "stopReason": state["stopReason"],
+                "campaignStatus": campaign["status"],
+                "samples": len(campaign["samples"]),
+                "scheduledSamples": len(scheduled),
+                "reportedTokens": state["reportedTokens"],
+                "globalReportedTokens": global_tokens,
+                "globalUnknownUsageSamples": unknown_usage,
+                "globalElapsedSeconds": global_elapsed,
+                "globalInfrastructureFailureTail": infrastructure_tail,
+                "budgetLedgerContentSha256": ledger["contentSha256"],
+                "contentSha256": campaign.get("contentSha256"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    successful = state["status"] == "COMPLETED"
+    return 0 if successful or args.allow_partial else 2
+
+
+def command_validate_campaign_run(args: argparse.Namespace) -> int:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
+    run_dir = Path(args.run_dir).expanduser().resolve(strict=True)
+    plan = read_json((run_dir / "plan.json").resolve(strict=True))
+    campaign = read_json((run_dir / "campaign.json").resolve(strict=True))
+    state = read_json((run_dir / "run-state.json").resolve(strict=True))
+    checkpoint = read_json((run_dir / "checkpoint.json").resolve(strict=True))
+    ledger = read_json(Path(args.budget_ledger).expanduser().resolve(strict=True))
+    errors = [
+        *validate_campaign_plan(plan, suite, blind),
+        *validate_campaign(campaign, suite, blind),
+        *validate_run_state(state, plan, campaign),
+        *validate_checkpoint(checkpoint, plan, campaign),
+        *validate_budget_ledger(ledger, plan),
+        *validate_budget_ledger_state(ledger, state),
+    ]
+    if checkpoint.get("state") != state:
+        errors.append("campaign run state does not match committed checkpoint")
+    if errors:
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "state": state["status"],
+                "stopReason": state["stopReason"],
+                "samples": len(campaign["samples"]),
+                "campaignContentSha256": campaign["contentSha256"],
+                "stateContentSha256": state["contentSha256"],
+                "budgetLedgerContentSha256": ledger["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_merge_campaign_runs(args: argparse.Namespace) -> int:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
+    plan = read_json(Path(args.plan).expanduser().resolve(strict=True))
+    plan_errors = validate_campaign_plan(plan, suite, blind)
+    if plan_errors:
+        raise RealRepositoryError("invalid campaign plan: " + "; ".join(plan_errors))
+    ledger = read_json(Path(args.budget_ledger).expanduser().resolve(strict=True))
+    ledger_errors = validate_budget_ledger(ledger, plan)
+    if ledger_errors:
+        raise RealRepositoryError(
+            "invalid campaign budget ledger: " + "; ".join(ledger_errors)
+        )
+    campaigns: list[dict[str, Any]] = []
+    inputs: list[dict[str, Any]] = []
+    shard_ids: set[str] = set()
+    for value in args.run_dir:
+        run_dir = Path(value).expanduser().resolve(strict=True)
+        stored_plan = read_json((run_dir / "plan.json").resolve(strict=True))
+        if stored_plan != plan:
+            raise RealRepositoryError(f"merge run uses a different plan: {run_dir}")
+        campaign = read_json((run_dir / "campaign.json").resolve(strict=True))
+        state = read_json((run_dir / "run-state.json").resolve(strict=True))
+        checkpoint = read_json((run_dir / "checkpoint.json").resolve(strict=True))
+        errors = [
+            *validate_campaign(campaign, suite, blind),
+            *validate_run_state(state, plan, campaign),
+            *validate_checkpoint(checkpoint, plan, campaign),
+            *validate_budget_ledger_state(ledger, state),
+        ]
+        if checkpoint.get("state") != state:
+            errors.append("campaign run state does not match committed checkpoint")
+        if errors:
+            raise RealRepositoryError(
+                f"invalid merge input {run_dir}: " + "; ".join(errors)
+            )
+        if state["status"] == "RUNNING":
+            raise RealRepositoryError(f"cannot merge a running shard: {run_dir}")
+        if state["shardId"] in shard_ids:
+            raise RealRepositoryError(f"duplicate merge shard: {state['shardId']}")
+        shard_ids.add(state["shardId"])
+        campaigns.append(campaign)
+        inputs.append(
+            {
+                "shardId": state["shardId"],
+                "campaignContentSha256": campaign["contentSha256"],
+                "stateContentSha256": state["contentSha256"],
+                "checkpointContentSha256": checkpoint["contentSha256"],
+                "samples": len(campaign["samples"]),
+            }
+        )
+    if shard_ids != set(ledger["executionOrder"]):
+        raise RealRepositoryError(
+            "merge inputs do not match the campaign budget ledger shards"
+        )
+    merged = merge_campaigns(plan=plan, campaigns=campaigns)
+    campaign_errors = validate_campaign(merged, suite, blind)
+    if campaign_errors:
+        raise RealRepositoryError(
+            "merged campaign is invalid: " + "; ".join(campaign_errors)
+        )
+    receipt = build_merge_receipt(
+        plan=plan,
+        campaign=merged,
+        budget_ledger=ledger,
+        inputs=inputs,
+    )
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise RealRepositoryError(f"merge output directory must be empty: {output_dir}")
+    output_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    write_json(output_dir / "plan.json", plan)
+    write_json(output_dir / "campaign.json", merged)
+    write_json(output_dir / "budget-ledger.json", ledger)
+    write_json(output_dir / "merge.json", receipt)
+    print(
+        json.dumps(
+            {
+                "outputDir": str(output_dir),
+                "status": merged["status"],
+                "samples": len(merged["samples"]),
+                "inputs": len(inputs),
+                "budgetLedgerContentSha256": ledger["contentSha256"],
+                "contentSha256": merged["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0 if merged["status"] == "COMPLETED" or args.allow_partial else 2
+
+
 def command_run_campaign(args: argparse.Namespace) -> int:
     suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
     suite_errors = validate_suite(suite)
@@ -1376,6 +2211,66 @@ def build_parser() -> argparse.ArgumentParser:
     validate_stability.add_argument("--adjudication")
     validate_stability.add_argument("--report", required=True)
     validate_stability.set_defaults(handler=command_validate_stability)
+
+    plan_campaign = subparsers.add_parser("plan-campaign")
+    plan_campaign.add_argument("--suite", default=str(DEFAULT_SUITE))
+    plan_campaign.add_argument("--blind-suite", required=True)
+    plan_campaign.add_argument("--materialization", required=True)
+    plan_campaign.add_argument("--adapter-config", required=True)
+    plan_campaign.add_argument("--output", required=True)
+    plan_campaign.add_argument("--campaign-id", required=True)
+    plan_campaign.add_argument("--repository", action="append")
+    plan_campaign.add_argument("--treatment", action="append", choices=TREATMENTS)
+    plan_campaign.add_argument("--repetitions", type=int)
+    plan_campaign.add_argument("--timeout-seconds", type=int, default=1800)
+    plan_campaign.add_argument("--soft-wall-seconds", type=int, default=64800)
+    plan_campaign.add_argument("--hard-wall-seconds", type=int, default=86400)
+    plan_campaign.add_argument(
+        "--hard-reported-token-ceiling", type=int, default=60_000_000
+    )
+    plan_campaign.add_argument(
+        "--max-consecutive-infrastructure-failures", type=int, default=2
+    )
+    plan_campaign.set_defaults(handler=command_plan_campaign)
+
+    validate_plan = subparsers.add_parser("validate-campaign-plan")
+    validate_plan.add_argument("--suite", default=str(DEFAULT_SUITE))
+    validate_plan.add_argument("--blind-suite", required=True)
+    validate_plan.add_argument("--plan", required=True)
+    validate_plan.set_defaults(handler=command_validate_campaign_plan)
+
+    run_plan = subparsers.add_parser("run-plan")
+    run_plan.add_argument("--suite", default=str(DEFAULT_SUITE))
+    run_plan.add_argument("--blind-suite", required=True)
+    run_plan.add_argument("--materialization", required=True)
+    run_plan.add_argument("--workspace-root", required=True)
+    run_plan.add_argument("--adapter-config", required=True)
+    run_plan.add_argument("--plan", required=True)
+    run_plan.add_argument("--run-dir", required=True)
+    run_plan.add_argument("--budget-ledger", required=True)
+    run_plan.add_argument("--skill-root", default=str(DEFAULT_SKILL))
+    run_plan.add_argument("--evidence-root", default=str(DEFAULT_EVIDENCE_ROOT))
+    run_plan.add_argument("--shard")
+    run_plan.add_argument("--resume", action="store_true")
+    run_plan.add_argument("--allow-partial", action="store_true")
+    run_plan.set_defaults(handler=command_run_campaign_plan)
+
+    validate_run = subparsers.add_parser("validate-campaign-run")
+    validate_run.add_argument("--suite", default=str(DEFAULT_SUITE))
+    validate_run.add_argument("--blind-suite", required=True)
+    validate_run.add_argument("--run-dir", required=True)
+    validate_run.add_argument("--budget-ledger", required=True)
+    validate_run.set_defaults(handler=command_validate_campaign_run)
+
+    merge_runs = subparsers.add_parser("merge-campaign-runs")
+    merge_runs.add_argument("--suite", default=str(DEFAULT_SUITE))
+    merge_runs.add_argument("--blind-suite", required=True)
+    merge_runs.add_argument("--plan", required=True)
+    merge_runs.add_argument("--run-dir", action="append", required=True)
+    merge_runs.add_argument("--budget-ledger", required=True)
+    merge_runs.add_argument("--output-dir", required=True)
+    merge_runs.add_argument("--allow-partial", action="store_true")
+    merge_runs.set_defaults(handler=command_merge_campaign_runs)
 
     run_campaign = subparsers.add_parser("run")
     run_campaign.add_argument("--suite", default=str(DEFAULT_SUITE))
