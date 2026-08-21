@@ -120,6 +120,18 @@
         "environmentVariable": {"const": "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"}
       }
     },
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "transport", "environmentVariable"],
+      "properties": {
+        "protocol": {"const": "review-craft.eval-progress.v1"},
+        "transport": {"const": "ENV_PATH"},
+        "environmentVariable": {
+          "const": "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
+        }
+      }
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,

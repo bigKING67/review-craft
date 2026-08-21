@@ -104,7 +104,9 @@
         "softWallTimeSeconds": {"type": "integer", "minimum": 1},
         "hardWallTimeSeconds": {"type": "integer", "minimum": 1},
         "hardReportedTokenCeiling": {"type": "integer", "minimum": 1},
-        "maxConsecutiveInfrastructureFailures": {"type": "integer", "minimum": 1}
+        "maxConsecutiveInfrastructureFailures": {"type": "integer", "minimum": 1},
+        "maxUnknownUsageSamples": {"type": "integer", "minimum": 1},
+        "maxTimedOutSamplesPerModelProfile": {"type": "integer", "minimum": 1}
       }
     },
     "samples": {

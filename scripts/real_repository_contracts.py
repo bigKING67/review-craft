@@ -5,11 +5,13 @@ import json
 import math
 import statistics
 from collections import defaultdict
+from functools import lru_cache
 from itertools import combinations
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = ROOT / "evals/schemas"
@@ -92,9 +94,25 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def _schema_registry() -> Registry:
+    registry = Registry()
+    for local_path in SCHEMA_ROOT.glob("*.schema.json"):
+        local_schema = read_json(local_path)
+        resource = Resource.from_contents(local_schema)
+        registry = registry.with_resource(local_path.as_uri(), resource)
+        if isinstance(local_schema.get("$id"), str):
+            registry = registry.with_resource(local_schema["$id"], resource)
+    return registry
+
+
 def schema_errors(payload: Any, schema_path: Path) -> list[str]:
     schema = read_json(schema_path)
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator = Draft202012Validator(
+        schema,
+        registry=_schema_registry(),
+        format_checker=FormatChecker(),
+    )
     return [
         f"{error.json_path}: {error.message}"
         for error in sorted(
@@ -116,6 +134,23 @@ def _location_in_scope(path: str, scopes: list[str]) -> bool:
         if candidate == root or root in candidate.parents:
             return True
     return False
+
+
+def _output_location_errors(
+    prefix: str,
+    locations: list[dict[str, Any]],
+    scopes: list[str],
+) -> list[str]:
+    errors: list[str] = []
+    for index, location in enumerate(locations):
+        path = location["path"]
+        if not _safe_scope(path):
+            errors.append(f"{prefix}[{index}]: unsafe location: {path}")
+        elif not _location_in_scope(path, scopes):
+            errors.append(
+                f"{prefix}[{index}]: location is outside declared scope: {path}"
+            )
+    return errors
 
 
 def validate_suite(payload: dict[str, Any]) -> list[str]:
@@ -309,6 +344,27 @@ def validate_host_output(
         errors.append("probes: duplicate probeId")
     if actual_probe_ids != expected_probe_ids:
         errors.append("probes: must cover repository probes in canonical order")
+    scopes = repository["scope"]
+    for probe_index, probe in enumerate(payload["probes"]):
+        if probe["disposition"] == "BLOCKED" and probe["severity"] is not None:
+            errors.append(
+                f"probes[{probe_index}].severity must be null when disposition is BLOCKED"
+            )
+        errors.extend(
+            _output_location_errors(
+                f"probes[{probe_index}].locations",
+                probe["locations"],
+                scopes,
+            )
+        )
+        for evidence_index, evidence in enumerate(probe["evidence"]):
+            errors.extend(
+                _output_location_errors(
+                    f"probes[{probe_index}].evidence[{evidence_index}].locations",
+                    evidence["locations"],
+                    scopes,
+                )
+            )
     score = payload["score"]
     if score["status"] == "NOT_PRODUCED" and score["value"] is not None:
         errors.append("score.value must be null when score.status is NOT_PRODUCED")
@@ -317,6 +373,22 @@ def validate_host_output(
     finding_ids = [finding["findingId"] for finding in payload["additionalFindings"]]
     if len(finding_ids) != len(set(finding_ids)):
         errors.append("additionalFindings: duplicate findingId")
+    for finding_index, finding in enumerate(payload["additionalFindings"]):
+        errors.extend(
+            _output_location_errors(
+                f"additionalFindings[{finding_index}].locations",
+                finding["locations"],
+                scopes,
+            )
+        )
+        for evidence_index, evidence in enumerate(finding["evidence"]):
+            errors.extend(
+                _output_location_errors(
+                    f"additionalFindings[{finding_index}].evidence[{evidence_index}].locations",
+                    evidence["locations"],
+                    scopes,
+                )
+            )
     return errors
 
 

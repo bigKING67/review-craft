@@ -18,6 +18,7 @@ from eval_output_safety import (
 )
 from eval_output_safety import redact_output as _redact_output
 from real_repository_campaign import (
+    budget_ledger_timed_out_samples_by_model_profile,
     budget_ledger_totals,
     budget_stop_reason,
     build_campaign_plan,
@@ -68,10 +69,12 @@ DEFAULT_SUITE = ROOT / "evals/specs/real-repositories.json"
 OUTPUT_SCHEMA = ROOT / "evals/schemas/eval-real-repository-output.schema.json"
 ADAPTER_SCHEMA = ROOT / "evals/schemas/eval-adapter.schema.json"
 TOOL_TRACE_SCHEMA = ROOT / "evals/schemas/eval-tool-trace.schema.json"
+PROGRESS_SCHEMA = ROOT / "evals/schemas/eval-progress.schema.json"
 DEFAULT_SKILL = ROOT / "skills/review-craft"
 DEFAULT_EVIDENCE_ROOT = ROOT / "evals/real-repositories/verifiers"
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
+PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.locking import exclusive_file_lock  # noqa: E402
@@ -302,6 +305,59 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _unavailable_progress(started_at: str, reason: str) -> dict[str, Any]:
+    return {
+        "schema": "review-craft.eval-progress.v1",
+        "availability": "UNAVAILABLE",
+        "startedAt": started_at,
+        "threadStartedAt": None,
+        "turnStartedAt": None,
+        "firstItemAt": None,
+        "lastEventAt": None,
+        "lastEventType": None,
+        "eventCount": 0,
+        "itemEventCount": 0,
+        "timeToFirstItemSeconds": None,
+        "terminationReason": None,
+        "processTreeCleanup": "NOT_VERIFIED",
+        "unavailableReason": reason,
+    }
+
+
+def _finalize_progress(
+    *,
+    progress_path: Path,
+    started_at: str,
+    completed: ProcessResult | None,
+) -> dict[str, Any]:
+    progress: dict[str, Any] | None = None
+    unavailable_reason = "ADAPTER_DID_NOT_REPORT_PROGRESS"
+    if progress_path.is_file():
+        try:
+            candidate = read_json(progress_path)
+        except (OSError, json.JSONDecodeError):
+            candidate = None
+        if isinstance(candidate, dict) and not schema_errors(
+            candidate, PROGRESS_SCHEMA
+        ):
+            progress = candidate
+        else:
+            unavailable_reason = "ADAPTER_PROGRESS_INVALID"
+    if progress is None:
+        progress = _unavailable_progress(started_at, unavailable_reason)
+    if completed is None:
+        progress["terminationReason"] = "ADAPTER_UNAVAILABLE"
+        progress["processTreeCleanup"] = "NOT_REQUIRED"
+    elif completed.timed_out:
+        progress["terminationReason"] = "TIMEOUT"
+        progress["processTreeCleanup"] = "COMPLETED"
+    else:
+        progress["terminationReason"] = "PROCESS_EXIT"
+        progress["processTreeCleanup"] = "NOT_REQUIRED"
+    write_json(progress_path, progress)
+    return progress
+
+
 def _bind_content_hash(payload: dict[str, Any]) -> dict[str, Any]:
     payload["contentSha256"] = sha256_json(
         {key: value for key, value in payload.items() if key != "contentSha256"}
@@ -488,6 +544,7 @@ def _run_sample(
     usage_path = sample_dir / "usage.json"
     adapter_usage_path = sample_dir / "adapter-usage.json"
     tool_trace_path = sample_dir / "tool-trace.json"
+    progress_path = sample_dir / "progress.json"
     output_path = sample_dir / "output.json"
     prompt = _render_benchmark_prompt(treatment, repository)
     write_bytes(prompt_path, prompt)
@@ -513,14 +570,16 @@ def _run_sample(
         "--case-id",
         repository["id"],
     ]
+    started_at = utc_now()
     started = time.monotonic()
     status = "FAILED"
     failure_reason: str | None = None
     failure_class: str | None = None
     stdout = b""
     stderr = b""
+    completed: ProcessResult | None = None
     try:
-        completed: ProcessResult = run_process(
+        completed = run_process(
             command,
             cwd=ROOT,
             timeout=timeout_seconds,
@@ -528,6 +587,7 @@ def _run_sample(
                 **os.environ,
                 USAGE_OUTPUT_ENV: str(adapter_usage_path),
                 TOOL_TRACE_OUTPUT_ENV: str(tool_trace_path),
+                PROGRESS_OUTPUT_ENV: str(progress_path),
             },
         )
         stdout = completed.stdout
@@ -570,6 +630,11 @@ def _run_sample(
             tool_trace_payload = candidate_tool_trace
     usage = _usage_projection(usage_payload, tool_trace_payload)
     write_json(usage_path, usage)
+    lifecycle = _finalize_progress(
+        progress_path=progress_path,
+        started_at=started_at,
+        completed=completed,
+    )
     after = _repository_state(repository_root)
     mutation_detected = after != before
     if mutation_detected:
@@ -592,6 +657,7 @@ def _run_sample(
         "durationSeconds": duration,
         "usage": usage,
         "sourceMutationDetected": mutation_detected,
+        "lifecycle": lifecycle,
         "output": canonical_output,
         "failureReason": failure_reason,
         "failureClass": failure_class,
@@ -606,6 +672,7 @@ def _run_sample(
             "toolTraceSha256": (
                 _file_sha256(tool_trace_path) if tool_trace_path.is_file() else None
             ),
+            "progressSha256": _file_sha256(progress_path),
         },
     }
 
@@ -1282,6 +1349,10 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         max_consecutive_infrastructure_failures=(
             args.max_consecutive_infrastructure_failures
         ),
+        max_unknown_usage_samples=args.max_unknown_usage_samples,
+        max_timed_out_samples_per_model_profile=(
+            args.max_timed_out_samples_per_model_profile
+        ),
     )
     output = Path(args.output).expanduser().resolve()
     if output.exists():
@@ -1677,9 +1748,10 @@ def _command_run_campaign_plan_locked(
 
     for plan_sample in scheduled[attempted:]:
         elapsed = elapsed_base + (time.monotonic() - session_started)
-        reported_tokens, _, ledger_elapsed, infrastructure_tail = (
+        reported_tokens, unknown_usage, ledger_elapsed, infrastructure_tail = (
             budget_ledger_totals(ledger)
         )
+        timeout_counts = budget_ledger_timed_out_samples_by_model_profile(ledger)
         global_elapsed = (
             ledger_elapsed
             - ledger["elapsedSecondsByShard"][shard_id]
@@ -1690,6 +1762,8 @@ def _command_run_campaign_plan_locked(
             elapsed_seconds=global_elapsed,
             reported_tokens=reported_tokens,
             consecutive_infrastructure_failures=infrastructure_tail,
+            unknown_usage_samples=unknown_usage,
+            timed_out_samples_by_model_profile=timeout_counts,
         )
         if budget_reason is not None:
             state_status, stop_reason = "STOPPED", budget_reason
@@ -1730,14 +1804,17 @@ def _command_run_campaign_plan_locked(
             now=utc_now(),
         )
         update_budget_ledger(ledger, state, now=utc_now())
-        reported_tokens, _, global_elapsed, infrastructure_tail = (
+        reported_tokens, unknown_usage, global_elapsed, infrastructure_tail = (
             budget_ledger_totals(ledger)
         )
+        timeout_counts = budget_ledger_timed_out_samples_by_model_profile(ledger)
         budget_reason = budget_stop_reason(
             budgets=budgets,
             elapsed_seconds=global_elapsed,
             reported_tokens=reported_tokens,
             consecutive_infrastructure_failures=infrastructure_tail,
+            unknown_usage_samples=unknown_usage,
+            timed_out_samples_by_model_profile=timeout_counts,
         )
         state_status, stop_reason = _terminal_run_state(
             sample.get("failureClass"), budget_reason
@@ -1815,6 +1892,9 @@ def _command_run_campaign_plan_locked(
                 "reportedTokens": state["reportedTokens"],
                 "globalReportedTokens": global_tokens,
                 "globalUnknownUsageSamples": unknown_usage,
+                "globalTimedOutSamplesByModelProfile": (
+                    budget_ledger_timed_out_samples_by_model_profile(ledger)
+                ),
                 "globalElapsedSeconds": global_elapsed,
                 "globalInfrastructureFailureTail": infrastructure_tail,
                 "budgetLedgerContentSha256": ledger["contentSha256"],
@@ -2212,6 +2292,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_campaign.add_argument(
         "--max-consecutive-infrastructure-failures", type=int, default=2
+    )
+    plan_campaign.add_argument(
+        "--max-unknown-usage-samples", type=int, default=1
+    )
+    plan_campaign.add_argument(
+        "--max-timed-out-samples-per-model-profile", type=int, default=1
     )
     plan_campaign.set_defaults(handler=command_plan_campaign)
 

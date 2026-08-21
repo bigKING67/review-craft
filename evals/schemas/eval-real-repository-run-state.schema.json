@@ -36,6 +36,8 @@
         "HARD_WALL_TIME",
         "TOKEN_CEILING",
         "INFRASTRUCTURE_CIRCUIT_BREAKER",
+        "UNKNOWN_USAGE_BUDGET_EXCEEDED",
+        "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
         "SOURCE_MUTATION",
         "CREDENTIAL_EXPOSURE",
         "INTEGRITY_FAILURE"
@@ -46,6 +48,10 @@
     "elapsedSeconds": {"type": "number", "minimum": 0},
     "reportedTokens": {"type": "integer", "minimum": 0},
     "unknownUsageSamples": {"type": "integer", "minimum": 0},
+    "timedOutSamplesByModelProfile": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
     "consecutiveInfrastructureFailures": {"type": "integer", "minimum": 0},
     "attemptedSampleIds": {
       "type": "array",

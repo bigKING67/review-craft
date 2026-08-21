@@ -23,7 +23,7 @@ import codex_eval_adapter as adapter
 
 class CodexEvalAdapterTests(unittest.TestCase):
     def test_adapter_version_identifies_the_three_arm_protocol(self) -> None:
-        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.3")
+        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.4")
         self.assertEqual(adapter.USAGE_COLLECTOR["version"], adapter.ADAPTER_VERSION)
         self.assertEqual(
             adapter.ABLATION_TREATMENTS,
@@ -57,8 +57,16 @@ class CodexEvalAdapterTests(unittest.TestCase):
             )
         self.assertEqual(status, 0)
         description = json.loads(print_mock.call_args.args[0])
-        self.assertEqual(description["adapterVersion"], "0.6.3")
+        self.assertEqual(description["adapterVersion"], "0.6.4")
         self.assertEqual(description["schema"], "review-craft.eval-adapter.v5")
+        self.assertEqual(
+            description["progress"],
+            {
+                "protocol": "review-craft.eval-progress.v1",
+                "transport": "ENV_PATH",
+                "environmentVariable": adapter.PROGRESS_OUTPUT_ENV,
+            },
+        )
         self.assertEqual(
             description["capabilities"],
             {
@@ -392,6 +400,8 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text(encoding="utf-8")), payload)
 
     def test_codex_process_streams_timeout_sidecars_before_child_exit(self) -> None:
+        thread_event = {"type": "thread.started"}
+        turn_event = {"type": "turn.started"}
         command_event = {
             "type": "item.completed",
             "item": {
@@ -416,6 +426,8 @@ class CodexEvalAdapterTests(unittest.TestCase):
         child = (
             "import json, sys, time; "
             "sys.stdin.read(); "
+            f"print(json.dumps({thread_event!r}), flush=True); "
+            f"print(json.dumps({turn_event!r}), flush=True); "
             f"print(json.dumps({command_event!r}), flush=True); "
             "time.sleep(0.5); "
             f"print(json.dumps({usage_event!r}), flush=True)"
@@ -423,6 +435,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             usage_path = Path(directory) / "usage.json"
             trace_path = Path(directory) / "tool-trace.json"
+            progress_path = Path(directory) / "progress.json"
             result: list[int] = []
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -443,6 +456,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
                     {
                         adapter.USAGE_OUTPUT_ENV: str(usage_path),
                         adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
+                        adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
                     },
                 ),
                 patch.object(adapter.sys, "stdout", stdout),
@@ -465,6 +479,14 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 partial_usage = json.loads(usage_path.read_text(encoding="utf-8"))
                 self.assertEqual(partial_usage["availability"], "UNAVAILABLE")
                 self.assertEqual(partial_usage["unavailableReason"], "HOST_USAGE_MISSING")
+                partial_progress = json.loads(
+                    progress_path.read_text(encoding="utf-8")
+                )
+                self.assertEqual(partial_progress["availability"], "AVAILABLE")
+                self.assertEqual(partial_progress["lastEventType"], "item.completed")
+                self.assertEqual(partial_progress["eventCount"], 3)
+                self.assertEqual(partial_progress["itemEventCount"], 1)
+                self.assertIsNotNone(partial_progress["timeToFirstItemSeconds"])
                 thread.join(timeout=3)
 
             self.assertFalse(thread.is_alive())
@@ -472,6 +494,11 @@ class CodexEvalAdapterTests(unittest.TestCase):
             final_usage = json.loads(usage_path.read_text(encoding="utf-8"))
             self.assertEqual(final_usage["availability"], "AVAILABLE")
             self.assertEqual(final_usage["totalTokens"], 120)
+            final_progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(final_progress["eventCount"], 4)
+            self.assertEqual(final_progress["lastEventType"], "turn.completed")
+            self.assertEqual(final_progress["terminationReason"], "PROCESS_EXIT")
+            self.assertEqual(final_progress["processTreeCleanup"], "NOT_REQUIRED")
             self.assertIn('"type": "item.completed"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 

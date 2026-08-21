@@ -64,6 +64,8 @@ def build_campaign_plan(
     hard_wall_time_seconds: int,
     hard_reported_token_ceiling: int,
     max_consecutive_infrastructure_failures: int,
+    max_unknown_usage_samples: int = 1,
+    max_timed_out_samples_per_model_profile: int = 1,
 ) -> dict[str, Any]:
     model_ids = [row["id"] for row in model_configurations]
     all_repository_ids = [row["id"] for row in source_suite["repositories"]]
@@ -121,6 +123,10 @@ def build_campaign_plan(
             "maxConsecutiveInfrastructureFailures": (
                 max_consecutive_infrastructure_failures
             ),
+            "maxUnknownUsageSamples": max_unknown_usage_samples,
+            "maxTimedOutSamplesPerModelProfile": (
+                max_timed_out_samples_per_model_profile
+            ),
         },
         "samples": samples,
         "contentSha256": "0" * 64,
@@ -173,6 +179,15 @@ def _plan_selection_errors(
     budgets = payload["budgets"]
     if budgets["hardWallTimeSeconds"] < budgets["softWallTimeSeconds"]:
         errors.append("campaign plan hard wall time must not be below soft wall time")
+    cumulative_failure_budgets = {
+        "maxUnknownUsageSamples",
+        "maxTimedOutSamplesPerModelProfile",
+    }
+    present_failure_budgets = cumulative_failure_budgets.intersection(budgets)
+    if present_failure_budgets and present_failure_budgets != cumulative_failure_budgets:
+        errors.append(
+            "campaign plan cumulative failure budgets must be declared together"
+        )
 
     expected_full_matrix = (
         repository_ids == suite_repository_ids
@@ -292,6 +307,18 @@ def usage_totals(samples: list[dict[str, Any]]) -> tuple[int, int]:
     return reported, unknown
 
 
+def timed_out_samples_by_model_profile(
+    samples: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for sample in samples:
+        if sample["status"] != "TIMED_OUT" and sample.get("failureClass") != "TIMEOUT":
+            continue
+        model_id = sample["modelConfiguration"]["id"]
+        counts[model_id] = counts.get(model_id, 0) + 1
+    return counts
+
+
 def new_run_state(
     *,
     plan: dict[str, Any],
@@ -312,6 +339,7 @@ def new_run_state(
             "elapsedSeconds": 0.0,
             "reportedTokens": 0,
             "unknownUsageSamples": 0,
+            "timedOutSamplesByModelProfile": {},
             "consecutiveInfrastructureFailures": 0,
             "attemptedSampleIds": [],
             "campaignContentSha256": None,
@@ -327,6 +355,7 @@ def new_budget_ledger(plan: dict[str, Any], *, now: str) -> dict[str, Any]:
             "planContentSha256": plan["contentSha256"],
             "reportedTokensByShard": {},
             "unknownUsageSamplesByShard": {},
+            "timedOutSamplesByModelProfileByShard": {},
             "elapsedSecondsByShard": {},
             "attemptedSamplesByShard": {},
             "infrastructureFailureTailByShard": {},
@@ -357,6 +386,16 @@ def validate_budget_ledger(
         frozenset(ledger["statusByShard"]),
         frozenset(ledger["executionOrder"]),
     }
+    timeout_map = ledger.get("timedOutSamplesByModelProfileByShard")
+    if timeout_map is not None:
+        key_sets.add(frozenset(timeout_map))
+    if (
+        "maxTimedOutSamplesPerModelProfile" in plan["budgets"]
+        and timeout_map is None
+    ):
+        errors.append(
+            "campaign budget ledger is missing model-profile timeout accounting"
+        )
     if len(key_sets) != 1:
         errors.append("campaign budget ledger shard sets differ")
         return errors
@@ -380,6 +419,22 @@ def validate_budget_ledger(
             errors.append(
                 f"campaign budget ledger shard {shard_id} failure tail exceeds attempts"
             )
+        if timeout_map is not None:
+            profile_counts = timeout_map[shard_id]
+            known_model_ids = {
+                row["id"] for row in plan["modelConfigurations"]
+            }
+            unknown_model_ids = set(profile_counts) - known_model_ids
+            if unknown_model_ids:
+                errors.append(
+                    f"campaign budget ledger shard {shard_id} contains unknown model "
+                    "profiles: " + ", ".join(sorted(unknown_model_ids))
+                )
+            if sum(profile_counts.values()) > attempted:
+                errors.append(
+                    f"campaign budget ledger shard {shard_id} timeout count exceeds "
+                    "attempts"
+                )
     running = [
         shard_id
         for shard_id, status in ledger["statusByShard"].items()
@@ -420,6 +475,10 @@ def update_budget_ledger(
     ledger["unknownUsageSamplesByShard"][shard_id] = state[
         "unknownUsageSamples"
     ]
+    if "timedOutSamplesByModelProfileByShard" in ledger:
+        ledger["timedOutSamplesByModelProfileByShard"][shard_id] = state.get(
+            "timedOutSamplesByModelProfile", {}
+        )
     ledger["elapsedSecondsByShard"][shard_id] = state["elapsedSeconds"]
     ledger["attemptedSamplesByShard"][shard_id] = len(
         state["attemptedSampleIds"]
@@ -451,6 +510,18 @@ def budget_ledger_totals(ledger: dict[str, Any]) -> tuple[int, int, float, int]:
     )
 
 
+def budget_ledger_timed_out_samples_by_model_profile(
+    ledger: dict[str, Any],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for profile_counts in ledger.get(
+        "timedOutSamplesByModelProfileByShard", {}
+    ).values():
+        for model_id, count in profile_counts.items():
+            counts[model_id] = counts.get(model_id, 0) + count
+    return counts
+
+
 def validate_budget_ledger_state(
     ledger: dict[str, Any], state: dict[str, Any]
 ) -> list[str]:
@@ -463,6 +534,11 @@ def validate_budget_ledger_state(
         "infrastructureFailureTailByShard",
         "statusByShard",
     )
+    if (
+        "timedOutSamplesByModelProfileByShard" in ledger
+        or "timedOutSamplesByModelProfile" in state
+    ):
+        maps = (*maps, "timedOutSamplesByModelProfileByShard")
     if any(shard_id not in ledger.get(key, {}) for key in maps):
         return [f"campaign budget ledger is missing shard: {shard_id}"]
     expected = (
@@ -473,6 +549,8 @@ def validate_budget_ledger_state(
         state["consecutiveInfrastructureFailures"],
         state["status"],
     )
+    if "timedOutSamplesByModelProfileByShard" in maps:
+        expected = (*expected, state.get("timedOutSamplesByModelProfile"))
     actual = (
         ledger["reportedTokensByShard"][shard_id],
         ledger["unknownUsageSamplesByShard"][shard_id],
@@ -481,6 +559,11 @@ def validate_budget_ledger_state(
         ledger["infrastructureFailureTailByShard"][shard_id],
         ledger["statusByShard"][shard_id],
     )
+    if "timedOutSamplesByModelProfileByShard" in maps:
+        actual = (
+            *actual,
+            ledger["timedOutSamplesByModelProfileByShard"][shard_id],
+        )
     if actual != expected:
         return [f"campaign budget ledger shard {shard_id} differs from run state"]
     return []
@@ -504,6 +587,9 @@ def update_run_state(
             "elapsedSeconds": max(0.0, round(elapsed_seconds, 3)),
             "reportedTokens": reported,
             "unknownUsageSamples": unknown,
+            "timedOutSamplesByModelProfile": timed_out_samples_by_model_profile(
+                campaign["samples"]
+            ),
             "consecutiveInfrastructureFailures": failure_tail(campaign["samples"]),
             "attemptedSampleIds": [row["sampleId"] for row in campaign["samples"]],
             "campaignContentSha256": campaign["contentSha256"],
@@ -540,6 +626,12 @@ def validate_run_state(
         errors.append("campaign run state reportedTokens mismatch")
     if state["unknownUsageSamples"] != unknown:
         errors.append("campaign run state unknownUsageSamples mismatch")
+    expected_timeouts = timed_out_samples_by_model_profile(campaign["samples"])
+    if (
+        "maxTimedOutSamplesPerModelProfile" in plan["budgets"]
+        or "timedOutSamplesByModelProfile" in state
+    ) and state.get("timedOutSamplesByModelProfile") != expected_timeouts:
+        errors.append("campaign run state model-profile timeout accounting mismatch")
     if state["consecutiveInfrastructureFailures"] != failure_tail(
         campaign["samples"]
     ):
@@ -564,6 +656,8 @@ def _run_state_status_errors(
         "HARD_WALL_TIME",
         "TOKEN_CEILING",
         "INFRASTRUCTURE_CIRCUIT_BREAKER",
+        "UNKNOWN_USAGE_BUDGET_EXCEEDED",
+        "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
     }:
         errors.append("stopped campaign run state requires a budget or circuit stop")
     elif state["status"] == "FAILED" and state["stopReason"] not in {
@@ -650,11 +744,25 @@ def budget_stop_reason(
     elapsed_seconds: float,
     reported_tokens: int,
     consecutive_infrastructure_failures: int,
+    unknown_usage_samples: int = 0,
+    timed_out_samples_by_model_profile: dict[str, int] | None = None,
 ) -> str | None:
     if reported_tokens >= budgets["hardReportedTokenCeiling"]:
         return "TOKEN_CEILING"
     if elapsed_seconds >= budgets["hardWallTimeSeconds"]:
         return "HARD_WALL_TIME"
+    max_timeouts = budgets.get("maxTimedOutSamplesPerModelProfile")
+    if max_timeouts is not None and any(
+        count >= max_timeouts
+        for count in (timed_out_samples_by_model_profile or {}).values()
+    ):
+        return "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED"
+    max_unknown_usage = budgets.get("maxUnknownUsageSamples")
+    if (
+        max_unknown_usage is not None
+        and unknown_usage_samples >= max_unknown_usage
+    ):
+        return "UNKNOWN_USAGE_BUDGET_EXCEEDED"
     if elapsed_seconds >= budgets["softWallTimeSeconds"]:
         return "SOFT_WALL_TIME"
     if (

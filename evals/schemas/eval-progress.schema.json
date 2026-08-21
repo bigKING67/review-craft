@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-progress.schema.json",
+  "title": "Evaluation adapter lifecycle progress receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "availability",
+    "startedAt",
+    "threadStartedAt",
+    "turnStartedAt",
+    "firstItemAt",
+    "lastEventAt",
+    "lastEventType",
+    "eventCount",
+    "itemEventCount",
+    "timeToFirstItemSeconds",
+    "terminationReason",
+    "processTreeCleanup",
+    "unavailableReason"
+  ],
+  "properties": {
+    "schema": {"const": "review-craft.eval-progress.v1"},
+    "availability": {"enum": ["AVAILABLE", "UNAVAILABLE"]},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "threadStartedAt": {"type": ["string", "null"], "format": "date-time"},
+    "turnStartedAt": {"type": ["string", "null"], "format": "date-time"},
+    "firstItemAt": {"type": ["string", "null"], "format": "date-time"},
+    "lastEventAt": {"type": ["string", "null"], "format": "date-time"},
+    "lastEventType": {"type": ["string", "null"], "minLength": 1},
+    "eventCount": {"type": "integer", "minimum": 0},
+    "itemEventCount": {"type": "integer", "minimum": 0},
+    "timeToFirstItemSeconds": {"type": ["number", "null"], "minimum": 0},
+    "terminationReason": {
+      "enum": [null, "PROCESS_EXIT", "TIMEOUT", "ADAPTER_UNAVAILABLE"]
+    },
+    "processTreeCleanup": {
+      "enum": ["NOT_REQUIRED", "COMPLETED", "NOT_VERIFIED"]
+    },
+    "unavailableReason": {
+      "enum": [
+        null,
+        "HOST_OUTPUT_EMPTY",
+        "HOST_OUTPUT_INVALID",
+        "ADAPTER_DID_NOT_REPORT_PROGRESS",
+        "ADAPTER_PROGRESS_INVALID"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"availability": {"const": "AVAILABLE"}},
+        "required": ["availability"]
+      },
+      "then": {
+        "properties": {"unavailableReason": {"type": "null"}}
+      },
+      "else": {
+        "properties": {"unavailableReason": {"type": "string"}}
+      }
+    }
+  ]
+}

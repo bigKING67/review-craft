@@ -79,6 +79,7 @@
             }
           },
           "sourceMutationDetected": {"type": "boolean"},
+          "lifecycle": {"$ref": "eval-progress.schema.json"},
           "output": {"type": ["object", "null"]},
           "failureReason": {"type": ["string", "null"]},
           "failureClass": {
@@ -106,7 +107,8 @@
               "stderrSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "usageSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "outputSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-              "toolTraceSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+              "toolTraceSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+              "progressSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
             }
           }
         }

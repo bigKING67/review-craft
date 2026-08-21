@@ -131,6 +131,7 @@ REQUIRED_FILES = (
     "evals/schemas/eval-comparison.schema.json",
     "evals/schemas/eval-golden-snapshot.schema.json",
     "evals/schemas/eval-host-output.schema.json",
+    "evals/schemas/eval-progress.schema.json",
     "evals/schemas/eval-run.schema.json",
     "evals/schemas/eval-remediation-cases.schema.json",
     "evals/schemas/eval-remediation-oracle.schema.json",

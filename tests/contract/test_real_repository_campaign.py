@@ -65,6 +65,8 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         *,
         repositories: list[str] | None = None,
         token_ceiling: int = 60_000_000,
+        max_unknown_usage_samples: int = 1,
+        max_timed_out_samples_per_model_profile: int = 1,
     ) -> dict:
         repository_ids = repositories or [row["id"] for row in self.suite["repositories"]]
         return campaign_runtime.build_campaign_plan(
@@ -82,6 +84,10 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             hard_wall_time_seconds=86400,
             hard_reported_token_ceiling=token_ceiling,
             max_consecutive_infrastructure_failures=2,
+            max_unknown_usage_samples=max_unknown_usage_samples,
+            max_timed_out_samples_per_model_profile=(
+                max_timed_out_samples_per_model_profile
+            ),
         )
 
     def _output(self, repository: dict) -> dict:
@@ -180,6 +186,12 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         sample["artifacts"]["outputSha256"] = None
         return sample
 
+    def _timed_out_sample(self, **kwargs: object) -> dict:
+        sample = self._failed_sample("TIMEOUT", **kwargs)
+        sample["status"] = "TIMED_OUT"
+        sample["failureReason"] = "Synthetic timeout."
+        return sample
+
     def _write_inputs(
         self,
         root: Path,
@@ -228,6 +240,10 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertEqual(len({row["sampleId"] for row in first["samples"]}), 144)
         self.assertEqual({row["timeoutSeconds"] for row in first["samples"]}, {1800})
         self.assertEqual(len({row["shardId"] for row in first["samples"]}), 8)
+        self.assertEqual(first["budgets"]["maxUnknownUsageSamples"], 1)
+        self.assertEqual(
+            first["budgets"]["maxTimedOutSamplesPerModelProfile"], 1
+        )
 
         reordered = copy.deepcopy(first)
         reordered["samples"][0], reordered["samples"][1] = (
@@ -239,6 +255,47 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "campaign plan samples do not match the deterministic matrix",
             campaign_runtime.validate_campaign_plan(reordered, self.suite, self.blind),
         )
+
+    def test_legacy_plan_and_empty_state_remain_readable(self) -> None:
+        plan = self._plan()
+        del plan["budgets"]["maxUnknownUsageSamples"]
+        del plan["budgets"]["maxTimedOutSamplesPerModelProfile"]
+        campaign_runtime.seal(plan)
+        self.assertEqual(
+            campaign_runtime.validate_campaign_plan(plan, self.suite, self.blind), []
+        )
+
+        partial = copy.deepcopy(plan)
+        partial["budgets"]["maxUnknownUsageSamples"] = 1
+        campaign_runtime.seal(partial)
+        self.assertIn(
+            "campaign plan cumulative failure budgets must be declared together",
+            campaign_runtime.validate_campaign_plan(partial, self.suite, self.blind),
+        )
+
+        state = campaign_runtime.new_run_state(
+            plan=plan,
+            campaign_id=plan["campaignId"],
+            shard_id="ALL",
+            now="2026-08-21T00:00:00Z",
+        )
+        del state["timedOutSamplesByModelProfile"]
+        campaign_runtime.seal(state)
+        campaign = {
+            "campaignId": plan["campaignId"],
+            "samples": [],
+            "contentSha256": None,
+        }
+        self.assertEqual(
+            campaign_runtime.validate_run_state(state, plan, campaign), []
+        )
+
+        ledger = campaign_runtime.new_budget_ledger(
+            plan, now="2026-08-21T00:00:00Z"
+        )
+        del ledger["timedOutSamplesByModelProfileByShard"]
+        campaign_runtime.seal(ledger)
+        self.assertEqual(campaign_runtime.validate_budget_ledger(ledger, plan), [])
 
     def test_budget_decisions_are_fail_closed(self) -> None:
         budgets = self._plan()["budgets"]
@@ -277,6 +334,27 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 consecutive_infrastructure_failures=2,
             ),
             "INFRASTRUCTURE_CIRCUIT_BREAKER",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                unknown_usage_samples=1,
+            ),
+            "UNKNOWN_USAGE_BUDGET_EXCEEDED",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                unknown_usage_samples=1,
+                timed_out_samples_by_model_profile={"fixture-assured": 1},
+            ),
+            "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
         )
         self.assertEqual(
             campaign_runtime.effective_sample_timeout(
@@ -670,7 +748,9 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
 
     def test_runner_stops_after_two_consecutive_infrastructure_failures(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id])
+        plan = self._plan(
+            repositories=[repository_id], max_unknown_usage_samples=3
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -696,6 +776,84 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(run_sample.call_count, 2)
             self.assertEqual(state["status"], "STOPPED")
             self.assertEqual(state["stopReason"], "INFRASTRUCTURE_CIRCUIT_BREAKER")
+
+    def test_runner_stops_after_two_nonconsecutive_timeouts_for_one_profile(
+        self,
+    ) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(
+            repositories=[repository_id],
+            max_unknown_usage_samples=3,
+            max_timed_out_samples_per_model_profile=2,
+        )
+        outcomes = iter(("timeout", "success", "timeout"))
+
+        def sample_for_outcome(**kwargs: object) -> dict:
+            if next(outcomes) == "timeout":
+                return self._timed_out_sample(**kwargs)
+            return self._sample(**kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
+                ),
+                patch.object(runner, "_repository_state", side_effect=self._repository_state),
+                patch.object(
+                    runner, "_run_sample", side_effect=sample_for_outcome
+                ) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            ledger = json.loads(Path(args.budget_ledger).read_text(encoding="utf-8"))
+            self.assertEqual(run_sample.call_count, 3)
+            self.assertEqual(state["status"], "STOPPED")
+            self.assertEqual(
+                state["stopReason"], "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED"
+            )
+            self.assertEqual(
+                state["timedOutSamplesByModelProfile"], {"fixture-standard": 2}
+            )
+            self.assertEqual(
+                campaign_runtime.budget_ledger_timed_out_samples_by_model_profile(
+                    ledger
+                ),
+                {"fixture-standard": 2},
+            )
+
+    def test_runner_stops_after_first_unknown_usage_sample(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
+                ),
+                patch.object(runner, "_repository_state", side_effect=self._repository_state),
+                patch.object(
+                    runner,
+                    "_run_sample",
+                    side_effect=lambda **kwargs: self._failed_sample(
+                        "REVIEW_FAILURE", **kwargs
+                    ),
+                ) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(run_sample.call_count, 1)
+            self.assertEqual(state["stopReason"], "UNKNOWN_USAGE_BUDGET_EXCEEDED")
 
     def test_runner_enforces_reported_token_ceiling_after_checkpoint(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]

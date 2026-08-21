@@ -10,14 +10,17 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-ADAPTER_VERSION = "0.6.3"
+ADAPTER_VERSION = "0.6.4"
 PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
+PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
 USAGE_COLLECTOR = {
     "name": "codex-cli",
     "version": ADAPTER_VERSION,
@@ -79,6 +82,15 @@ SKILL_TREATMENTS = {
 
 class AdapterError(RuntimeError):
     pass
+
+
+def utc_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def codex_version() -> str:
@@ -274,6 +286,35 @@ def write_tool_trace_output(payload: dict[str, Any]) -> None:
     if not path.parent.is_dir():
         raise AdapterError("tool trace output parent directory does not exist")
     _write_json_sidecar(path, payload)
+
+
+def write_progress_output(payload: dict[str, Any]) -> None:
+    output = os.environ.get(PROGRESS_OUTPUT_ENV)
+    if output is None:
+        return
+    path = Path(output).expanduser()
+    if not path.parent.is_dir():
+        raise AdapterError("progress output parent directory does not exist")
+    _write_json_sidecar(path, payload)
+
+
+def new_progress_receipt(started_at: str) -> dict[str, Any]:
+    return {
+        "schema": "review-craft.eval-progress.v1",
+        "availability": "UNAVAILABLE",
+        "startedAt": started_at,
+        "threadStartedAt": None,
+        "turnStartedAt": None,
+        "firstItemAt": None,
+        "lastEventAt": None,
+        "lastEventType": None,
+        "eventCount": 0,
+        "itemEventCount": 0,
+        "timeToFirstItemSeconds": None,
+        "terminationReason": None,
+        "processTreeCleanup": "NOT_VERIFIED",
+        "unavailableReason": "HOST_OUTPUT_EMPTY",
+    }
 
 
 def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
@@ -510,11 +551,50 @@ def run_codex_process(
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     reader_errors: list[BaseException] = []
+    progress = new_progress_receipt(utc_now())
+    progress_started = time.monotonic()
+    turn_started: float | None = None
+    progress_invalid = False
+
+    def record_progress(line: str) -> None:
+        nonlocal progress_invalid, turn_started
+        observed_at = utc_now()
+        observed_monotonic = time.monotonic()
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            event = None
+        event_type = event.get("type") if isinstance(event, dict) else None
+        if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
+            progress_invalid = True
+            progress["availability"] = "UNAVAILABLE"
+            progress["unavailableReason"] = "HOST_OUTPUT_INVALID"
+            return
+        if not progress_invalid:
+            progress["availability"] = "AVAILABLE"
+            progress["unavailableReason"] = None
+        progress["eventCount"] += 1
+        progress["lastEventAt"] = observed_at
+        progress["lastEventType"] = event_type
+        if event_type == "thread.started" and progress["threadStartedAt"] is None:
+            progress["threadStartedAt"] = observed_at
+        if event_type == "turn.started" and progress["turnStartedAt"] is None:
+            progress["turnStartedAt"] = observed_at
+            turn_started = observed_monotonic
+        if event_type.startswith("item."):
+            progress["itemEventCount"] += 1
+            if progress["firstItemAt"] is None:
+                progress["firstItemAt"] = observed_at
+                baseline = turn_started or progress_started
+                progress["timeToFirstItemSeconds"] = max(
+                    0.0, round(observed_monotonic - baseline, 3)
+                )
 
     def persist_stdout() -> None:
         rendered = "".join(stdout_lines)
         write_usage_output(parse_codex_jsonl(rendered))
         write_tool_trace_output(parse_tool_trace(rendered, replacements))
+        write_progress_output(progress)
 
     def drain(
         stream: Any,
@@ -529,6 +609,7 @@ def run_codex_process(
                 sink.write(line)
                 sink.flush()
                 if persist:
+                    record_progress(line)
                     persist_stdout()
         except BaseException as error:  # pragma: no cover - defensive thread boundary.
             reader_errors.append(error)
@@ -537,6 +618,7 @@ def run_codex_process(
 
     write_usage_output(unavailable_usage("HOST_OUTPUT_EMPTY"))
     write_tool_trace_output({"schema": "review-craft.eval-tool-trace.v1", "items": []})
+    write_progress_output(progress)
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -577,6 +659,8 @@ def run_codex_process(
     stderr_thread.join()
     if reader_errors:
         raise AdapterError(f"codex stream reader failed: {reader_errors[0]}")
+    progress["terminationReason"] = "PROCESS_EXIT"
+    progress["processTreeCleanup"] = "NOT_REQUIRED"
     persist_stdout()
     return returncode
 
@@ -609,6 +693,11 @@ def main(argv: list[str] | None = None) -> int:
                         "protocol": "review-craft.eval-tool-trace.v1",
                         "transport": "ENV_PATH",
                         "environmentVariable": TOOL_TRACE_OUTPUT_ENV,
+                    },
+                    "progress": {
+                        "protocol": "review-craft.eval-progress.v1",
+                        "transport": "ENV_PATH",
+                        "environmentVariable": PROGRESS_OUTPUT_ENV,
                     },
                     "capabilities": {
                         "operations": ["REVIEW", "REPAIR"],

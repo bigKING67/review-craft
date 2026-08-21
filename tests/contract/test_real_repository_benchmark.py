@@ -266,6 +266,27 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             "summary": "Synthetic contract fixture.",
         }
         self.assertEqual(contracts.validate_host_output(payload, repository), [])
+        payload["probes"][0]["severity"] = "P2"
+        self.assertIn(
+            "probes[0].severity must be null when disposition is BLOCKED",
+            contracts.validate_host_output(payload, repository),
+        )
+        payload["probes"][0]["severity"] = None
+        payload["probes"][0]["locations"] = [
+            {"path": "go.mod", "lineStart": 1, "lineEnd": 1}
+        ]
+        self.assertIn(
+            "probes[0].locations[0]: location is outside declared scope: go.mod",
+            contracts.validate_host_output(payload, repository),
+        )
+        payload["probes"][0]["locations"] = [
+            {"path": "../go.mod", "lineStart": 1, "lineEnd": 1}
+        ]
+        self.assertIn(
+            "probes[0].locations[0]: unsafe location: ../go.mod",
+            contracts.validate_host_output(payload, repository),
+        )
+        payload["probes"][0]["locations"] = []
         payload["score"] = {"status": "NOT_PRODUCED", "value": 90}
         self.assertIn(
             "score.value must be null when score.status is NOT_PRODUCED",
@@ -425,6 +446,25 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 Path(env[runner.TOOL_TRACE_OUTPUT_ENV]).write_text(
                     json.dumps(trace), encoding="utf-8"
                 )
+                progress = {
+                    "schema": "review-craft.eval-progress.v1",
+                    "availability": "AVAILABLE",
+                    "startedAt": "2026-08-21T00:00:00Z",
+                    "threadStartedAt": "2026-08-21T00:00:01Z",
+                    "turnStartedAt": "2026-08-21T00:00:02Z",
+                    "firstItemAt": None,
+                    "lastEventAt": "2026-08-21T00:00:02Z",
+                    "lastEventType": "turn.started",
+                    "eventCount": 2,
+                    "itemEventCount": 0,
+                    "timeToFirstItemSeconds": None,
+                    "terminationReason": None,
+                    "processTreeCleanup": "NOT_VERIFIED",
+                    "unavailableReason": None,
+                }
+                Path(env[runner.PROGRESS_OUTPUT_ENV]).write_text(
+                    json.dumps(progress), encoding="utf-8"
+                )
                 return runner.ProcessResult(124, b'{"type":"item.completed"}\n', b"", True)
 
             with patch.object(runner, "run_process", side_effect=timed_out):
@@ -446,12 +486,17 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             self.assertEqual(sample["failureClass"], "TIMEOUT")
             self.assertEqual(sample["usage"]["toolCalls"], 1)
             self.assertIsNotNone(sample["artifacts"]["toolTraceSha256"])
+            self.assertIsNotNone(sample["artifacts"]["progressSha256"])
+            self.assertEqual(sample["lifecycle"]["lastEventType"], "turn.started")
+            self.assertEqual(sample["lifecycle"]["terminationReason"], "TIMEOUT")
+            self.assertEqual(sample["lifecycle"]["processTreeCleanup"], "COMPLETED")
             sample_dir = next((root / "run/samples").iterdir())
             self.assertEqual(
                 (sample_dir / "stdout.txt").read_text(encoding="utf-8"),
                 '{"type":"item.completed"}\n',
             )
             self.assertTrue((sample_dir / "tool-trace.json").is_file())
+            self.assertTrue((sample_dir / "progress.json").is_file())
             self.assertFalse(sample["sourceMutationDetected"])
             with self.assertRaisesRegex(
                 contracts.RealRepositoryError,

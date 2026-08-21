@@ -26,7 +26,7 @@ when existing code should be kept.
 
 ## Status
 
-Version `0.6.3` provides read-only repository, Git diff, and focused-dimension review
+Version `0.6.4` provides read-only repository, Git diff, and focused-dimension review
 workflows, explicitly authorized remediation verification, immutable fix-attempt lineage,
 and independent post-commit delivery attestations. The runtime binds selected findings to
 a sealed review, captures the exact pre-change source, executes only selected configured
@@ -60,7 +60,7 @@ instead of silently reinterpreting it as legacy `fix.v1`. The v0.5-compatible
 `review-craft.fix.v1` and `review-craft.delivery.v1` protocols remain supported without
 changing their semantics.
 
-The following are intentionally not implemented in 0.6.3: deep multi-pass review,
+The following are intentionally not implemented in 0.6.4: deep multi-pass review,
 automatic source mutation, historical comparison, SARIF, MCP, custom UI, and a cloud
 service. Delivery v1 and v2 do not verify GitHub Releases or npm registry publication.
 
@@ -93,7 +93,7 @@ Review Craft requires:
 - Use Review Craft for repository-wide, multi-dimensional engineering assessment
   and remediation governance.
 
-Review Craft complements these tools. Version 0.6.3 does not claim to replace or
+Review Craft complements these tools. Version 0.6.4 does not claim to replace or
 outperform Codex Security.
 
 ## Invocation and review depth
@@ -156,7 +156,7 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 python3 "$CODEX_HOME/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo bigKING67/review-craft \
   --path skills/review-craft \
-  --ref v0.6.3 \
+  --ref v0.6.4 \
   --dest "$HOME/.agents/skills"
 ```
 
@@ -189,7 +189,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
   doctor --json
 ```
 
-The result should report `"ready": true` and `"version": "0.6.3"`.
+The result should report `"ready": true` and `"version": "0.6.4"`.
 If you selected the Codex-only root, replace `$HOME/.agents/skills` in the
 verification path with `$CODEX_HOME/skills`.
 
@@ -766,7 +766,9 @@ checkpoints across timeouts while the canonical lifecycle boundary terminates th
 High-cost execution uses a content-bound deterministic plan, resumable exact-prefix
 checkpoints, serial repository shards, a shared content-bound budget ledger, validated merge
 receipts, global reported-token and active runner-time ceilings, and a cross-shard consecutive
-infrastructure-failure circuit breaker. The legacy direct `run`
+infrastructure-failure circuit breaker. New plans also stop after the declared cumulative
+unknown-usage limit or per-model-profile timeout limit; lifecycle receipts preserve the last
+observed host event and timeout cleanup outcome. The legacy direct `run`
 command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,
 `validate-campaign-run`, and `merge-campaign-runs` for a full campaign. A campaign is Golden
 only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions
