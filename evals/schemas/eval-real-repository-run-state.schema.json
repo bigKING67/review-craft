@@ -38,6 +38,7 @@
         "INFRASTRUCTURE_CIRCUIT_BREAKER",
         "UNKNOWN_USAGE_BUDGET_EXCEEDED",
         "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
+        "ARTIFACT_INVALID_BUDGET_EXCEEDED",
         "SOURCE_MUTATION",
         "CREDENTIAL_EXPOSURE",
         "INTEGRITY_FAILURE"
@@ -52,6 +53,7 @@
       "type": "object",
       "additionalProperties": {"type": "integer", "minimum": 1}
     },
+    "artifactInvalidSamples": {"type": "integer", "minimum": 0},
     "consecutiveInfrastructureFailures": {"type": "integer", "minimum": 0},
     "attemptedSampleIds": {
       "type": "array",

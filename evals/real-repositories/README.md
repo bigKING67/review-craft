@@ -47,6 +47,7 @@ uv run --locked python scripts/real_repository_benchmark.py plan-campaign \
   --max-consecutive-infrastructure-failures 2 \
   --max-unknown-usage-samples 1 \
   --max-timed-out-samples-per-model-profile 1 \
+  --max-artifact-invalid-samples 1 \
   --output <external-path>/campaign-plan.json
 
 uv run --locked python scripts/real_repository_benchmark.py \
@@ -112,10 +113,12 @@ uv run --locked python scripts/real_repository_benchmark.py analyze-stability \
   --output <stability.json>
 ```
 
-New plans stop before scheduling another sample after the cumulative unknown-usage
-budget or any single model-profile timeout budget is reached. These fail-closed limits
-apply across repository shards through the shared budget ledger; they do not increase the
-per-sample timeout.
+New plans stop before scheduling another sample after the cumulative unknown-usage,
+artifact-invalid, or any single model-profile timeout budget is reached. These fail-closed
+limits apply across repository shards through the shared budget ledger; they do not increase
+the per-sample timeout. Prompted output invariants are not hidden post-processing rules:
+`BLOCKED` probes must use null severity, and every reported location must stay inside the
+declared benchmark scope.
 
 The full matrix is eight repositories by three treatments by at least two real-host model
 configurations by three repetitions. `--repository`, `--treatment`, and `--repetitions` may
@@ -132,8 +135,8 @@ remains available for compatibility and bounded diagnostics, but it does not pro
 plan execution or campaign-level budget enforcement. A plan binds the suite, blind suite,
 materialization receipt, adapter configuration, live REAL_HOST descriptions, deterministic
 sample order, per-sample timeout, global token and wall-time ceilings, and infrastructure
-circuit-breaker threshold. New plans also bind cumulative unknown-usage and per-model-profile
-timeout ceilings.
+circuit-breaker threshold. New plans also bind cumulative unknown-usage, artifact-invalid,
+and per-model-profile timeout ceilings.
 
 Each sample commits an atomic `checkpoint.json` marker containing the exact content-bound run
 state before replacing the `campaign.json` and `run-state.json` mirrors. Resume trusts the
@@ -146,12 +149,12 @@ evidence. The default natural shard is one repository, or 18 cells for the decla
 Every shard in one plan must use the same external `--budget-ledger`. The runner holds an
 exclusive lock for the complete shard invocation, reserves one shard before creating its run
 state, and refuses a new shard while the latest shard is still `RUNNING`. The content-bound
-ledger aggregates reported tokens, unknown-usage samples, active runner time, and the
-per-model-profile timeout counts plus consecutive infrastructure-failure tail across the serial
-shard order. A resume repairs the latest ledger contribution from the committed checkpoint; it
-cannot recreate a missing ledger or switch to an older shard. Token usage is known only after an
-adapter checkpoint, so the hard reported-token ceiling stops before the next sample and may be
-exceeded by the final completed sample's reported usage.
+ledger aggregates reported tokens, unknown-usage samples, artifact-invalid samples, active
+runner time, and the per-model-profile timeout counts plus consecutive infrastructure-failure
+tail across the serial shard order. A resume repairs the latest ledger contribution from the
+committed checkpoint; it cannot recreate a missing ledger or switch to an older shard. Token
+usage is known only after an adapter checkpoint, so the hard reported-token ceiling stops before
+the next sample and may be exceeded by the final completed sample's reported usage.
 
 `merge-campaign-runs` rejects running states, duplicate shards, duplicate cells, plan drift,
 budget-ledger drift, model-configuration drift, and samples outside the plan. Its receipt binds

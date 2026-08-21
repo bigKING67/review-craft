@@ -35,6 +35,10 @@
         "additionalProperties": {"type": "integer", "minimum": 1}
       }
     },
+    "artifactInvalidSamplesByShard": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
     "elapsedSecondsByShard": {
       "type": "object",
       "additionalProperties": {"type": "number", "minimum": 0}

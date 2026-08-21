@@ -18,6 +18,7 @@ from eval_output_safety import (
 )
 from eval_output_safety import redact_output as _redact_output
 from real_repository_campaign import (
+    budget_ledger_artifact_invalid_samples,
     budget_ledger_timed_out_samples_by_model_profile,
     budget_ledger_totals,
     budget_stop_reason,
@@ -268,11 +269,13 @@ Evaluate every requested probe independently and preserve this exact order:
 Return only the JSON object required by the supplied output schema. Use each bracketed ID as
 the corresponding probeId. A VALIDATED disposition requires concrete evidence; FALSIFIED is a
 first-class result; BLOCKED records an evidence gap; NOT_RAISED means the prompt did not yield a
-candidate. Do not turn modernity or style into a finding, do not claim performance without
-measurement, and do not infer cross-platform proof from source inspection. Put unrelated issues
-in additionalFindings only when they independently satisfy a concrete evidence bar. Use
-repository-relative locations. Use score.status NOT_PRODUCED with a null value unless the chosen
-method actually produced a defensible score; label any non-canonical estimate PROVISIONAL.
+candidate. A BLOCKED probe must use severity null. Every probe, evidence, and additional-finding
+location must be inside the declared scope. Do not turn modernity or style into a finding, do not
+claim performance without measurement, and do not infer cross-platform proof from source
+inspection. Put unrelated issues in additionalFindings only when they independently satisfy a
+concrete evidence bar. Use repository-relative locations. Use score.status NOT_PRODUCED with a
+null value unless the chosen method actually produced a defensible score; label any non-canonical
+estimate PROVISIONAL.
 """
     return prompt.encode("utf-8")
 
@@ -1353,6 +1356,7 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         max_timed_out_samples_per_model_profile=(
             args.max_timed_out_samples_per_model_profile
         ),
+        max_artifact_invalid_samples=args.max_artifact_invalid_samples,
     )
     output = Path(args.output).expanduser().resolve()
     if output.exists():
@@ -1752,6 +1756,7 @@ def _command_run_campaign_plan_locked(
             budget_ledger_totals(ledger)
         )
         timeout_counts = budget_ledger_timed_out_samples_by_model_profile(ledger)
+        artifact_invalid = budget_ledger_artifact_invalid_samples(ledger)
         global_elapsed = (
             ledger_elapsed
             - ledger["elapsedSecondsByShard"][shard_id]
@@ -1764,6 +1769,7 @@ def _command_run_campaign_plan_locked(
             consecutive_infrastructure_failures=infrastructure_tail,
             unknown_usage_samples=unknown_usage,
             timed_out_samples_by_model_profile=timeout_counts,
+            artifact_invalid_samples=artifact_invalid,
         )
         if budget_reason is not None:
             state_status, stop_reason = "STOPPED", budget_reason
@@ -1808,6 +1814,7 @@ def _command_run_campaign_plan_locked(
             budget_ledger_totals(ledger)
         )
         timeout_counts = budget_ledger_timed_out_samples_by_model_profile(ledger)
+        artifact_invalid = budget_ledger_artifact_invalid_samples(ledger)
         budget_reason = budget_stop_reason(
             budgets=budgets,
             elapsed_seconds=global_elapsed,
@@ -1815,6 +1822,7 @@ def _command_run_campaign_plan_locked(
             consecutive_infrastructure_failures=infrastructure_tail,
             unknown_usage_samples=unknown_usage,
             timed_out_samples_by_model_profile=timeout_counts,
+            artifact_invalid_samples=artifact_invalid,
         )
         state_status, stop_reason = _terminal_run_state(
             sample.get("failureClass"), budget_reason
@@ -1894,6 +1902,9 @@ def _command_run_campaign_plan_locked(
                 "globalUnknownUsageSamples": unknown_usage,
                 "globalTimedOutSamplesByModelProfile": (
                     budget_ledger_timed_out_samples_by_model_profile(ledger)
+                ),
+                "globalArtifactInvalidSamples": (
+                    budget_ledger_artifact_invalid_samples(ledger)
                 ),
                 "globalElapsedSeconds": global_elapsed,
                 "globalInfrastructureFailureTail": infrastructure_tail,
@@ -2298,6 +2309,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_campaign.add_argument(
         "--max-timed-out-samples-per-model-profile", type=int, default=1
+    )
+    plan_campaign.add_argument(
+        "--max-artifact-invalid-samples", type=int, default=1
     )
     plan_campaign.set_defaults(handler=command_plan_campaign)
 

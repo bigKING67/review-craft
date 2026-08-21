@@ -66,6 +66,7 @@ def build_campaign_plan(
     max_consecutive_infrastructure_failures: int,
     max_unknown_usage_samples: int = 1,
     max_timed_out_samples_per_model_profile: int = 1,
+    max_artifact_invalid_samples: int = 1,
 ) -> dict[str, Any]:
     model_ids = [row["id"] for row in model_configurations]
     all_repository_ids = [row["id"] for row in source_suite["repositories"]]
@@ -127,6 +128,7 @@ def build_campaign_plan(
             "maxTimedOutSamplesPerModelProfile": (
                 max_timed_out_samples_per_model_profile
             ),
+            "maxArtifactInvalidSamples": max_artifact_invalid_samples,
         },
         "samples": samples,
         "contentSha256": "0" * 64,
@@ -179,12 +181,19 @@ def _plan_selection_errors(
     budgets = payload["budgets"]
     if budgets["hardWallTimeSeconds"] < budgets["softWallTimeSeconds"]:
         errors.append("campaign plan hard wall time must not be below soft wall time")
-    cumulative_failure_budgets = {
+    previous_failure_budgets = {
         "maxUnknownUsageSamples",
         "maxTimedOutSamplesPerModelProfile",
     }
-    present_failure_budgets = cumulative_failure_budgets.intersection(budgets)
-    if present_failure_budgets and present_failure_budgets != cumulative_failure_budgets:
+    current_failure_budgets = previous_failure_budgets | {
+        "maxArtifactInvalidSamples"
+    }
+    present_failure_budgets = frozenset(current_failure_budgets.intersection(budgets))
+    if present_failure_budgets not in {
+        frozenset(),
+        frozenset(previous_failure_budgets),
+        frozenset(current_failure_budgets),
+    }:
         errors.append(
             "campaign plan cumulative failure budgets must be declared together"
         )
@@ -319,6 +328,12 @@ def timed_out_samples_by_model_profile(
     return counts
 
 
+def artifact_invalid_samples(samples: list[dict[str, Any]]) -> int:
+    return sum(
+        sample.get("failureClass") == "ARTIFACT_INVALID" for sample in samples
+    )
+
+
 def new_run_state(
     *,
     plan: dict[str, Any],
@@ -326,45 +341,47 @@ def new_run_state(
     shard_id: str,
     now: str,
 ) -> dict[str, Any]:
-    return seal(
-        {
-            "schema": "review-craft.eval-real-repository-run-state.v1",
-            "planContentSha256": plan["contentSha256"],
-            "campaignId": campaign_id,
-            "shardId": shard_id,
-            "status": "RUNNING",
-            "stopReason": None,
-            "startedAt": now,
-            "updatedAt": now,
-            "elapsedSeconds": 0.0,
-            "reportedTokens": 0,
-            "unknownUsageSamples": 0,
-            "timedOutSamplesByModelProfile": {},
-            "consecutiveInfrastructureFailures": 0,
-            "attemptedSampleIds": [],
-            "campaignContentSha256": None,
-            "contentSha256": "0" * 64,
-        }
-    )
+    state = {
+        "schema": "review-craft.eval-real-repository-run-state.v1",
+        "planContentSha256": plan["contentSha256"],
+        "campaignId": campaign_id,
+        "shardId": shard_id,
+        "status": "RUNNING",
+        "stopReason": None,
+        "startedAt": now,
+        "updatedAt": now,
+        "elapsedSeconds": 0.0,
+        "reportedTokens": 0,
+        "unknownUsageSamples": 0,
+        "timedOutSamplesByModelProfile": {},
+        "consecutiveInfrastructureFailures": 0,
+        "attemptedSampleIds": [],
+        "campaignContentSha256": None,
+        "contentSha256": "0" * 64,
+    }
+    if "maxArtifactInvalidSamples" in plan["budgets"]:
+        state["artifactInvalidSamples"] = 0
+    return seal(state)
 
 
 def new_budget_ledger(plan: dict[str, Any], *, now: str) -> dict[str, Any]:
-    return seal(
-        {
-            "schema": "review-craft.eval-real-repository-budget-ledger.v1",
-            "planContentSha256": plan["contentSha256"],
-            "reportedTokensByShard": {},
-            "unknownUsageSamplesByShard": {},
-            "timedOutSamplesByModelProfileByShard": {},
-            "elapsedSecondsByShard": {},
-            "attemptedSamplesByShard": {},
-            "infrastructureFailureTailByShard": {},
-            "statusByShard": {},
-            "executionOrder": [],
-            "updatedAt": now,
-            "contentSha256": "0" * 64,
-        }
-    )
+    ledger = {
+        "schema": "review-craft.eval-real-repository-budget-ledger.v1",
+        "planContentSha256": plan["contentSha256"],
+        "reportedTokensByShard": {},
+        "unknownUsageSamplesByShard": {},
+        "timedOutSamplesByModelProfileByShard": {},
+        "elapsedSecondsByShard": {},
+        "attemptedSamplesByShard": {},
+        "infrastructureFailureTailByShard": {},
+        "statusByShard": {},
+        "executionOrder": [],
+        "updatedAt": now,
+        "contentSha256": "0" * 64,
+    }
+    if "maxArtifactInvalidSamples" in plan["budgets"]:
+        ledger["artifactInvalidSamplesByShard"] = {}
+    return seal(ledger)
 
 
 def validate_budget_ledger(
@@ -389,12 +406,19 @@ def validate_budget_ledger(
     timeout_map = ledger.get("timedOutSamplesByModelProfileByShard")
     if timeout_map is not None:
         key_sets.add(frozenset(timeout_map))
+    artifact_map = ledger.get("artifactInvalidSamplesByShard")
+    if artifact_map is not None:
+        key_sets.add(frozenset(artifact_map))
     if (
         "maxTimedOutSamplesPerModelProfile" in plan["budgets"]
         and timeout_map is None
     ):
         errors.append(
             "campaign budget ledger is missing model-profile timeout accounting"
+        )
+    if "maxArtifactInvalidSamples" in plan["budgets"] and artifact_map is None:
+        errors.append(
+            "campaign budget ledger is missing artifact-invalid accounting"
         )
     if len(key_sets) != 1:
         errors.append("campaign budget ledger shard sets differ")
@@ -435,6 +459,11 @@ def validate_budget_ledger(
                     f"campaign budget ledger shard {shard_id} timeout count exceeds "
                     "attempts"
                 )
+        if artifact_map is not None and artifact_map[shard_id] > attempted:
+            errors.append(
+                f"campaign budget ledger shard {shard_id} artifact-invalid count "
+                "exceeds attempts"
+            )
     running = [
         shard_id
         for shard_id, status in ledger["statusByShard"].items()
@@ -479,6 +508,10 @@ def update_budget_ledger(
         ledger["timedOutSamplesByModelProfileByShard"][shard_id] = state.get(
             "timedOutSamplesByModelProfile", {}
         )
+    if "artifactInvalidSamplesByShard" in ledger:
+        ledger["artifactInvalidSamplesByShard"][shard_id] = state.get(
+            "artifactInvalidSamples", 0
+        )
     ledger["elapsedSecondsByShard"][shard_id] = state["elapsedSeconds"]
     ledger["attemptedSamplesByShard"][shard_id] = len(
         state["attemptedSampleIds"]
@@ -522,6 +555,10 @@ def budget_ledger_timed_out_samples_by_model_profile(
     return counts
 
 
+def budget_ledger_artifact_invalid_samples(ledger: dict[str, Any]) -> int:
+    return sum(ledger.get("artifactInvalidSamplesByShard", {}).values())
+
+
 def validate_budget_ledger_state(
     ledger: dict[str, Any], state: dict[str, Any]
 ) -> list[str]:
@@ -539,6 +576,11 @@ def validate_budget_ledger_state(
         or "timedOutSamplesByModelProfile" in state
     ):
         maps = (*maps, "timedOutSamplesByModelProfileByShard")
+    if (
+        "artifactInvalidSamplesByShard" in ledger
+        or "artifactInvalidSamples" in state
+    ):
+        maps = (*maps, "artifactInvalidSamplesByShard")
     if any(shard_id not in ledger.get(key, {}) for key in maps):
         return [f"campaign budget ledger is missing shard: {shard_id}"]
     expected = (
@@ -550,7 +592,9 @@ def validate_budget_ledger_state(
         state["status"],
     )
     if "timedOutSamplesByModelProfileByShard" in maps:
-        expected = (*expected, state.get("timedOutSamplesByModelProfile"))
+        expected = (*expected, state.get("timedOutSamplesByModelProfile", {}))
+    if "artifactInvalidSamplesByShard" in maps:
+        expected = (*expected, state.get("artifactInvalidSamples", 0))
     actual = (
         ledger["reportedTokensByShard"][shard_id],
         ledger["unknownUsageSamplesByShard"][shard_id],
@@ -564,6 +608,8 @@ def validate_budget_ledger_state(
             *actual,
             ledger["timedOutSamplesByModelProfileByShard"][shard_id],
         )
+    if "artifactInvalidSamplesByShard" in maps:
+        actual = (*actual, ledger["artifactInvalidSamplesByShard"][shard_id])
     if actual != expected:
         return [f"campaign budget ledger shard {shard_id} differs from run state"]
     return []
@@ -595,6 +641,10 @@ def update_run_state(
             "campaignContentSha256": campaign["contentSha256"],
         }
     )
+    if "artifactInvalidSamples" in state:
+        state["artifactInvalidSamples"] = artifact_invalid_samples(
+            campaign["samples"]
+        )
     return seal(state)
 
 
@@ -632,6 +682,12 @@ def validate_run_state(
         or "timedOutSamplesByModelProfile" in state
     ) and state.get("timedOutSamplesByModelProfile") != expected_timeouts:
         errors.append("campaign run state model-profile timeout accounting mismatch")
+    expected_artifact_invalid = artifact_invalid_samples(campaign["samples"])
+    if (
+        "maxArtifactInvalidSamples" in plan["budgets"]
+        or "artifactInvalidSamples" in state
+    ) and state.get("artifactInvalidSamples") != expected_artifact_invalid:
+        errors.append("campaign run state artifact-invalid accounting mismatch")
     if state["consecutiveInfrastructureFailures"] != failure_tail(
         campaign["samples"]
     ):
@@ -658,6 +714,7 @@ def _run_state_status_errors(
         "INFRASTRUCTURE_CIRCUIT_BREAKER",
         "UNKNOWN_USAGE_BUDGET_EXCEEDED",
         "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
+        "ARTIFACT_INVALID_BUDGET_EXCEEDED",
     }:
         errors.append("stopped campaign run state requires a budget or circuit stop")
     elif state["status"] == "FAILED" and state["stopReason"] not in {
@@ -746,6 +803,7 @@ def budget_stop_reason(
     consecutive_infrastructure_failures: int,
     unknown_usage_samples: int = 0,
     timed_out_samples_by_model_profile: dict[str, int] | None = None,
+    artifact_invalid_samples: int = 0,
 ) -> str | None:
     if reported_tokens >= budgets["hardReportedTokenCeiling"]:
         return "TOKEN_CEILING"
@@ -757,6 +815,12 @@ def budget_stop_reason(
         for count in (timed_out_samples_by_model_profile or {}).values()
     ):
         return "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED"
+    max_artifact_invalid = budgets.get("maxArtifactInvalidSamples")
+    if (
+        max_artifact_invalid is not None
+        and artifact_invalid_samples >= max_artifact_invalid
+    ):
+        return "ARTIFACT_INVALID_BUDGET_EXCEEDED"
     max_unknown_usage = budgets.get("maxUnknownUsageSamples")
     if (
         max_unknown_usage is not None

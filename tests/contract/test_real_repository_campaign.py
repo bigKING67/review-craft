@@ -67,6 +67,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         token_ceiling: int = 60_000_000,
         max_unknown_usage_samples: int = 1,
         max_timed_out_samples_per_model_profile: int = 1,
+        max_artifact_invalid_samples: int = 1,
     ) -> dict:
         repository_ids = repositories or [row["id"] for row in self.suite["repositories"]]
         return campaign_runtime.build_campaign_plan(
@@ -88,6 +89,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             max_timed_out_samples_per_model_profile=(
                 max_timed_out_samples_per_model_profile
             ),
+            max_artifact_invalid_samples=max_artifact_invalid_samples,
         )
 
     def _output(self, repository: dict) -> dict:
@@ -192,6 +194,19 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         sample["failureReason"] = "Synthetic timeout."
         return sample
 
+    def _artifact_invalid_sample(self, **kwargs: object) -> dict:
+        sample = self._sample(**kwargs)
+        sample.update(
+            {
+                "status": "FAILED",
+                "output": None,
+                "failureReason": "Synthetic normalized output failure.",
+                "failureClass": "ARTIFACT_INVALID",
+            }
+        )
+        sample["artifacts"]["outputSha256"] = None
+        return sample
+
     def _write_inputs(
         self,
         root: Path,
@@ -244,6 +259,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertEqual(
             first["budgets"]["maxTimedOutSamplesPerModelProfile"], 1
         )
+        self.assertEqual(first["budgets"]["maxArtifactInvalidSamples"], 1)
 
         reordered = copy.deepcopy(first)
         reordered["samples"][0], reordered["samples"][1] = (
@@ -258,14 +274,26 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
 
     def test_legacy_plan_and_empty_state_remain_readable(self) -> None:
         plan = self._plan()
-        del plan["budgets"]["maxUnknownUsageSamples"]
-        del plan["budgets"]["maxTimedOutSamplesPerModelProfile"]
-        campaign_runtime.seal(plan)
+        previous = copy.deepcopy(plan)
+        del previous["budgets"]["maxArtifactInvalidSamples"]
+        campaign_runtime.seal(previous)
         self.assertEqual(
-            campaign_runtime.validate_campaign_plan(plan, self.suite, self.blind), []
+            campaign_runtime.validate_campaign_plan(
+                previous, self.suite, self.blind
+            ),
+            [],
         )
 
-        partial = copy.deepcopy(plan)
+        legacy = copy.deepcopy(previous)
+        del legacy["budgets"]["maxUnknownUsageSamples"]
+        del legacy["budgets"]["maxTimedOutSamplesPerModelProfile"]
+        campaign_runtime.seal(legacy)
+        self.assertEqual(
+            campaign_runtime.validate_campaign_plan(legacy, self.suite, self.blind),
+            [],
+        )
+
+        partial = copy.deepcopy(legacy)
         partial["budgets"]["maxUnknownUsageSamples"] = 1
         campaign_runtime.seal(partial)
         self.assertIn(
@@ -274,28 +302,32 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         )
 
         state = campaign_runtime.new_run_state(
-            plan=plan,
-            campaign_id=plan["campaignId"],
+            plan=legacy,
+            campaign_id=legacy["campaignId"],
             shard_id="ALL",
             now="2026-08-21T00:00:00Z",
         )
         del state["timedOutSamplesByModelProfile"]
+        self.assertNotIn("artifactInvalidSamples", state)
         campaign_runtime.seal(state)
         campaign = {
-            "campaignId": plan["campaignId"],
+            "campaignId": legacy["campaignId"],
             "samples": [],
             "contentSha256": None,
         }
         self.assertEqual(
-            campaign_runtime.validate_run_state(state, plan, campaign), []
+            campaign_runtime.validate_run_state(state, legacy, campaign), []
         )
 
         ledger = campaign_runtime.new_budget_ledger(
-            plan, now="2026-08-21T00:00:00Z"
+            legacy, now="2026-08-21T00:00:00Z"
         )
         del ledger["timedOutSamplesByModelProfileByShard"]
+        self.assertNotIn("artifactInvalidSamplesByShard", ledger)
         campaign_runtime.seal(ledger)
-        self.assertEqual(campaign_runtime.validate_budget_ledger(ledger, plan), [])
+        self.assertEqual(
+            campaign_runtime.validate_budget_ledger(ledger, legacy), []
+        )
 
     def test_budget_decisions_are_fail_closed(self) -> None:
         budgets = self._plan()["budgets"]
@@ -357,6 +389,16 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
         )
         self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                artifact_invalid_samples=1,
+            ),
+            "ARTIFACT_INVALID_BUDGET_EXCEEDED",
+        )
+        self.assertEqual(
             campaign_runtime.effective_sample_timeout(
                 sample_timeout_seconds=1800,
                 hard_wall_time_seconds=86400,
@@ -385,6 +427,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                     "elapsedSeconds": index + 1,
                     "reportedTokens": 100 * (index + 1),
                     "unknownUsageSamples": index,
+                    "artifactInvalidSamples": index,
                     "consecutiveInfrastructureFailures": 1,
                     "attemptedSampleIds": [plan["samples"][index]["sampleId"]],
                 }
@@ -402,6 +445,21 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         )
         self.assertEqual(
             campaign_runtime.validate_budget_ledger_state(ledger, states[-1]), []
+        )
+        self.assertEqual(
+            campaign_runtime.budget_ledger_artifact_invalid_samples(ledger), 1
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=plan["budgets"],
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                artifact_invalid_samples=(
+                    campaign_runtime.budget_ledger_artifact_invalid_samples(ledger)
+                ),
+            ),
+            "ARTIFACT_INVALID_BUDGET_EXCEEDED",
         )
         malformed = copy.deepcopy(ledger)
         del malformed["attemptedSamplesByShard"][states[-1]["shardId"]]
@@ -854,6 +912,51 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             )
             self.assertEqual(run_sample.call_count, 1)
             self.assertEqual(state["stopReason"], "UNKNOWN_USAGE_BUDGET_EXCEEDED")
+
+    def test_runner_stops_after_first_artifact_invalid_sample(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(
+                    runner,
+                    "_repository_state",
+                    side_effect=self._repository_state,
+                ),
+                patch.object(
+                    runner,
+                    "_run_sample",
+                    side_effect=self._artifact_invalid_sample,
+                ) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            ledger = json.loads(
+                Path(args.budget_ledger).read_text(encoding="utf-8")
+            )
+            self.assertEqual(run_sample.call_count, 1)
+            self.assertEqual(state["status"], "STOPPED")
+            self.assertEqual(
+                state["stopReason"], "ARTIFACT_INVALID_BUDGET_EXCEEDED"
+            )
+            self.assertEqual(state["artifactInvalidSamples"], 1)
+            self.assertEqual(
+                campaign_runtime.budget_ledger_artifact_invalid_samples(ledger),
+                1,
+            )
 
     def test_runner_enforces_reported_token_ceiling_after_checkpoint(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]

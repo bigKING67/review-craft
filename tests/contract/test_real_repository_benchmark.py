@@ -242,6 +242,23 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         errors = contracts.validate_suite(escaped)
         self.assertTrue(any("unsafe fix location" in error for error in errors), errors)
 
+    def test_all_treatment_prompts_expose_semantic_output_invariants(self) -> None:
+        repository = self.suite["repositories"][0]
+        for treatment in contracts.TREATMENTS:
+            with self.subTest(treatment=treatment):
+                prompt = runner._render_benchmark_prompt(
+                    treatment, repository
+                ).decode("utf-8")
+                normalized_prompt = " ".join(prompt.split())
+                self.assertIn(
+                    "A BLOCKED probe must use severity null.", normalized_prompt
+                )
+                self.assertIn(
+                    "Every probe, evidence, and additional-finding location must be "
+                    "inside the declared scope.",
+                    normalized_prompt,
+                )
+
     def test_host_output_requires_complete_probe_coverage_and_honest_score(self) -> None:
         repository = self.suite["repositories"][0]
         payload = {
@@ -279,6 +296,54 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             "probes[0].locations[0]: location is outside declared scope: go.mod",
             contracts.validate_host_output(payload, repository),
         )
+        payload["probes"][0]["locations"] = []
+        payload["probes"][0]["evidence"] = [
+            {
+                "claim": "Synthetic evidence outside the declared scope.",
+                "locations": [
+                    {"path": "go.mod", "lineStart": 1, "lineEnd": 1}
+                ],
+            }
+        ]
+        self.assertIn(
+            "probes[0].evidence[0].locations[0]: location is outside declared "
+            "scope: go.mod",
+            contracts.validate_host_output(payload, repository),
+        )
+        payload["probes"][0]["evidence"] = []
+        payload["additionalFindings"] = [
+            {
+                "findingId": "outside-scope-fixture",
+                "title": "Synthetic outside-scope finding",
+                "decision": "CLEAN_UP",
+                "severity": "P3",
+                "rootCauseKey": "outside-scope",
+                "locations": [
+                    {"path": "go.mod", "lineStart": 1, "lineEnd": 1}
+                ],
+                "evidence": [
+                    {
+                        "claim": "Synthetic outside-scope evidence.",
+                        "locations": [
+                            {"path": "go.mod", "lineStart": 1, "lineEnd": 1}
+                        ],
+                    }
+                ],
+                "confidence": "MEDIUM",
+            }
+        ]
+        output_errors = contracts.validate_host_output(payload, repository)
+        self.assertIn(
+            "additionalFindings[0].locations[0]: location is outside declared "
+            "scope: go.mod",
+            output_errors,
+        )
+        self.assertIn(
+            "additionalFindings[0].evidence[0].locations[0]: location is outside "
+            "declared scope: go.mod",
+            output_errors,
+        )
+        payload["additionalFindings"] = []
         payload["probes"][0]["locations"] = [
             {"path": "../go.mod", "lineStart": 1, "lineEnd": 1}
         ]

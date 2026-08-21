@@ -767,7 +767,7 @@ High-cost execution uses a content-bound deterministic plan, resumable exact-pre
 checkpoints, serial repository shards, a shared content-bound budget ledger, validated merge
 receipts, global reported-token and active runner-time ceilings, and a cross-shard consecutive
 infrastructure-failure circuit breaker. New plans also stop after the declared cumulative
-unknown-usage limit or per-model-profile timeout limit; lifecycle receipts preserve the last
+unknown-usage, artifact-invalid, or per-model-profile timeout limit; lifecycle receipts preserve the last
 observed host event and timeout cleanup outcome. The legacy direct `run`
 command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,
 `validate-campaign-run`, and `merge-campaign-runs` for a full campaign. A campaign is Golden
