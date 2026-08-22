@@ -35,6 +35,7 @@ from real_repository_campaign import (
     selected_plan_samples,
     update_budget_ledger,
     update_run_state,
+    usage_component_totals,
     validate_budget_ledger,
     validate_budget_ledger_state,
     validate_campaign_plan,
@@ -44,14 +45,20 @@ from real_repository_campaign import (
     validate_sample_against_plan,
 )
 from real_repository_contracts import (
+    ADJUDICATION_COMPONENT_KEYS,
     ADJUDICATION_MAPPING_SCHEMA,
     ADJUDICATION_PACKET_SCHEMA,
+    ADJUDICATION_PACKET_V2_SCHEMA,
     ADJUDICATION_SUBMISSION_SCHEMA,
+    ADJUDICATION_SUBMISSION_V2_SCHEMA,
     TREATMENTS,
     RealRepositoryError,
+    adjudication_subject_content_hashes,
     adjudication_subjects,
     blind_suite,
+    build_adjudication_resolutions,
     build_stability_report,
+    derived_component_label,
     read_json,
     schema_errors,
     sha256_json,
@@ -72,11 +79,13 @@ OUTPUT_SCHEMA = ROOT / "evals/schemas/eval-real-repository-output.schema.json"
 ADAPTER_SCHEMA = ROOT / "evals/schemas/eval-adapter.schema.json"
 TOOL_TRACE_SCHEMA = ROOT / "evals/schemas/eval-tool-trace.schema.json"
 PROGRESS_SCHEMA = ROOT / "evals/schemas/eval-progress.schema.json"
+ISOLATION_SCHEMA = ROOT / "evals/schemas/eval-isolation-receipt.schema.json"
 DEFAULT_SKILL = ROOT / "skills/review-craft"
 DEFAULT_EVIDENCE_ROOT = ROOT / "evals/real-repositories/verifiers"
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
+ISOLATION_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"
 INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 sys.path.insert(0, str(RUNTIME_LIB))
@@ -209,7 +218,7 @@ def _describe_adapter(command: list[str], adapter_id: str) -> dict[str, Any]:
 
 
 def _model_configuration(adapter_id: str, description: dict[str, Any]) -> dict[str, Any]:
-    return {
+    configuration = {
         "id": adapter_id,
         "model": description["model"],
         "reasoning": description["reasoning"],
@@ -220,6 +229,10 @@ def _model_configuration(adapter_id: str, description: dict[str, Any]) -> dict[s
         "providerName": description["provider"]["name"],
         "isolationSha256": sha256_json(description["isolation"]),
     }
+    isolation_receipt = description.get("isolationReceipt")
+    if isinstance(isolation_receipt, dict):
+        configuration["isolationReceiptProtocol"] = isolation_receipt.get("protocol")
+    return configuration
 
 
 def _adapter_evidence_args(treatment: str, evidence_root: Path) -> list[str]:
@@ -297,10 +310,43 @@ def _usage_projection(
             tool_total = len(items)
     return {
         "inputTokens": payload.get("inputTokens"),
+        "cachedInputTokens": payload.get("cachedInputTokens"),
+        "cacheWriteInputTokens": payload.get("cacheWriteInputTokens"),
         "outputTokens": payload.get("outputTokens"),
+        "reasoningOutputTokens": payload.get("reasoningOutputTokens"),
         "totalTokens": payload.get("totalTokens"),
         "toolCalls": tool_total,
     }
+
+
+def _isolation_receipt_matches(payload: Any) -> bool:
+    if not isinstance(payload, dict) or schema_errors(payload, ISOLATION_SCHEMA):
+        return False
+    comparisons = payload["comparison"]
+    return (
+        payload["availability"] == "AVAILABLE"
+        and payload["postStart"] is not None
+        and payload["postExit"] is not None
+        and payload["unavailableReason"] is None
+        and comparisons["overall"] == "MATCHED"
+        and all(
+            comparisons[key] == "MATCHED"
+            for key in (
+                "postStartSystemState",
+                "postStartUserExtensionState",
+                "postExitSystemState",
+                "postExitUserExtensionState",
+            )
+        )
+    )
+
+
+def _repository_usage_components(
+    samples: list[dict[str, Any]], repository_id: str
+) -> dict[str, int]:
+    return usage_component_totals(
+        [sample for sample in samples if sample["repositoryId"] == repository_id]
+    )
 
 
 def _file_sha256(path: Path) -> str:
@@ -443,6 +489,9 @@ def _adjudication_subject_rows(
                 "repository": repository_projection,
                 "publicPrompt": public_prompts[probe["probeId"]],
                 "response": probe,
+                "subjectContentSha256": sha256_json(
+                    {"subjectType": "PROBE_RESPONSE", "response": probe}
+                ),
             }
             for probe in sample["output"]["probes"]
         )
@@ -454,6 +503,9 @@ def _adjudication_subject_rows(
                 "repository": repository_projection,
                 "publicPrompt": None,
                 "response": finding,
+                "subjectContentSha256": sha256_json(
+                    {"subjectType": "ADDITIONAL_FINDING", "response": finding}
+                ),
             }
             for finding in sample["output"]["additionalFindings"]
         )
@@ -509,27 +561,67 @@ def _validate_adjudication_submission(
     packet: dict[str, Any] | None = None,
     require_complete: bool,
 ) -> list[str]:
+    component_rubric = (
+        submission.get("schema")
+        == "review-craft.eval-real-repository-adjudication-submission.v2"
+    )
+    submission_schema = (
+        ADJUDICATION_SUBMISSION_V2_SCHEMA
+        if component_rubric
+        else ADJUDICATION_SUBMISSION_SCHEMA
+    )
     errors = _content_bound_errors(
-        submission, ADJUDICATION_SUBMISSION_SCHEMA, "adjudication submission"
+        submission, submission_schema, "adjudication submission"
     )
     if errors:
         return errors
     label_ids = [row["itemId"] for row in submission["labels"]]
     if len(label_ids) != len(set(label_ids)):
         errors.append("adjudication submission contains duplicate item ids")
+    if component_rubric:
+        for row in submission["labels"]:
+            component_keys = tuple(component["key"] for component in row["components"])
+            if component_keys != ADJUDICATION_COMPONENT_KEYS[row["subjectType"]]:
+                errors.append(
+                    f"adjudication submission item {row['itemId']} has invalid component rubric"
+                )
+            if require_complete and row["label"] != derived_component_label(
+                row["components"]
+            ):
+                errors.append(
+                    "adjudication submission item "
+                    f"{row['itemId']} label differs from component verdicts"
+                )
     if require_complete:
         incomplete = [
             row["itemId"]
             for row in submission["labels"]
-            if row["label"] is None or row["rationale"] is None
+            if row["label"] is None
+            or row["rationale"] is None
+            or (
+                component_rubric
+                and any(
+                    component["label"] is None or component["rationale"] is None
+                    for component in row["components"]
+                )
+            )
         ]
         if incomplete:
             errors.append(
                 f"adjudication submission has {len(incomplete)} incomplete labels"
             )
     if packet is not None:
+        packet_is_component_rubric = (
+            packet.get("schema")
+            == "review-craft.eval-real-repository-adjudication-packet.v2"
+        )
+        packet_schema = (
+            ADJUDICATION_PACKET_V2_SCHEMA
+            if packet_is_component_rubric
+            else ADJUDICATION_PACKET_SCHEMA
+        )
         packet_errors = _content_bound_errors(
-            packet, ADJUDICATION_PACKET_SCHEMA, "adjudication packet"
+            packet, packet_schema, "adjudication packet"
         )
         if packet_errors:
             return [*errors, *packet_errors]
@@ -541,6 +633,22 @@ def _validate_adjudication_submission(
         actual_ids = set(label_ids)
         if expected_ids != actual_ids:
             errors.append("adjudication submission item set does not match packet")
+        if component_rubric != packet_is_component_rubric:
+            errors.append("adjudication submission rubric version differs from packet")
+        elif component_rubric:
+            items = {row["itemId"]: row for row in packet["items"]}
+            for row in submission["labels"]:
+                item = items.get(row["itemId"])
+                if item is None:
+                    continue
+                if row["subjectType"] != item["subjectType"]:
+                    errors.append(
+                        f"adjudication submission item {row['itemId']} subjectType mismatch"
+                    )
+                if row["subjectContentSha256"] != item["subjectContentSha256"]:
+                    errors.append(
+                        f"adjudication submission item {row['itemId']} subject hash mismatch"
+                    )
     return errors
 
 
@@ -575,6 +683,7 @@ def _run_sample(
     adapter_usage_path = sample_dir / "adapter-usage.json"
     tool_trace_path = sample_dir / "tool-trace.json"
     progress_path = sample_dir / "progress.json"
+    isolation_path = sample_dir / "isolation.json"
     output_path = sample_dir / "output.json"
     prompt = _render_benchmark_prompt(treatment, repository)
     write_bytes(prompt_path, prompt)
@@ -616,6 +725,15 @@ def _run_sample(
             inactivity_env[INACTIVITY_DIAGNOSTIC_ENV] = str(
                 inactivity_diagnostic_seconds
             )
+        isolation_protocol = description.get("isolationReceipt")
+        isolation_required = (
+            isinstance(isolation_protocol, dict)
+            and isolation_protocol.get("protocol")
+            == "review-craft.eval-isolation-receipt.v1"
+        )
+        isolation_env = (
+            {ISOLATION_OUTPUT_ENV: str(isolation_path)} if isolation_required else {}
+        )
         completed = run_process(
             command,
             cwd=ROOT,
@@ -625,6 +743,7 @@ def _run_sample(
                 USAGE_OUTPUT_ENV: str(adapter_usage_path),
                 TOOL_TRACE_OUTPUT_ENV: str(tool_trace_path),
                 PROGRESS_OUTPUT_ENV: str(progress_path),
+                **isolation_env,
                 **inactivity_env,
             },
         )
@@ -673,6 +792,21 @@ def _run_sample(
         started_at=started_at,
         completed=completed,
     )
+    if isolation_required:
+        isolation_valid = False
+        if isolation_path.is_file():
+            try:
+                isolation_candidate = read_json(isolation_path)
+            except (OSError, json.JSONDecodeError):
+                isolation_candidate = None
+            isolation_valid = _isolation_receipt_matches(isolation_candidate)
+        if not isolation_valid:
+            status = "FAILED"
+            failure_reason = (
+                "per-invocation Codex home isolation receipt is missing, "
+                "invalid, or drifted"
+            )
+            failure_class = "ARTIFACT_INVALID"
     after = _repository_state(repository_root)
     mutation_detected = after != before
     if mutation_detected:
@@ -711,6 +845,9 @@ def _run_sample(
                 _file_sha256(tool_trace_path) if tool_trace_path.is_file() else None
             ),
             "progressSha256": _file_sha256(progress_path),
+            "isolationReceiptSha256": (
+                _file_sha256(isolation_path) if isolation_path.is_file() else None
+            ),
         },
     }
 
@@ -981,13 +1118,16 @@ def command_prepare_adjudication(args: argparse.Namespace) -> int:
         raise RealRepositoryError("campaign has no completed subjects to adjudicate")
     instructions = (
         "Work independently and do not coordinate with another adjudicator. For every item, "
-        "inspect the pinned repository revision and declared scope when needed. Label CORRECT "
-        "only when the response's disposition, decision, severity, evidence, and rationale are "
-        "materially supported; label INCORRECT when a material claim is wrong or unsupported; "
-        "label UNRESOLVED when the available evidence cannot decide. For ADDITIONAL_FINDING, "
-        "CORRECT means a real actionable finding and INCORRECT means a false positive. Do not "
+        "inspect the pinned repository revision and declared scope when needed. Judge every "
+        "declared component before setting the overall label. PROBE_RESPONSE components are "
+        "disposition, decision, severity, evidence, and rationale. ADDITIONAL_FINDING components "
+        "are actionability, decision, severity, and evidence; do not require a disposition or a "
+        "response rationale that this subject type does not contain. Set overall CORRECT only "
+        "when every component is CORRECT; set INCORRECT when any component is INCORRECT; otherwise "
+        "set UNRESOLVED. Record a subject-specific rationale for every component and overall "
+        "label. Do not "
         "try to infer the treatment, model, repetition, or sample identity, and do not request "
-        "the coordinator-only mapping. Record a concrete rationale for every label."
+        "the coordinator-only mapping."
     )
     mapping_rows: list[dict[str, str]] = []
     packet_bindings: list[dict[str, str]] = []
@@ -1015,6 +1155,10 @@ def command_prepare_adjudication(args: argparse.Namespace) -> int:
                     "itemId": item_id,
                     "repository": row["repository"],
                     "subjectType": row["subjectType"],
+                    "subjectContentSha256": row["subjectContentSha256"],
+                    "componentKeys": list(
+                        ADJUDICATION_COMPONENT_KEYS[row["subjectType"]]
+                    ),
                     "publicPrompt": row["publicPrompt"],
                     "response": row["response"],
                 }
@@ -1026,16 +1170,17 @@ def command_prepare_adjudication(args: argparse.Namespace) -> int:
         )
         packet = _bind_content_hash(
             {
-                "schema": "review-craft.eval-real-repository-adjudication-packet.v1",
+                "schema": "review-craft.eval-real-repository-adjudication-packet.v2",
                 "campaignContentSha256": campaign["contentSha256"],
                 "adjudicatorId": adjudicator_id,
+                "rubricVersion": "review-craft.real-repository-component-rubric.v1",
                 "instructions": instructions,
                 "items": packet_items,
                 "contentSha256": "0" * 64,
             }
         )
         packet_errors = _content_bound_errors(
-            packet, ADJUDICATION_PACKET_SCHEMA, "adjudication packet"
+            packet, ADJUDICATION_PACKET_V2_SCHEMA, "adjudication packet"
         )
         if packet_errors:
             raise RealRepositoryError(
@@ -1045,11 +1190,22 @@ def command_prepare_adjudication(args: argparse.Namespace) -> int:
         write_json(packet_path, packet)
         submission = _bind_content_hash(
             {
-                "schema": "review-craft.eval-real-repository-adjudication-submission.v1",
+                "schema": "review-craft.eval-real-repository-adjudication-submission.v2",
                 "packetContentSha256": packet["contentSha256"],
                 "adjudicatorId": adjudicator_id,
+                "rubricVersion": "review-craft.real-repository-component-rubric.v1",
                 "labels": [
-                    {"itemId": row["itemId"], "label": None, "rationale": None}
+                    {
+                        "itemId": row["itemId"],
+                        "subjectType": row["subjectType"],
+                        "subjectContentSha256": row["subjectContentSha256"],
+                        "label": None,
+                        "rationale": None,
+                        "components": [
+                            {"key": key, "label": None, "rationale": None}
+                            for key in row["componentKeys"]
+                        ],
+                    }
                     for row in packet_items
                 ],
                 "contentSha256": "0" * 64,
@@ -1141,6 +1297,8 @@ def command_assemble_adjudication(args: argparse.Namespace) -> int:
         (row["adjudicatorId"], row["itemId"]): row for row in mapping["subjects"]
     }
     submissions: dict[str, dict[str, Any]] = {}
+    submission_schemas: set[str] = set()
+    subject_hashes = adjudication_subject_content_hashes(campaign)
     for path_value in args.submission:
         submission = read_json(Path(path_value).expanduser().resolve(strict=True))
         errors = _validate_adjudication_submission(
@@ -1174,12 +1332,37 @@ def command_assemble_adjudication(args: argparse.Namespace) -> int:
             raise RealRepositoryError(
                 f"submission item set does not match mapping for {adjudicator_id}"
             )
+        submission_schemas.add(submission["schema"])
+        if (
+            submission["schema"]
+            == "review-craft.eval-real-repository-adjudication-submission.v2"
+        ):
+            for label in submission["labels"]:
+                subject = subjects_by_item[(adjudicator_id, label["itemId"])]
+                subject_key = (
+                    subject["sampleId"],
+                    subject["subjectType"],
+                    subject["subjectKey"],
+                )
+                if label["subjectType"] != subject["subjectType"]:
+                    raise RealRepositoryError(
+                        f"submission subjectType mismatch for {adjudicator_id} {label['itemId']}"
+                    )
+                if label["subjectContentSha256"] != subject_hashes[subject_key]:
+                    raise RealRepositoryError(
+                        f"submission subject hash mismatch for {adjudicator_id} {label['itemId']}"
+                    )
         submissions[adjudicator_id] = submission
     if set(submissions) != set(packet_by_adjudicator):
         missing = sorted(set(packet_by_adjudicator) - set(submissions))
         raise RealRepositoryError(
             "missing completed adjudication submissions: " + ", ".join(missing)
         )
+    if len(submission_schemas) != 1:
+        raise RealRepositoryError("adjudication submissions mix rubric versions")
+    component_rubric = submission_schemas == {
+        "review-craft.eval-real-repository-adjudication-submission.v2"
+    }
     adjudicators = []
     labels = []
     for adjudicator_id in packet_by_adjudicator:
@@ -1195,8 +1378,7 @@ def command_assemble_adjudication(args: argparse.Namespace) -> int:
         )
         for label in submission["labels"]:
             subject = subjects_by_item[(adjudicator_id, label["itemId"])]
-            labels.append(
-                {
+            assembled_label = {
                     "adjudicatorId": adjudicator_id,
                     "itemId": label["itemId"],
                     "sampleId": subject["sampleId"],
@@ -1205,16 +1387,34 @@ def command_assemble_adjudication(args: argparse.Namespace) -> int:
                     "label": label["label"],
                     "rationale": label["rationale"],
                 }
-            )
+            if component_rubric:
+                assembled_label["subjectContentSha256"] = label[
+                    "subjectContentSha256"
+                ]
+                assembled_label["components"] = label["components"]
+            labels.append(assembled_label)
+    adjudication_schema = (
+        "review-craft.eval-real-repository-adjudication.v3"
+        if component_rubric
+        else "review-craft.eval-real-repository-adjudication.v2"
+    )
+    adjudication_body = {
+        "schema": adjudication_schema,
+        "campaignContentSha256": campaign["contentSha256"],
+        "mappingContentSha256": mapping["contentSha256"],
+        "adjudicators": adjudicators,
+        "labels": labels,
+        "contentSha256": "0" * 64,
+    }
+    if component_rubric:
+        adjudication_body["rubricVersion"] = (
+            "review-craft.real-repository-component-rubric.v1"
+        )
+        adjudication_body["subjectResolutions"] = build_adjudication_resolutions(
+            labels
+        )
     adjudication = _bind_content_hash(
-        {
-            "schema": "review-craft.eval-real-repository-adjudication.v2",
-            "campaignContentSha256": campaign["contentSha256"],
-            "mappingContentSha256": mapping["contentSha256"],
-            "adjudicators": adjudicators,
-            "labels": labels,
-            "contentSha256": "0" * 64,
-        }
+        adjudication_body
     )
     errors = validate_adjudication(adjudication, campaign)
     if errors:
@@ -1384,6 +1584,18 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         soft_wall_time_seconds=args.soft_wall_seconds,
         hard_wall_time_seconds=args.hard_wall_seconds,
         hard_reported_token_ceiling=args.hard_reported_token_ceiling,
+        hard_reported_input_token_ceiling_per_sample=(
+            args.hard_reported_input_token_ceiling_per_sample
+        ),
+        hard_reported_token_ceiling_per_sample=(
+            args.hard_reported_token_ceiling_per_sample
+        ),
+        hard_reported_input_token_ceiling_per_shard=(
+            args.hard_reported_input_token_ceiling_per_shard
+        ),
+        hard_reported_token_ceiling_per_shard=(
+            args.hard_reported_token_ceiling_per_shard
+        ),
         max_consecutive_infrastructure_failures=(
             args.max_consecutive_infrastructure_failures
         ),
@@ -1805,6 +2017,12 @@ def _command_run_campaign_plan_locked(
             - ledger["elapsedSecondsByShard"][shard_id]
             + elapsed
         )
+        shard_usage = _repository_usage_components(
+            campaign["samples"], plan_sample["repositoryId"]
+        )
+        latest_usage = (
+            campaign["samples"][-1]["usage"] if campaign["samples"] else {}
+        )
         budget_reason = budget_stop_reason(
             budgets=budgets,
             elapsed_seconds=global_elapsed,
@@ -1814,6 +2032,10 @@ def _command_run_campaign_plan_locked(
             timed_out_samples_by_model_profile=timeout_counts,
             artifact_invalid_samples=artifact_invalid,
             recovered_inactivity_samples_by_model_profile=recovered_inactivity,
+            sample_reported_input_tokens=latest_usage.get("inputTokens") or 0,
+            sample_reported_tokens=latest_usage.get("totalTokens") or 0,
+            shard_reported_input_tokens=shard_usage["inputTokens"],
+            shard_reported_tokens=shard_usage["totalTokens"],
         )
         if budget_reason is not None:
             state_status, stop_reason = "STOPPED", budget_reason
@@ -1866,6 +2088,10 @@ def _command_run_campaign_plan_locked(
         recovered_inactivity = (
             budget_ledger_recovered_inactivity_samples_by_model_profile(ledger)
         )
+        shard_usage = _repository_usage_components(
+            campaign["samples"], plan_sample["repositoryId"]
+        )
+        latest_usage = campaign["samples"][-1]["usage"]
         budget_reason = budget_stop_reason(
             budgets=budgets,
             elapsed_seconds=global_elapsed,
@@ -1875,6 +2101,10 @@ def _command_run_campaign_plan_locked(
             timed_out_samples_by_model_profile=timeout_counts,
             artifact_invalid_samples=artifact_invalid,
             recovered_inactivity_samples_by_model_profile=recovered_inactivity,
+            sample_reported_input_tokens=latest_usage.get("inputTokens") or 0,
+            sample_reported_tokens=latest_usage.get("totalTokens") or 0,
+            shard_reported_input_tokens=shard_usage["inputTokens"],
+            shard_reported_tokens=shard_usage["totalTokens"],
         )
         state_status, stop_reason = _terminal_run_state(
             sample.get("failureClass"), budget_reason
@@ -1950,6 +2180,7 @@ def _command_run_campaign_plan_locked(
                 "samples": len(campaign["samples"]),
                 "scheduledSamples": len(scheduled),
                 "reportedTokens": state["reportedTokens"],
+                "reportedUsage": usage_component_totals(campaign["samples"]),
                 "globalReportedTokens": global_tokens,
                 "globalUnknownUsageSamples": unknown_usage,
                 "globalTimedOutSamplesByModelProfile": (
@@ -2357,6 +2588,26 @@ def build_parser() -> argparse.ArgumentParser:
     plan_campaign.add_argument("--hard-wall-seconds", type=int, default=86400)
     plan_campaign.add_argument(
         "--hard-reported-token-ceiling", type=int, default=60_000_000
+    )
+    plan_campaign.add_argument(
+        "--hard-reported-input-token-ceiling-per-sample",
+        type=int,
+        default=1_250_000,
+    )
+    plan_campaign.add_argument(
+        "--hard-reported-token-ceiling-per-sample",
+        type=int,
+        default=1_500_000,
+    )
+    plan_campaign.add_argument(
+        "--hard-reported-input-token-ceiling-per-shard",
+        type=int,
+        default=7_000_000,
+    )
+    plan_campaign.add_argument(
+        "--hard-reported-token-ceiling-per-shard",
+        type=int,
+        default=8_000_000,
     )
     plan_campaign.add_argument(
         "--max-consecutive-infrastructure-failures", type=int, default=2

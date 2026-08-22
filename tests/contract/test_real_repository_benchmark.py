@@ -435,6 +435,25 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             contracts.validate_adapter_config(payload),
         )
 
+    def test_repository_shard_usage_does_not_aggregate_all_runner_samples(self) -> None:
+        samples = [
+            {
+                "repositoryId": repository_id,
+                "usage": {
+                    "inputTokens": 100,
+                    "cachedInputTokens": 20,
+                    "cacheWriteInputTokens": 5,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 10,
+                    "totalTokens": 125,
+                },
+            }
+            for repository_id in ("repository-a", "repository-b")
+        ]
+        usage = runner._repository_usage_components(samples, "repository-b")
+        self.assertEqual(usage["inputTokens"], 100)
+        self.assertEqual(usage["totalTokens"], 125)
+
     def test_only_evidence_loop_receives_oracle_free_verifier_boundary(self) -> None:
         evidence_root = ROOT / "evals/real-repositories/verifiers"
         self.assertEqual(
@@ -592,6 +611,134 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                     evidence_root=ROOT / "evals/real-repositories/verifiers",
                 )
 
+    def test_runner_requires_matching_per_invocation_isolation_receipt(self) -> None:
+        repository = self.suite["repositories"][0]
+        description = {
+            "name": "fixture-adapter",
+            "adapterVersion": "fixture-v1",
+            "version": "fixture-host-v1",
+            "model": "fixture-model",
+            "reasoning": "medium",
+            "evidenceKind": "REAL_HOST",
+            "provider": {"name": "fixture-provider"},
+            "isolation": {"fixture": True},
+            "isolationReceipt": {
+                "protocol": "review-craft.eval-isolation-receipt.v1"
+            },
+        }
+        surface = {
+            "capturedAt": "2026-08-22T00:00:00Z",
+            "systemFileCount": 2,
+            "systemTreeSha256": "1" * 64,
+            "userExtensionFileCount": 0,
+            "userExtensionTreeSha256": "2" * 64,
+        }
+
+        def isolation_receipt(overall: str) -> dict:
+            user_state = "DRIFTED" if overall == "USER_EXTENSION_DRIFT" else "MATCHED"
+            return {
+                "schema": "review-craft.eval-isolation-receipt.v1",
+                "availability": "AVAILABLE",
+                "policy": {
+                    "homeMatchesCodexHome": True,
+                    "ignoreUserConfig": True,
+                    "ignoreRules": True,
+                    "allowCodexHomeExtensions": False,
+                },
+                "preRun": surface,
+                "postStart": surface,
+                "postExit": surface,
+                "comparison": {
+                    "postStartSystemState": "MATCHED",
+                    "postStartUserExtensionState": user_state,
+                    "postExitSystemState": "MATCHED",
+                    "postExitUserExtensionState": user_state,
+                    "overall": overall,
+                },
+                "unavailableReason": None,
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository_root = root / "repository"
+            repository_root.mkdir()
+            runner.run_git("init", "--quiet", cwd=repository_root)
+            runner.run_git("config", "user.name", "Review Craft Tests", cwd=repository_root)
+            runner.run_git(
+                "config", "user.email", "review-craft-tests@example.invalid", cwd=repository_root
+            )
+            target = repository_root / repository["scope"][0]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fixture\n", encoding="utf-8")
+            runner.run_git("add", repository["scope"][0], cwd=repository_root)
+            runner.run_git("commit", "--quiet", "-m", "fixture", cwd=repository_root)
+
+            for mode in ("matched", "drifted", "contradictory", "missing"):
+                with self.subTest(mode=mode):
+
+                    def completed(
+                        _command: list[str],
+                        *,
+                        cwd: Path,
+                        timeout: int,
+                        env: dict[str, str],
+                        _mode: str = mode,
+                    ) -> runner.ProcessResult:
+                        self.assertEqual(cwd, ROOT)
+                        self.assertEqual(timeout, 7)
+                        output_path = Path(_command[_command.index("--output-file") + 1])
+                        runner.write_json(output_path, self._output(repository))
+                        runner.write_json(
+                            Path(env[runner.USAGE_OUTPUT_ENV]),
+                            {
+                                "inputTokens": 10,
+                                "outputTokens": 2,
+                                "totalTokens": 12,
+                                "toolCalls": 0,
+                            },
+                        )
+                        if _mode != "missing":
+                            overall = (
+                                "MATCHED"
+                                if _mode in {"matched", "contradictory"}
+                                else "USER_EXTENSION_DRIFT"
+                            )
+                            receipt = isolation_receipt(overall)
+                            if _mode == "contradictory":
+                                receipt["comparison"][
+                                    "postExitUserExtensionState"
+                                ] = "DRIFTED"
+                            runner.write_json(
+                                Path(env[runner.ISOLATION_OUTPUT_ENV]),
+                                receipt,
+                            )
+                        return runner.ProcessResult(0, b"", b"", False)
+
+                    with patch.object(runner, "run_process", side_effect=completed):
+                        sample = runner._run_sample(
+                            run_dir=root / f"run-{mode}",
+                            sample_ordinal=1,
+                            repository=repository,
+                            repository_root=repository_root,
+                            treatment="ORDINARY_PROMPT",
+                            repetition=1,
+                            adapter={"id": "fixture", "command": ["fixture-adapter"]},
+                            description=description,
+                            timeout_seconds=7,
+                            skill_root=ROOT / "skills/review-craft",
+                            evidence_root=ROOT / "evals/real-repositories/verifiers",
+                        )
+
+                    if mode == "matched":
+                        self.assertEqual(sample["status"], "COMPLETED")
+                        self.assertIsNotNone(
+                            sample["artifacts"]["isolationReceiptSha256"]
+                        )
+                    else:
+                        self.assertEqual(sample["status"], "FAILED")
+                        self.assertEqual(sample["failureClass"], "ARTIFACT_INVALID")
+                        self.assertIn("isolation receipt", sample["failureReason"])
+
     def test_blinded_adjudication_packets_cover_probes_and_additional_findings(self) -> None:
         campaign, blind = self._campaign(additional_finding=True)
         expected_subjects = contracts.adjudication_subjects(campaign)
@@ -611,7 +758,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                         blind_suite=str(blind_path),
                         campaign=str(campaign_path),
                         output_dir=str(output_dir),
-                        adjudicator=["human-a", "human-b"],
+                        adjudicator=["human-a", "human-b", "human-c"],
                     )
                 )
             self.assertEqual(status, 0)
@@ -621,7 +768,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                         encoding="utf-8"
                     )
                 )
-                for adjudicator in ("human-a", "human-b")
+                for adjudicator in ("human-a", "human-b", "human-c")
             }
             for packet in packets.values():
                 self.assertEqual(len(packet["items"]), len(expected_subjects))
@@ -643,6 +790,29 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 for label in submission["labels"]:
                     label["label"] = "CORRECT"
                     label["rationale"] = "Independently verified synthetic fixture."
+                    for component in label["components"]:
+                        component["label"] = "CORRECT"
+                        component["rationale"] = (
+                            "This component is supported by the synthetic fixture."
+                        )
+                if adjudicator == "human-a":
+                    inconsistent = copy.deepcopy(submission)
+                    inconsistent["labels"][0]["components"][0]["label"] = "INCORRECT"
+                    inconsistent["contentSha256"] = contracts.sha256_json(
+                        {
+                            key: value
+                            for key, value in inconsistent.items()
+                            if key != "contentSha256"
+                        }
+                    )
+                    errors = runner._validate_adjudication_submission(
+                        inconsistent,
+                        packet=packets[adjudicator],
+                        require_complete=True,
+                    )
+                    self.assertTrue(
+                        any("label differs from component verdicts" in row for row in errors)
+                    )
                 runner.write_json(submission_path, submission)
                 with patch("builtins.print"):
                     status = runner.command_finalize_adjudication_submission(
@@ -669,10 +839,16 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 adjudication["schema"],
-                "review-craft.eval-real-repository-adjudication.v2",
+                "review-craft.eval-real-repository-adjudication.v3",
             )
             self.assertEqual(
-                len(adjudication["labels"]), 2 * len(expected_subjects)
+                len(adjudication["labels"]), 3 * len(expected_subjects)
+            )
+            self.assertTrue(
+                all(
+                    row["status"] == "UNANIMOUS"
+                    for row in adjudication["subjectResolutions"]
+                )
             )
             self.assertEqual(
                 contracts.validate_adjudication(adjudication, campaign), []
@@ -714,6 +890,70 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             self.assertIn(
                 "adjudication is agent-assisted, not independent human adjudication",
                 agent_report["limitations"],
+            )
+
+            split = copy.deepcopy(adjudication)
+            split_label = split["labels"][0]
+            split_label["components"][0]["label"] = "INCORRECT"
+            split_label["components"][0]["rationale"] = (
+                "Synthetic disagreement for split-resolution coverage."
+            )
+            split_label["label"] = "INCORRECT"
+            split_label["rationale"] = "One material component is incorrect."
+            split["subjectResolutions"] = contracts.build_adjudication_resolutions(
+                split["labels"]
+            )
+            split["contentSha256"] = contracts.sha256_json(
+                {
+                    key: value
+                    for key, value in split.items()
+                    if key != "contentSha256"
+                }
+            )
+            self.assertEqual(contracts.validate_adjudication(split, campaign), [])
+            split_resolution = next(
+                row
+                for row in split["subjectResolutions"]
+                if row["sampleId"] == split_label["sampleId"]
+                and row["subjectType"] == split_label["subjectType"]
+                and row["subjectKey"] == split_label["subjectKey"]
+            )
+            self.assertEqual(split_resolution["status"], "SPLIT")
+            self.assertIsNone(split_resolution["resolvedLabel"])
+
+            unresolved_split = copy.deepcopy(adjudication)
+            additional_label = next(
+                row
+                for row in unresolved_split["labels"]
+                if row["subjectType"] == "ADDITIONAL_FINDING"
+            )
+            additional_label["components"][0]["label"] = "UNRESOLVED"
+            additional_label["components"][0]["rationale"] = (
+                "Synthetic unresolved component for strict-resolution coverage."
+            )
+            additional_label["label"] = "UNRESOLVED"
+            additional_label["rationale"] = "One material component remains unresolved."
+            unresolved_split["subjectResolutions"] = (
+                contracts.build_adjudication_resolutions(unresolved_split["labels"])
+            )
+            unresolved_split["contentSha256"] = contracts.sha256_json(
+                {
+                    key: value
+                    for key, value in unresolved_split.items()
+                    if key != "contentSha256"
+                }
+            )
+            self.assertEqual(
+                contracts.validate_adjudication(unresolved_split, campaign), []
+            )
+            original_false_positives = contracts._adjudication_metrics(adjudication)[1]
+            unresolved_false_positives = contracts._adjudication_metrics(
+                unresolved_split
+            )[1]
+            self.assertEqual(unresolved_false_positives[0], 0)
+            self.assertEqual(
+                unresolved_false_positives[1],
+                original_false_positives[1] - 1,
             )
 
             mixed = copy.deepcopy(agent_adjudication)

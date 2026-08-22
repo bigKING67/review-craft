@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-adjudication-submission-v2.schema.json",
+  "title": "Component-rubric blinded adjudicator submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "packetContentSha256", "adjudicatorId", "rubricVersion", "labels", "contentSha256"],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-adjudication-submission.v2"},
+    "packetContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adjudicatorId": {"type": "string", "minLength": 1},
+    "rubricVersion": {"const": "review-craft.real-repository-component-rubric.v1"},
+    "labels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["itemId", "subjectType", "subjectContentSha256", "label", "rationale", "components"],
+        "properties": {
+          "itemId": {"type": "string", "pattern": "^item-[0-9a-f]{20}$"},
+          "subjectType": {"enum": ["PROBE_RESPONSE", "ADDITIONAL_FINDING"]},
+          "subjectContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "label": {"type": ["string", "null"], "enum": ["CORRECT", "INCORRECT", "UNRESOLVED", null]},
+          "rationale": {"type": ["string", "null"], "minLength": 1},
+          "components": {
+            "type": "array",
+            "minItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "label", "rationale"],
+              "properties": {
+                "key": {"enum": ["disposition", "actionability", "decision", "severity", "evidence", "rationale"]},
+                "label": {"type": ["string", "null"], "enum": ["CORRECT", "INCORRECT", "UNRESOLVED", null]},
+                "rationale": {"type": ["string", "null"], "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

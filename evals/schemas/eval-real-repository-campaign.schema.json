@@ -27,7 +27,8 @@
         "hostVersion": {"type": "string", "minLength": 1},
         "evidenceKind": {"const": "REAL_HOST"},
         "providerName": {"type": "string", "minLength": 1},
-        "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "isolationReceiptProtocol": {"const": "review-craft.eval-isolation-receipt.v1"}
       }
     }
   },
@@ -73,7 +74,10 @@
             "required": ["inputTokens", "outputTokens", "totalTokens", "toolCalls"],
             "properties": {
               "inputTokens": {"type": ["integer", "null"], "minimum": 0},
+              "cachedInputTokens": {"type": ["integer", "null"], "minimum": 0},
+              "cacheWriteInputTokens": {"type": ["integer", "null"], "minimum": 0},
               "outputTokens": {"type": ["integer", "null"], "minimum": 0},
+              "reasoningOutputTokens": {"type": ["integer", "null"], "minimum": 0},
               "totalTokens": {"type": ["integer", "null"], "minimum": 0},
               "toolCalls": {"type": ["integer", "null"], "minimum": 0}
             }
@@ -108,7 +112,8 @@
               "usageSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "outputSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
               "toolTraceSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-              "progressSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+              "progressSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+              "isolationReceiptSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
             }
           }
         }

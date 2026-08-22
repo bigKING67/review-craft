@@ -69,6 +69,10 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         max_timed_out_samples_per_model_profile: int = 1,
         max_artifact_invalid_samples: int = 1,
         max_recovered_inactivity_samples_per_model_profile: int = 2,
+        sample_input_token_ceiling: int = 1_250_000,
+        sample_token_ceiling: int = 1_500_000,
+        shard_input_token_ceiling: int = 7_000_000,
+        shard_token_ceiling: int = 8_000_000,
     ) -> dict:
         repository_ids = repositories or [row["id"] for row in self.suite["repositories"]]
         return campaign_runtime.build_campaign_plan(
@@ -86,6 +90,14 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             hard_wall_time_seconds=86400,
             hard_reported_token_ceiling=token_ceiling,
             max_consecutive_infrastructure_failures=2,
+            hard_reported_input_token_ceiling_per_sample=(
+                sample_input_token_ceiling
+            ),
+            hard_reported_token_ceiling_per_sample=sample_token_ceiling,
+            hard_reported_input_token_ceiling_per_shard=(
+                shard_input_token_ceiling
+            ),
+            hard_reported_token_ceiling_per_shard=shard_token_ceiling,
             max_unknown_usage_samples=max_unknown_usage_samples,
             max_timed_out_samples_per_model_profile=(
                 max_timed_out_samples_per_model_profile
@@ -296,6 +308,14 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertEqual(
             first["budgets"]["maxRecoveredInactivitySamplesPerModelProfile"], 2
         )
+        self.assertEqual(
+            first["budgets"]["hardReportedInputTokenCeilingPerSample"],
+            1_250_000,
+        )
+        self.assertEqual(
+            first["budgets"]["hardReportedTokenCeilingPerRepositoryShard"],
+            8_000_000,
+        )
 
         reordered = copy.deepcopy(first)
         reordered["samples"][0], reordered["samples"][1] = (
@@ -326,6 +346,13 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         del legacy["budgets"]["inactivityWarningSeconds"]
         del legacy["budgets"]["inactivityDiagnosticSeconds"]
         del legacy["budgets"]["maxRecoveredInactivitySamplesPerModelProfile"]
+        for key in (
+            "hardReportedInputTokenCeilingPerSample",
+            "hardReportedTokenCeilingPerSample",
+            "hardReportedInputTokenCeilingPerRepositoryShard",
+            "hardReportedTokenCeilingPerRepositoryShard",
+        ):
+            del legacy["budgets"][key]
         campaign_runtime.seal(legacy)
         self.assertEqual(
             campaign_runtime.validate_campaign_plan(legacy, self.suite, self.blind),
@@ -347,6 +374,16 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "campaign plan inactivity budgets must be declared together",
             campaign_runtime.validate_campaign_plan(
                 partial_inactivity, self.suite, self.blind
+            ),
+        )
+
+        partial_cost = copy.deepcopy(legacy)
+        partial_cost["budgets"]["hardReportedTokenCeilingPerSample"] = 100
+        campaign_runtime.seal(partial_cost)
+        self.assertIn(
+            "campaign plan per-sample and per-shard token budgets must be declared together",
+            campaign_runtime.validate_campaign_plan(
+                partial_cost, self.suite, self.blind
             ),
         )
 
@@ -458,6 +495,46 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 },
             ),
             "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                sample_reported_input_tokens=1_250_000,
+            ),
+            "SAMPLE_INPUT_TOKEN_CEILING",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                sample_reported_tokens=1_500_000,
+            ),
+            "SAMPLE_TOKEN_CEILING",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                shard_reported_input_tokens=7_000_000,
+            ),
+            "SHARD_INPUT_TOKEN_CEILING",
+        )
+        self.assertEqual(
+            campaign_runtime.budget_stop_reason(
+                budgets=budgets,
+                elapsed_seconds=0,
+                reported_tokens=0,
+                consecutive_infrastructure_failures=0,
+                shard_reported_tokens=8_000_000,
+            ),
+            "SHARD_TOKEN_CEILING",
         )
         self.assertEqual(
             campaign_runtime.effective_sample_timeout(
@@ -1092,6 +1169,34 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(run_sample.call_count, 2)
             self.assertEqual(state["reportedTokens"], 240)
             self.assertEqual(state["stopReason"], "TOKEN_CEILING")
+
+    def test_runner_stops_after_sample_input_token_ceiling(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(
+            repositories=[repository_id],
+            sample_input_token_ceiling=100,
+            sample_token_ceiling=200,
+            shard_input_token_ceiling=1_000,
+            shard_token_ceiling=1_200,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
+                ),
+                patch.object(runner, "_repository_state", side_effect=self._repository_state),
+                patch.object(runner, "_run_sample", side_effect=self._sample) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(run_sample.call_count, 1)
+            self.assertEqual(state["stopReason"], "SAMPLE_INPUT_TOKEN_CEILING")
 
     def test_shared_budget_prevents_a_second_shard_from_spending_again(self) -> None:
         repositories = [row["id"] for row in self.suite["repositories"][:2]]

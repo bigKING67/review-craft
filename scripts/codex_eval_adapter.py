@@ -21,6 +21,7 @@ PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
+ISOLATION_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"
 INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 INACTIVITY_POLL_SECONDS = 0.25
@@ -301,6 +302,16 @@ def write_progress_output(payload: dict[str, Any]) -> None:
     _write_json_sidecar(path, payload)
 
 
+def write_isolation_output(payload: dict[str, Any]) -> None:
+    output = os.environ.get(ISOLATION_OUTPUT_ENV)
+    if output is None:
+        return
+    path = Path(output).expanduser()
+    if not path.parent.is_dir():
+        raise AdapterError("isolation output parent directory does not exist")
+    _write_json_sidecar(path, payload)
+
+
 def new_progress_receipt(started_at: str) -> dict[str, Any]:
     return {
         "schema": "review-craft.eval-progress.v1",
@@ -371,7 +382,9 @@ def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
+def codex_home_extension_state(
+    *, allow_extensions: bool, fail_on_extensions: bool = True
+) -> dict[str, Any]:
     configured_process_home = os.environ.get("HOME")
     process_home = (
         Path(configured_process_home).expanduser()
@@ -402,7 +415,7 @@ def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
         if path.relative_to(home).parts[:2] == ("skills", ".system")
     ]
     extension_paths = [path for path in paths if path not in system_paths]
-    if extension_paths and not allow_extensions:
+    if extension_paths and not allow_extensions and fail_on_extensions:
         raise AdapterError(
             "CODEX_HOME contains user skills or plugins; "
             "use an isolated auth-only CODEX_HOME"
@@ -423,6 +436,116 @@ def codex_home_extension_state(*, allow_extensions: bool) -> dict[str, Any]:
             _canonical_bytes(extension_rows)
         ).hexdigest(),
     }
+
+
+def _isolation_surface(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "capturedAt": utc_now(),
+        "systemFileCount": state["codexHomeSystemFileCount"],
+        "systemTreeSha256": state["codexHomeSystemTreeSha256"],
+        "userExtensionFileCount": state["codexHomeExtensionFileCount"],
+        "userExtensionTreeSha256": state["codexHomeExtensionTreeSha256"],
+    }
+
+
+def new_isolation_receipt(pre_run_state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "review-craft.eval-isolation-receipt.v1",
+        "availability": "UNAVAILABLE",
+        "policy": {
+            key: pre_run_state[key]
+            for key in (
+                "homeMatchesCodexHome",
+                "ignoreUserConfig",
+                "ignoreRules",
+                "allowCodexHomeExtensions",
+            )
+        },
+        "preRun": _isolation_surface(pre_run_state),
+        "postStart": None,
+        "postExit": None,
+        "comparison": {
+            "postStartSystemState": "NOT_CAPTURED",
+            "postStartUserExtensionState": "NOT_CAPTURED",
+            "postExitSystemState": "NOT_CAPTURED",
+            "postExitUserExtensionState": "NOT_CAPTURED",
+            "overall": "CAPTURE_UNAVAILABLE",
+        },
+        "unavailableReason": "POST_START_NOT_CAPTURED",
+    }
+
+
+def update_isolation_receipt(
+    receipt: dict[str, Any], *, phase: str, state: dict[str, Any]
+) -> None:
+    if phase not in {"postStart", "postExit"}:
+        raise AdapterError(f"unsupported isolation receipt phase: {phase}")
+    current = _isolation_surface(state)
+    receipt[phase] = current
+    prefix = "postStart" if phase == "postStart" else "postExit"
+    system_match = (
+        current["systemFileCount"] == receipt["preRun"]["systemFileCount"]
+        and current["systemTreeSha256"] == receipt["preRun"]["systemTreeSha256"]
+    )
+    extension_match = (
+        current["userExtensionFileCount"]
+        == receipt["preRun"]["userExtensionFileCount"]
+        and current["userExtensionTreeSha256"]
+        == receipt["preRun"]["userExtensionTreeSha256"]
+    )
+    receipt["comparison"][f"{prefix}SystemState"] = (
+        "MATCHED" if system_match else "DRIFTED"
+    )
+    receipt["comparison"][f"{prefix}UserExtensionState"] = (
+        "MATCHED" if extension_match else "DRIFTED"
+    )
+    comparisons = receipt["comparison"]
+    comparison_keys = (
+        "postStartSystemState",
+        "postStartUserExtensionState",
+        "postExitSystemState",
+        "postExitUserExtensionState",
+    )
+    if any(comparisons[key] == "NOT_CAPTURED" for key in comparison_keys):
+        receipt["availability"] = "UNAVAILABLE"
+        receipt["unavailableReason"] = (
+            "POST_START_NOT_CAPTURED"
+            if any(
+                comparisons[key] == "NOT_CAPTURED"
+                for key in (
+                    "postStartSystemState",
+                    "postStartUserExtensionState",
+                )
+            )
+            else "POST_EXIT_NOT_CAPTURED"
+        )
+        receipt["comparison"]["overall"] = "CAPTURE_UNAVAILABLE"
+        return
+    user_drift = any(
+        comparisons[key] == "DRIFTED"
+        for key in ("postStartUserExtensionState", "postExitUserExtensionState")
+    )
+    system_drift = any(
+        comparisons[key] == "DRIFTED"
+        for key in ("postStartSystemState", "postExitSystemState")
+    )
+    receipt["availability"] = "AVAILABLE"
+    receipt["unavailableReason"] = None
+    receipt["comparison"]["overall"] = (
+        "USER_EXTENSION_DRIFT"
+        if user_drift
+        else "SYSTEM_STATE_DRIFT"
+        if system_drift
+        else "MATCHED"
+    )
+
+
+def mark_isolation_capture_unavailable(
+    receipt: dict[str, Any], reason: str
+) -> None:
+    receipt["availability"] = "UNAVAILABLE"
+    receipt["comparison"]["overall"] = "CAPTURE_UNAVAILABLE"
+    receipt["unavailableReason"] = reason
 
 
 def provider_metadata(args: argparse.Namespace) -> dict[str, Any]:
@@ -583,6 +706,7 @@ def run_codex_process(
     prompt: str,
     command_env: dict[str, str],
     replacements: dict[str, str],
+    pre_run_isolation: dict[str, Any] | None = None,
 ) -> int:
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -599,6 +723,12 @@ def run_codex_process(
     progress_lock = threading.Lock()
     sidecar_lock = threading.Lock()
     monitor_stop = threading.Event()
+    isolation_receipt: dict[str, Any] | None = None
+    if os.environ.get(ISOLATION_OUTPUT_ENV) is not None:
+        if pre_run_isolation is None:
+            pre_run_isolation = codex_home_extension_state(allow_extensions=False)
+        isolation_receipt = new_isolation_receipt(pre_run_isolation)
+        write_isolation_output(isolation_receipt)
 
     def record_progress(line: str) -> None:
         nonlocal progress_invalid, turn_started
@@ -734,6 +864,22 @@ def run_codex_process(
         bufsize=1,
         env=command_env,
     )
+    if isolation_receipt is not None:
+        try:
+            post_start = codex_home_extension_state(
+                allow_extensions=isolation_receipt["policy"][
+                    "allowCodexHomeExtensions"
+                ],
+                fail_on_extensions=False,
+            )
+            update_isolation_receipt(
+                isolation_receipt, phase="postStart", state=post_start
+            )
+        except (AdapterError, OSError):
+            mark_isolation_capture_unavailable(
+                isolation_receipt, "POST_START_CAPTURE_FAILED"
+            )
+        write_isolation_output(isolation_receipt)
     if process.stdin is None or process.stdout is None or process.stderr is None:
         process.kill()
         raise AdapterError("codex process pipes are unavailable")
@@ -769,6 +915,22 @@ def run_codex_process(
     stderr_thread.join()
     if reader_errors:
         raise AdapterError(f"codex stream reader failed: {reader_errors[0]}")
+    if isolation_receipt is not None:
+        try:
+            post_exit = codex_home_extension_state(
+                allow_extensions=isolation_receipt["policy"][
+                    "allowCodexHomeExtensions"
+                ],
+                fail_on_extensions=False,
+            )
+            update_isolation_receipt(
+                isolation_receipt, phase="postExit", state=post_exit
+            )
+        except (AdapterError, OSError):
+            mark_isolation_capture_unavailable(
+                isolation_receipt, "POST_EXIT_CAPTURE_FAILED"
+            )
+        write_isolation_output(isolation_receipt)
     with progress_lock:
         if (
             warning_seconds is not None
@@ -791,7 +953,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v5",
+                    "schema": "review-craft.eval-adapter.v6",
                     "name": "codex-cli",
                     "version": codex_version(),
                     "model": args.model,
@@ -814,6 +976,11 @@ def main(argv: list[str] | None = None) -> int:
                         "protocol": "review-craft.eval-progress.v1",
                         "transport": "ENV_PATH",
                         "environmentVariable": PROGRESS_OUTPUT_ENV,
+                    },
+                    "isolationReceipt": {
+                        "protocol": "review-craft.eval-isolation-receipt.v1",
+                        "transport": "ENV_PATH",
+                        "environmentVariable": ISOLATION_OUTPUT_ENV,
                     },
                     "capabilities": {
                         "operations": ["REVIEW", "REPAIR"],
@@ -892,6 +1059,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt=prompt,
         command_env=command_env,
         replacements=replacements,
+        pre_run_isolation=isolation,
     )
 
 

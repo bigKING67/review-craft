@@ -26,6 +26,9 @@ ADJUDICATION_SCHEMA = SCHEMA_ROOT / "eval-real-repository-adjudication.schema.js
 ADJUDICATION_V2_SCHEMA = (
     SCHEMA_ROOT / "eval-real-repository-adjudication-v2.schema.json"
 )
+ADJUDICATION_V3_SCHEMA = (
+    SCHEMA_ROOT / "eval-real-repository-adjudication-v3.schema.json"
+)
 ADJUDICATION_PACKET_SCHEMA = (
     SCHEMA_ROOT / "eval-real-repository-adjudication-packet.schema.json"
 )
@@ -35,6 +38,12 @@ ADJUDICATION_MAPPING_SCHEMA = (
 ADJUDICATION_SUBMISSION_SCHEMA = (
     SCHEMA_ROOT / "eval-real-repository-adjudication-submission.schema.json"
 )
+ADJUDICATION_PACKET_V2_SCHEMA = (
+    SCHEMA_ROOT / "eval-real-repository-adjudication-packet-v2.schema.json"
+)
+ADJUDICATION_SUBMISSION_V2_SCHEMA = (
+    SCHEMA_ROOT / "eval-real-repository-adjudication-submission-v2.schema.json"
+)
 STABILITY_SCHEMA = SCHEMA_ROOT / "eval-real-repository-stability.schema.json"
 ADAPTERS_SCHEMA = SCHEMA_ROOT / "eval-real-repository-adapters.schema.json"
 
@@ -43,6 +52,21 @@ TREATMENTS = (
     "RISK_LENS_REVIEW",
     "REVIEW_CRAFT_EVIDENCE_LOOP",
 )
+ADJUDICATION_COMPONENT_KEYS = {
+    "PROBE_RESPONSE": (
+        "disposition",
+        "decision",
+        "severity",
+        "evidence",
+        "rationale",
+    ),
+    "ADDITIONAL_FINDING": (
+        "actionability",
+        "decision",
+        "severity",
+        "evidence",
+    ),
+}
 PROBE_KINDS = (
     "REAL_FINDING",
     "KEEP",
@@ -489,6 +513,14 @@ def validate_campaign(
         ):
             errors.append(f"campaign sample {sample_id} has inconsistent token usage")
         if sample["status"] == "COMPLETED":
+            if (
+                model_configuration.get("isolationReceiptProtocol")
+                == "review-craft.eval-isolation-receipt.v1"
+                and sample["artifacts"].get("isolationReceiptSha256") is None
+            ):
+                errors.append(
+                    f"campaign sample {sample_id} completed without isolationReceiptSha256"
+                )
             if sample["sourceMutationDetected"]:
                 errors.append(
                     f"campaign sample {sample_id} completed after source mutation"
@@ -628,6 +660,68 @@ def adjudication_subjects(campaign: dict[str, Any]) -> set[tuple[str, str, str]]
     return subjects
 
 
+def adjudication_subject_content_hashes(
+    campaign: dict[str, Any],
+) -> dict[tuple[str, str, str], str]:
+    hashes: dict[tuple[str, str, str], str] = {}
+    for sample in campaign["samples"]:
+        if sample["status"] != "COMPLETED" or sample["output"] is None:
+            continue
+        for subject_type, key_name, rows in (
+            ("PROBE_RESPONSE", "probeId", sample["output"]["probes"]),
+            (
+                "ADDITIONAL_FINDING",
+                "findingId",
+                sample["output"]["additionalFindings"],
+            ),
+        ):
+            for response in rows:
+                key = (sample["sampleId"], subject_type, response[key_name])
+                hashes[key] = sha256_json(
+                    {"subjectType": subject_type, "response": response}
+                )
+    return hashes
+
+
+def derived_component_label(components: list[dict[str, Any]]) -> str | None:
+    labels = [row.get("label") for row in components]
+    if any(label is None for label in labels):
+        return None
+    if "INCORRECT" in labels:
+        return "INCORRECT"
+    if "UNRESOLVED" in labels:
+        return "UNRESOLVED"
+    return "CORRECT"
+
+
+def build_adjudication_resolutions(
+    labels: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    for row in labels:
+        grouped[(row["sampleId"], row["subjectType"], row["subjectKey"])].append(
+            row["label"]
+        )
+    resolutions = []
+    for (sample_id, subject_type, subject_key), values in sorted(grouped.items()):
+        if set(values) == {"UNRESOLVED"}:
+            status, resolved = "ALL_UNRESOLVED", "UNRESOLVED"
+        elif len(set(values)) == 1:
+            status, resolved = "UNANIMOUS", values[0]
+        else:
+            status, resolved = "SPLIT", None
+        resolutions.append(
+            {
+                "sampleId": sample_id,
+                "subjectType": subject_type,
+                "subjectKey": subject_key,
+                "status": status,
+                "resolvedLabel": resolved,
+            }
+        )
+    return resolutions
+
+
 def _validate_adjudication_v2(
     payload: dict[str, Any], campaign: dict[str, Any]
 ) -> list[str]:
@@ -683,6 +777,71 @@ def _validate_adjudication_v2(
     return errors
 
 
+def _validate_adjudication_v3(
+    payload: dict[str, Any], campaign: dict[str, Any]
+) -> list[str]:
+    errors = schema_errors(payload, ADJUDICATION_V3_SCHEMA)
+    if errors:
+        return errors
+    errors.extend(_content_hash_errors(payload, "adjudication"))
+    if payload["campaignContentSha256"] != campaign["contentSha256"]:
+        errors.append("adjudication campaignContentSha256 mismatch")
+
+    adjudicator_ids = [row["id"] for row in payload["adjudicators"]]
+    if len(adjudicator_ids) != len(set(adjudicator_ids)):
+        errors.append("adjudication contains duplicate adjudicator ids")
+    if len({row["kind"] for row in payload["adjudicators"]}) != 1:
+        errors.append("adjudication mixes adjudicator kinds")
+    expected_subjects = adjudication_subjects(campaign)
+    expected_hashes = adjudication_subject_content_hashes(campaign)
+    expected_labels = {
+        (adjudicator_id, *subject)
+        for adjudicator_id in adjudicator_ids
+        for subject in expected_subjects
+    }
+    actual_labels: set[tuple[str, str, str, str]] = set()
+    item_ids: set[tuple[str, str]] = set()
+    for label in payload["labels"]:
+        key = (
+            label["adjudicatorId"],
+            label["sampleId"],
+            label["subjectType"],
+            label["subjectKey"],
+        )
+        if key in actual_labels:
+            errors.append(f"adjudication contains duplicate label {key}")
+        actual_labels.add(key)
+        item_key = (label["adjudicatorId"], label["itemId"])
+        if item_key in item_ids:
+            errors.append(f"adjudication contains duplicate itemId {item_key}")
+        item_ids.add(item_key)
+        if label["adjudicatorId"] not in adjudicator_ids:
+            errors.append(
+                "adjudication label references unknown adjudicator "
+                f"{label['adjudicatorId']}"
+            )
+        subject = (label["sampleId"], label["subjectType"], label["subjectKey"])
+        if subject not in expected_subjects:
+            errors.append(f"adjudication label references unknown subject {subject}")
+        elif label["subjectContentSha256"] != expected_hashes[subject]:
+            errors.append(f"adjudication label subject content hash mismatch {subject}")
+        component_keys = tuple(row["key"] for row in label["components"])
+        if component_keys != ADJUDICATION_COMPONENT_KEYS[label["subjectType"]]:
+            errors.append(f"adjudication label has invalid component rubric {key}")
+        if label["label"] != derived_component_label(label["components"]):
+            errors.append(f"adjudication label differs from component verdicts {key}")
+    missing = expected_labels - actual_labels
+    extra = actual_labels - expected_labels
+    if missing:
+        errors.append(f"adjudication is missing {len(missing)} independent labels")
+    if extra:
+        errors.append(f"adjudication contains {len(extra)} unexpected labels")
+    expected_resolutions = build_adjudication_resolutions(payload["labels"])
+    if payload["subjectResolutions"] != expected_resolutions:
+        errors.append("adjudication subjectResolutions do not match raw labels")
+    return errors
+
+
 def validate_adjudication(
     payload: dict[str, Any], campaign: dict[str, Any]
 ) -> list[str]:
@@ -691,6 +850,8 @@ def validate_adjudication(
         return _validate_adjudication_v1(payload, campaign)
     if schema == "review-craft.eval-real-repository-adjudication.v2":
         return _validate_adjudication_v2(payload, campaign)
+    if schema == "review-craft.eval-real-repository-adjudication.v3":
+        return _validate_adjudication_v3(payload, campaign)
     return [f"adjudication has unsupported schema {schema!r}"]
 
 
@@ -779,11 +940,14 @@ def _adjudication_metrics(
 ) -> tuple[dict[str, Any], tuple[int, int]]:
     if adjudication is None:
         return _ratio(0, 0), (0, 0)
-    v2 = adjudication["schema"] == "review-craft.eval-real-repository-adjudication.v2"
+    modern = adjudication["schema"] in {
+        "review-craft.eval-real-repository-adjudication.v2",
+        "review-craft.eval-real-repository-adjudication.v3",
+    }
     by_finding: dict[tuple[str, str, str], dict[str, str]] = defaultdict(dict)
     for row in adjudication["labels"]:
-        subject_type = row["subjectType"] if v2 else "ADDITIONAL_FINDING"
-        subject_key = row["subjectKey"] if v2 else row["findingKey"]
+        subject_type = row["subjectType"] if modern else "ADDITIONAL_FINDING"
+        subject_key = row["subjectKey"] if modern else row["findingKey"]
         by_finding[(row["sampleId"], subject_type, subject_key)][
             row["adjudicatorId"]
         ] = row["label"]
@@ -797,13 +961,23 @@ def _adjudication_metrics(
             comparisons += 1
             agreements += left == right
         decisive = [value for value in values if value != "UNRESOLVED"]
-        if (
-            decisive
-            and len(set(decisive)) == 1
-            and subject_type == "ADDITIONAL_FINDING"
-        ):
+        strict_resolution = (
+            adjudication["schema"]
+            == "review-craft.eval-real-repository-adjudication.v3"
+        )
+        resolved_label = (
+            values[0]
+            if strict_resolution
+            and values
+            and values[0] != "UNRESOLVED"
+            and len(set(values)) == 1
+            else decisive[0]
+            if not strict_resolution and decisive and len(set(decisive)) == 1
+            else None
+        )
+        if resolved_label is not None and subject_type == "ADDITIONAL_FINDING":
             resolved += 1
-            false_positives += decisive[0] in {"FALSE_POSITIVE", "INCORRECT"}
+            false_positives += resolved_label in {"FALSE_POSITIVE", "INCORRECT"}
     return _ratio(agreements, comparisons), (false_positives, resolved)
 
 

@@ -28,7 +28,8 @@
         "hostVersion": {"type": "string", "minLength": 1},
         "evidenceKind": {"const": "REAL_HOST"},
         "providerName": {"type": "string", "minLength": 1},
-        "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "isolationReceiptProtocol": {"const": "review-craft.eval-isolation-receipt.v1"}
       }
     }
   },
@@ -104,6 +105,10 @@
         "softWallTimeSeconds": {"type": "integer", "minimum": 1},
         "hardWallTimeSeconds": {"type": "integer", "minimum": 1},
         "hardReportedTokenCeiling": {"type": "integer", "minimum": 1},
+        "hardReportedInputTokenCeilingPerSample": {"type": "integer", "minimum": 1},
+        "hardReportedTokenCeilingPerSample": {"type": "integer", "minimum": 1},
+        "hardReportedInputTokenCeilingPerRepositoryShard": {"type": "integer", "minimum": 1},
+        "hardReportedTokenCeilingPerRepositoryShard": {"type": "integer", "minimum": 1},
         "maxConsecutiveInfrastructureFailures": {"type": "integer", "minimum": 1},
         "maxUnknownUsageSamples": {"type": "integer", "minimum": 1},
         "maxTimedOutSamplesPerModelProfile": {"type": "integer", "minimum": 1},

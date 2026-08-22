@@ -44,6 +44,10 @@ uv run --locked python scripts/real_repository_benchmark.py plan-campaign \
   --repetitions 3 --timeout-seconds 1800 \
   --soft-wall-seconds 64800 --hard-wall-seconds 86400 \
   --hard-reported-token-ceiling 60000000 \
+  --hard-reported-input-token-ceiling-per-sample 1250000 \
+  --hard-reported-token-ceiling-per-sample 1500000 \
+  --hard-reported-input-token-ceiling-per-shard 7000000 \
+  --hard-reported-token-ceiling-per-shard 8000000 \
   --max-consecutive-infrastructure-failures 2 \
   --max-unknown-usage-samples 1 \
   --max-timed-out-samples-per-model-profile 1 \
@@ -93,7 +97,7 @@ uv run --locked python scripts/real_repository_benchmark.py validate-campaign \
 uv run --locked python scripts/real_repository_benchmark.py prepare-adjudication \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --campaign <campaign.json> --output-dir <empty-adjudication-directory> \
-  --adjudicator human-a --adjudicator human-b
+  --adjudicator human-a --adjudicator human-b --adjudicator human-c
 
 # Give each reviewer only packet-<id>.json and submission-<id>.json. Keep the
 # coordinator mapping private. After each reviewer fills every label/rationale:
@@ -104,6 +108,7 @@ uv run --locked python scripts/real_repository_benchmark.py \
 uv run --locked python scripts/real_repository_benchmark.py assemble-adjudication \
   --campaign <campaign.json> --mapping <coordinator-mapping.json> \
   --submission <submission-human-a.json> --submission <submission-human-b.json> \
+  --submission <submission-human-c.json> \
   --kind HUMAN \
   --output <independent-adjudication.json>
 
@@ -134,7 +139,16 @@ Git state; any target mutation fails the sample. Adapter processes run through t
 process-lifecycle boundary, so timeout terminates the inherited process tree. The Codex adapter
 streams JSONL and atomically checkpoints sanitized tool traces and usage while it runs. A timed
 out sample therefore retains partial stdout and completed tool-call evidence when available;
-token counts remain null when no complete host usage event was emitted.
+token counts remain null when no complete host usage event was emitted. When available, usage
+retains input, cached-input, cache-write-input, output, reasoning-output, and total tokens instead
+of collapsing every host-reported component into one number.
+
+Codex adapter v6 also emits `review-craft.eval-isolation-receipt.v1` for every invocation. The
+receipt captures pre-run, post-start, and post-exit Codex-home fingerprints, separating managed
+`.system` files from user-installed extensions. A required receipt that is missing, malformed,
+unavailable, or drifted changes the sample to `FAILED/ARTIFACT_INVALID`; the runner neither deletes
+nor repairs that home automatically. This receipt verifies the declared Codex-home surface only.
+It is not evidence that the host enforced network denial or an operating-system filesystem sandbox.
 
 High-cost campaigns must use a content-bound plan and `run-plan`. The legacy `run` command
 remains available for compatibility and bounded diagnostics, but it does not provide resumable
@@ -143,7 +157,10 @@ materialization receipt, adapter configuration, live REAL_HOST descriptions, det
 sample order, per-sample timeout, global token and wall-time ceilings, and infrastructure
 circuit-breaker threshold. New plans also bind cumulative unknown-usage, artifact-invalid,
 and per-model-profile timeout ceilings, plus inactivity warning/diagnostic thresholds and the
-recovered-inactivity ceiling.
+recovered-inactivity ceiling. They additionally bind reported input/total-token ceilings per
+sample and per natural repository shard. The defaults are 1.25M input and 1.5M total tokens per
+sample, plus 7M input and 8M total tokens per repository shard; these are safety stops, not target
+budgets or quality claims.
 
 Each sample commits an atomic `checkpoint.json` marker containing the exact content-bound run
 state before replacing the `campaign.json` and `run-state.json` mirrors. Resume trusts the
@@ -160,25 +177,35 @@ ledger aggregates reported tokens, unknown-usage samples, artifact-invalid sampl
 runner time, per-model-profile timeout and recovered-inactivity counts, plus the consecutive
 infrastructure-failure tail across the serial shard order. A resume repairs the latest ledger contribution from the
 committed checkpoint; it cannot recreate a missing ledger or switch to an older shard. Token
-usage is known only after an adapter checkpoint, so the hard reported-token ceiling stops before
-the next sample and may be exceeded by the final completed sample's reported usage.
+usage is known only after an adapter checkpoint, so every reported-token ceiling stops before the
+next sample and may be exceeded by the final completed sample's reported usage. Per-sample limits
+therefore detect an oversized completed attempt; they do not terminate a model request mid-stream.
 
 `merge-campaign-runs` rejects running states, duplicate shards, duplicate cells, plan drift,
 budget-ledger drift, model-configuration drift, and samples outside the plan. Its receipt binds
 the exact shared ledger and copies it into the merge directory. A merged campaign becomes
 `COMPLETED` only when every planned full-matrix cell completed successfully.
 
-Adjudication v2 covers every probe response plus every additional finding from completed
-samples. Reviewer packets use reviewer-specific opaque item IDs and omit sample, treatment,
-model, and repetition identities. Packet order is independently deterministic per reviewer.
+The current adjudication workflow uses v2 packets and submissions to produce a v3 assembled
+artifact covering every probe response plus every additional finding from completed samples.
+Reviewer packets use reviewer-specific opaque item IDs, bind the exact subject content, and omit
+sample, treatment, model, and repetition identities. Packet order is independently deterministic
+per reviewer. Probe responses are judged on disposition, decision, severity, evidence, and
+rationale; additional findings are judged on actionability, decision, severity, and evidence. An
+overall label is derived from those component verdicts and cannot be filled inconsistently.
 `assemble-adjudication` requires an explicit uniform `--kind`: use `HUMAN` only for actual
 independent human reviewers and `AGENT_ASSISTED` for isolated model-assisted adjudicators.
 Agent-assisted labels contribute to adjudicated false-positive analysis and the explicit
 `adjudicatorAgreement` metric, but never populate `humanAgreement` or satisfy the independent
 human adjudication completion gate.
-The coordinator-only mapping is required to assemble the two completed submissions; a blank
-template or a single reviewer cannot produce a valid v2 adjudication. Legacy v1 adjudication
-remains validation-compatible for historical campaigns, but it covers additional findings only.
+The coordinator-only mapping is required to assemble at least two completed submissions; three
+reviewers are recommended so one unavailable reviewer does not collapse the batch. Any decisive
+disagreement remains `SPLIT` with no resolved label, including a 2:1 split; majority voting is not
+treated as verified semantic truth. A blank template or a single reviewer cannot produce a valid
+adjudication. Legacy v1 and v2 assembled adjudication remains validation-compatible for historical
+campaigns; v1 covers additional findings only. Standalone validation of a v3 artifact checks its
+campaign/subject hashes and deterministic resolutions, but reopening the private mapping and
+submission files is still required for a full provenance audit.
 
 The stability report exposes two distinct root-cause signals. `rootCauseOverlap` preserves the
 raw model-authored keys for continuity. `rootCauseIdentityOverlap` removes wording drift by using

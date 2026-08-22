@@ -758,15 +758,21 @@ Real Repository Benchmark v1 adds eight immutable upstream repositories across P
 Node.js, Electron, Go, Rust, and JVM. Each case contains a real upstream-fixed defect, a
 legitimate `KEEP`, a decoy, a measurement-only claim, and an evidence-gap claim. The
 oracle-free blind suite, verified source materialization, campaign runner, independent
-adjudication contract, and stability report are under `evals/real-repositories/`. The v2
-adjudication workflow emits two separately ordered, opaque-ID packets covering all completed
-probe responses and additional findings, with a coordinator-only mapping and content-bound
-submission finalization. The runner preserves partial streamed stdout and sanitized tool-call
-checkpoints across timeouts while the canonical lifecycle boundary terminates the process tree.
+adjudication contract, and stability report are under `evals/real-repositories/`. The current
+component-rubric workflow emits separately ordered v2 packets with opaque IDs covering all
+completed probe responses and additional findings, with a coordinator-only mapping and
+content-bound v2 submission finalization. The assembled v3 adjudication binds each subject hash,
+derives its overall label from type-specific component verdicts, and leaves every reviewer
+disagreement `SPLIT` instead of treating a majority vote as semantic truth. The runner preserves
+partial streamed stdout and sanitized tool-call checkpoints across timeouts while the canonical
+lifecycle boundary terminates the process tree.
 High-cost execution uses a content-bound deterministic plan, resumable exact-prefix
 checkpoints, serial repository shards, a shared content-bound budget ledger, validated merge
-receipts, global reported-token and active runner-time ceilings, and a cross-shard consecutive
-infrastructure-failure circuit breaker. New plans also stop after the declared cumulative
+receipts, per-sample and per-repository-shard reported input/total-token ceilings, a global
+reported-token ceiling, active runner-time ceilings, and a cross-shard consecutive
+infrastructure-failure circuit breaker. Token receipts retain cached-input, cache-write-input,
+reasoning-output, and ordinary input/output components when the host reports them. New plans also
+stop after the declared cumulative
 unknown-usage, artifact-invalid, or per-model-profile timeout limit. New plans also bind a
 300-second inactivity warning, a 600-second live diagnostic capture, and a two-recovered-stall
 per-model-profile ceiling. The first recovered diagnostic stall remains evidence and execution
@@ -777,7 +783,11 @@ liveness observation, and timeout cleanup outcome. The stability report keeps th
 model-authored `rootCauseOverlap` and adds `rootCauseIdentityOverlap`, which uses canonical probe
 identity or exact evidence locations rather than free-text root-cause wording. The location
 projection is a conservative proxy: range drift can under-match, while two findings on the exact
-same span can over-match. Legacy plans,
+same span can over-match. The v6 Codex adapter also writes a per-invocation isolation receipt at
+pre-run, post-start, and post-exit. It fingerprints managed `.system` state separately from user
+extensions; a missing, invalid, unavailable, or drifted receipt makes the sample artifact-invalid.
+This receipt proves the declared Codex-home surface remained stable, not that the operating system
+enforced network or filesystem sandboxing. Legacy plans,
 lifecycle receipts, ledgers, run states, and stability reports remain validation-compatible. The
 legacy direct `run`
 command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,

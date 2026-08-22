@@ -21,7 +21,8 @@
         "review-craft.eval-adapter.v2",
         "review-craft.eval-adapter.v3",
         "review-craft.eval-adapter.v4",
-        "review-craft.eval-adapter.v5"
+        "review-craft.eval-adapter.v5",
+        "review-craft.eval-adapter.v6"
       ]
     },
     "name": {
@@ -132,6 +133,16 @@
         }
       }
     },
+    "isolationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "transport", "environmentVariable"],
+      "properties": {
+        "protocol": {"const": "review-craft.eval-isolation-receipt.v1"},
+        "transport": {"const": "ENV_PATH"},
+        "environmentVariable": {"const": "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"}
+      }
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -193,6 +204,18 @@
       },
       "then": {
         "required": ["usage", "toolTrace", "capabilities"],
+        "properties": {
+          "isolation": {"required": ["homeMatchesCodexHome"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"schema": {"const": "review-craft.eval-adapter.v6"}},
+        "required": ["schema"]
+      },
+      "then": {
+        "required": ["usage", "toolTrace", "progress", "isolationReceipt", "capabilities"],
         "properties": {
           "isolation": {"required": ["homeMatchesCodexHome"]}
         }

@@ -64,6 +64,10 @@ def build_campaign_plan(
     hard_wall_time_seconds: int,
     hard_reported_token_ceiling: int,
     max_consecutive_infrastructure_failures: int,
+    hard_reported_input_token_ceiling_per_sample: int = 1_250_000,
+    hard_reported_token_ceiling_per_sample: int = 1_500_000,
+    hard_reported_input_token_ceiling_per_shard: int = 7_000_000,
+    hard_reported_token_ceiling_per_shard: int = 8_000_000,
     max_unknown_usage_samples: int = 1,
     max_timed_out_samples_per_model_profile: int = 1,
     max_artifact_invalid_samples: int = 1,
@@ -124,6 +128,18 @@ def build_campaign_plan(
             "softWallTimeSeconds": soft_wall_time_seconds,
             "hardWallTimeSeconds": hard_wall_time_seconds,
             "hardReportedTokenCeiling": hard_reported_token_ceiling,
+            "hardReportedInputTokenCeilingPerSample": (
+                hard_reported_input_token_ceiling_per_sample
+            ),
+            "hardReportedTokenCeilingPerSample": (
+                hard_reported_token_ceiling_per_sample
+            ),
+            "hardReportedInputTokenCeilingPerRepositoryShard": (
+                hard_reported_input_token_ceiling_per_shard
+            ),
+            "hardReportedTokenCeilingPerRepositoryShard": (
+                hard_reported_token_ceiling_per_shard
+            ),
             "maxConsecutiveInfrastructureFailures": (
                 max_consecutive_infrastructure_failures
             ),
@@ -219,6 +235,34 @@ def _plan_selection_errors(
         if warning >= diagnostic:
             errors.append(
                 "campaign plan inactivity warning must be below diagnostic threshold"
+            )
+    cost_budgets = {
+        "hardReportedInputTokenCeilingPerSample",
+        "hardReportedTokenCeilingPerSample",
+        "hardReportedInputTokenCeilingPerRepositoryShard",
+        "hardReportedTokenCeilingPerRepositoryShard",
+    }
+    present_cost_budgets = frozenset(cost_budgets.intersection(budgets))
+    if present_cost_budgets not in {frozenset(), frozenset(cost_budgets)}:
+        errors.append(
+            "campaign plan per-sample and per-shard token budgets must be declared together"
+        )
+    elif present_cost_budgets:
+        sample_input = budgets["hardReportedInputTokenCeilingPerSample"]
+        sample_total = budgets["hardReportedTokenCeilingPerSample"]
+        shard_input = budgets["hardReportedInputTokenCeilingPerRepositoryShard"]
+        shard_total = budgets["hardReportedTokenCeilingPerRepositoryShard"]
+        if sample_input > sample_total:
+            errors.append(
+                "campaign plan sample input-token ceiling exceeds sample total-token ceiling"
+            )
+        if shard_input > shard_total:
+            errors.append(
+                "campaign plan shard input-token ceiling exceeds shard total-token ceiling"
+            )
+        if sample_input > shard_input or sample_total > shard_total:
+            errors.append(
+                "campaign plan per-sample token ceilings must not exceed per-shard ceilings"
             )
 
     expected_full_matrix = (
@@ -337,6 +381,25 @@ def usage_totals(samples: list[dict[str, Any]]) -> tuple[int, int]:
         else:
             reported += total
     return reported, unknown
+
+
+def usage_component_totals(samples: list[dict[str, Any]]) -> dict[str, int]:
+    fields = (
+        "inputTokens",
+        "cachedInputTokens",
+        "cacheWriteInputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens",
+    )
+    return {
+        field: sum(
+            value
+            for sample in samples
+            if isinstance((value := sample["usage"].get(field)), int)
+        )
+        for field in fields
+    }
 
 
 def timed_out_samples_by_model_profile(
@@ -828,6 +891,10 @@ def _run_state_status_errors(
         "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
         "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
         "ARTIFACT_INVALID_BUDGET_EXCEEDED",
+        "SAMPLE_INPUT_TOKEN_CEILING",
+        "SAMPLE_TOKEN_CEILING",
+        "SHARD_INPUT_TOKEN_CEILING",
+        "SHARD_TOKEN_CEILING",
     }:
         errors.append("stopped campaign run state requires a budget or circuit stop")
     elif state["status"] == "FAILED" and state["stopReason"] not in {
@@ -918,7 +985,31 @@ def budget_stop_reason(
     timed_out_samples_by_model_profile: dict[str, int] | None = None,
     artifact_invalid_samples: int = 0,
     recovered_inactivity_samples_by_model_profile: dict[str, int] | None = None,
+    sample_reported_input_tokens: int = 0,
+    sample_reported_tokens: int = 0,
+    shard_reported_input_tokens: int = 0,
+    shard_reported_tokens: int = 0,
 ) -> str | None:
+    sample_input_ceiling = budgets.get("hardReportedInputTokenCeilingPerSample")
+    if (
+        sample_input_ceiling is not None
+        and sample_reported_input_tokens >= sample_input_ceiling
+    ):
+        return "SAMPLE_INPUT_TOKEN_CEILING"
+    sample_ceiling = budgets.get("hardReportedTokenCeilingPerSample")
+    if sample_ceiling is not None and sample_reported_tokens >= sample_ceiling:
+        return "SAMPLE_TOKEN_CEILING"
+    shard_input_ceiling = budgets.get(
+        "hardReportedInputTokenCeilingPerRepositoryShard"
+    )
+    if (
+        shard_input_ceiling is not None
+        and shard_reported_input_tokens >= shard_input_ceiling
+    ):
+        return "SHARD_INPUT_TOKEN_CEILING"
+    shard_ceiling = budgets.get("hardReportedTokenCeilingPerRepositoryShard")
+    if shard_ceiling is not None and shard_reported_tokens >= shard_ceiling:
+        return "SHARD_TOKEN_CEILING"
     if reported_tokens >= budgets["hardReportedTokenCeiling"]:
         return "TOKEN_CEILING"
     if elapsed_seconds >= budgets["hardWallTimeSeconds"]:

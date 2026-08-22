@@ -58,13 +58,21 @@ class CodexEvalAdapterTests(unittest.TestCase):
         self.assertEqual(status, 0)
         description = json.loads(print_mock.call_args.args[0])
         self.assertEqual(description["adapterVersion"], "0.6.4")
-        self.assertEqual(description["schema"], "review-craft.eval-adapter.v5")
+        self.assertEqual(description["schema"], "review-craft.eval-adapter.v6")
         self.assertEqual(
             description["progress"],
             {
                 "protocol": "review-craft.eval-progress.v1",
                 "transport": "ENV_PATH",
                 "environmentVariable": adapter.PROGRESS_OUTPUT_ENV,
+            },
+        )
+        self.assertEqual(
+            description["isolationReceipt"],
+            {
+                "protocol": "review-craft.eval-isolation-receipt.v1",
+                "transport": "ENV_PATH",
+                "environmentVariable": adapter.ISOLATION_OUTPUT_ENV,
             },
         )
         self.assertEqual(
@@ -738,6 +746,65 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 {"CODEX_HOME": str(home), "HOME": str(home)},
             ), self.assertRaisesRegex(adapter.AdapterError, "isolated auth-only"):
                 adapter.codex_home_extension_state(allow_extensions=False)
+
+    def test_isolation_receipt_separates_system_and_user_extension_drift(self) -> None:
+        empty_hash = hashlib.sha256(b"[]").hexdigest()
+        pre = {
+            "homeMatchesCodexHome": True,
+            "ignoreUserConfig": True,
+            "ignoreRules": True,
+            "allowCodexHomeExtensions": False,
+            "codexHomeSystemFileCount": 0,
+            "codexHomeSystemTreeSha256": empty_hash,
+            "codexHomeExtensionFileCount": 0,
+            "codexHomeExtensionTreeSha256": empty_hash,
+        }
+        receipt = adapter.new_isolation_receipt(pre)
+        adapter.update_isolation_receipt(receipt, phase="postStart", state=pre)
+        self.assertEqual(receipt["availability"], "UNAVAILABLE")
+        self.assertEqual(receipt["comparison"]["overall"], "CAPTURE_UNAVAILABLE")
+        self.assertEqual(receipt["unavailableReason"], "POST_EXIT_NOT_CAPTURED")
+        drifted = dict(pre)
+        drifted["codexHomeExtensionFileCount"] = 1
+        drifted["codexHomeExtensionTreeSha256"] = "1" * 64
+        adapter.update_isolation_receipt(receipt, phase="postExit", state=drifted)
+        self.assertEqual(receipt["comparison"]["postStartSystemState"], "MATCHED")
+        self.assertEqual(
+            receipt["comparison"]["postExitUserExtensionState"], "DRIFTED"
+        )
+        self.assertEqual(receipt["comparison"]["overall"], "USER_EXTENSION_DRIFT")
+        schema = json.loads(
+            (ROOT / "evals/schemas/eval-isolation-receipt.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(receipt)), [])
+
+    def test_codex_process_writes_matched_isolation_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            isolation_path = home / "isolation.json"
+            environment = {
+                **os.environ,
+                "HOME": str(home),
+                "CODEX_HOME": str(home),
+                adapter.ISOLATION_OUTPUT_ENV: str(isolation_path),
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                pre = adapter.codex_home_extension_state(allow_extensions=False)
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", "import sys; sys.stdin.read()"],
+                    prompt="review\n",
+                    command_env=environment,
+                    replacements={},
+                    pre_run_isolation=pre,
+                )
+            self.assertEqual(status, 0)
+            receipt = json.loads(isolation_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["availability"], "AVAILABLE")
+            self.assertEqual(receipt["comparison"]["overall"], "MATCHED")
+            self.assertIsNotNone(receipt["postStart"])
+            self.assertIsNotNone(receipt["postExit"])
 
     def test_tool_trace_normalizes_paths_and_hashes_without_raw_output(self) -> None:
         output = "verification result\n"
