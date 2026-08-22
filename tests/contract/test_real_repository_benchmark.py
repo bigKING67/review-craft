@@ -258,6 +258,10 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                     "inside the declared scope.",
                     normalized_prompt,
                 )
+                self.assertIn(
+                    "keep each command below roughly 200 output lines or 32 KiB",
+                    normalized_prompt,
+                )
 
     def test_host_output_requires_complete_probe_coverage_and_honest_score(self) -> None:
         repository = self.suite["repositories"][0]

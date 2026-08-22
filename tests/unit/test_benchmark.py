@@ -35,7 +35,7 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIn("validation failed", completed.stderr)
             self.assertNotIn("Traceback", completed.stderr)
 
-    def test_small_runtime_benchmark_is_schema_valid_without_threshold_claims(self) -> None:
+    def test_small_runtime_benchmark_and_relative_comparison_are_valid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result_path = Path(directory) / "result.json"
             completed = subprocess.run(
@@ -131,6 +131,16 @@ class BenchmarkTests(unittest.TestCase):
             )
             self.assertEqual(failed.returncode, 1, failed.stderr)
             self.assertFalse(json.loads(failed.stdout)["valid"])
+
+    def test_relative_performance_gate_covers_pull_requests_and_main_pushes(self) -> None:
+        workflow = (ROOT / ".github/workflows/benchmark.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pull_request:\n", workflow)
+        self.assertIn("push:\n    branches: [main]", workflow)
+        self.assertIn("github.event_name == 'push'", workflow)
+        self.assertIn("github.event.before || github.sha", workflow)
+        self.assertIn("--max-regression-percent 20", workflow)
 
 
 if __name__ == "__main__":

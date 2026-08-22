@@ -154,13 +154,21 @@ High-cost campaigns must use a content-bound plan and `run-plan`. The legacy `ru
 remains available for compatibility and bounded diagnostics, but it does not provide resumable
 plan execution or campaign-level budget enforcement. A plan binds the suite, blind suite,
 materialization receipt, adapter configuration, live REAL_HOST descriptions, deterministic
-sample order, per-sample timeout, global token and wall-time ceilings, and infrastructure
-circuit-breaker threshold. New plans also bind cumulative unknown-usage, artifact-invalid,
+sample order, exact prompt hash for every cell, per-sample timeout, global token and wall-time
+ceilings, and infrastructure circuit-breaker threshold. New plans also bind cumulative unknown-usage, artifact-invalid,
 and per-model-profile timeout ceilings, plus inactivity warning/diagnostic thresholds and the
 recovered-inactivity ceiling. They additionally bind reported input/total-token ceilings per
 sample and per natural repository shard. The defaults are 1.25M input and 1.5M total tokens per
 sample, plus 7M input and 8M total tokens per repository shard; these are safety stops, not target
 budgets or quality claims.
+
+Campaign-plan schemas remain backward-readable so historical evidence can still be validated.
+`run-plan` is stricter: plans without the current cumulative failure, inactivity, per-sample and
+per-shard token budgets, or without every prompt hash are validation-only legacy data and must be
+regenerated. This prevents an old global-ceiling-only plan from bypassing later safety controls
+or mixing prompt revisions across resumed repository shards. Every treatment also receives the
+same bounded-output instruction: inspect size first, prefer targeted matches and line windows,
+and keep a single command below roughly 200 lines or 32 KiB.
 
 Each sample commits an atomic `checkpoint.json` marker containing the exact content-bound run
 state before replacing the `campaign.json` and `run-state.json` mirrors. Resume trusts the

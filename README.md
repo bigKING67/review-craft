@@ -768,8 +768,9 @@ partial streamed stdout and sanitized tool-call checkpoints across timeouts whil
 lifecycle boundary terminates the process tree.
 High-cost execution uses a content-bound deterministic plan, resumable exact-prefix
 checkpoints, serial repository shards, a shared content-bound budget ledger, validated merge
-receipts, per-sample and per-repository-shard reported input/total-token ceilings, a global
-reported-token ceiling, active runner-time ceilings, and a cross-shard consecutive
+receipts, content-bound prompt hashes, per-sample and per-repository-shard reported
+input/total-token ceilings, a global reported-token ceiling, active runner-time ceilings, and a
+cross-shard consecutive
 infrastructure-failure circuit breaker. Token receipts retain cached-input, cache-write-input,
 reasoning-output, and ordinary input/output components when the host reports them. New plans also
 stop after the declared cumulative

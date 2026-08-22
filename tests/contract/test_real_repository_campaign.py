@@ -153,7 +153,10 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         assert isinstance(treatment, str)
         assert isinstance(repetition, int)
         assert isinstance(description, dict)
-        output = self._output(repository)
+        oracle_repository = next(
+            row for row in self.suite["repositories"] if row["id"] == repository["id"]
+        )
+        output = self._output(oracle_repository)
         return {
             "sampleId": campaign_runtime.sample_id(
                 repository["id"], treatment, adapter["id"], repetition
@@ -297,6 +300,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertTrue(first["selection"]["fullMatrix"])
         self.assertEqual(len(first["samples"]), 144)
         self.assertEqual(len({row["sampleId"] for row in first["samples"]}), 144)
+        self.assertEqual(len({row["promptSha256"] for row in first["samples"]}), 24)
         self.assertEqual({row["timeoutSeconds"] for row in first["samples"]}, {1800})
         self.assertEqual(len({row["shardId"] for row in first["samples"]}), 8)
         self.assertEqual(first["budgets"]["maxUnknownUsageSamples"], 1)
@@ -354,10 +358,30 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "hardReportedTokenCeilingPerRepositoryShard",
         ):
             del legacy["budgets"][key]
+        for sample in legacy["samples"]:
+            del sample["promptSha256"]
         campaign_runtime.seal(legacy)
         self.assertEqual(
             campaign_runtime.validate_campaign_plan(legacy, self.suite, self.blind),
             [],
+        )
+        execution_errors = campaign_runtime.validate_campaign_plan_execution_safety(
+            legacy
+        )
+        self.assertTrue(any("current execution budgets" in row for row in execution_errors))
+        self.assertTrue(any("prompt hashes" in row for row in execution_errors))
+        self.assertEqual(
+            campaign_runtime.validate_campaign_plan_execution_safety(plan), []
+        )
+
+        partial_prompt_binding = copy.deepcopy(legacy)
+        partial_prompt_binding["samples"][0]["promptSha256"] = "0" * 64
+        campaign_runtime.seal(partial_prompt_binding)
+        self.assertIn(
+            "campaign plan prompt hashes must be declared for every sample",
+            campaign_runtime.validate_campaign_plan(
+                partial_prompt_binding, self.suite, self.blind
+            ),
         )
 
         partial = copy.deepcopy(legacy)
@@ -405,7 +429,6 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertEqual(
             campaign_runtime.validate_run_state(state, legacy, campaign), []
         )
-
         ledger = campaign_runtime.new_budget_ledger(
             legacy, now="2026-08-21T00:00:00Z"
         )
@@ -415,6 +438,36 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertEqual(
             campaign_runtime.validate_budget_ledger(ledger, legacy), []
         )
+
+    def test_run_plan_rejects_validation_only_legacy_plan_before_spending(self) -> None:
+        legacy = self._plan()
+        for key in (
+            "hardReportedInputTokenCeilingPerSample",
+            "hardReportedTokenCeilingPerSample",
+            "hardReportedInputTokenCeilingPerRepositoryShard",
+            "hardReportedTokenCeilingPerRepositoryShard",
+        ):
+            del legacy["budgets"][key]
+        for sample in legacy["samples"]:
+            del sample["promptSha256"]
+        campaign_runtime.seal(legacy)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, legacy)
+            with (
+                patch.object(runner, "_describe_adapter") as describe_adapter,
+                patch.object(runner, "_run_sample") as run_sample,
+                self.assertRaisesRegex(
+                    contracts.RealRepositoryError,
+                    "campaign plan is not execution-ready",
+                ),
+            ):
+                runner.command_run_campaign_plan(args)
+            describe_adapter.assert_not_called()
+            run_sample.assert_not_called()
+            self.assertFalse(Path(args.budget_ledger).exists())
+            self.assertFalse(Path(args.run_dir).exists())
 
     def test_budget_decisions_are_fail_closed(self) -> None:
         budgets = self._plan()["budgets"]
