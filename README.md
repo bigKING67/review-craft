@@ -807,10 +807,17 @@ uv run --locked python scripts/real_repository_benchmark.py \
 
 `plan-campaign`, `run-plan`, and the legacy direct runner reject preparation-capable adapters whose
 managed-system tree is still empty. During every campaign invocation, a missing, invalid,
-unavailable, system-drifted, or user-extension-drifted receipt makes the sample artifact-invalid;
-there is no first-sample drift exception. This proves that the declared Codex-home skill/plugin
+unavailable, system-drifted, or user-extension-drifted receipt makes a non-timeout sample
+artifact-invalid; there is no first-sample drift exception. A timeout is the sole precedence
+exception for an unavailable capture: it remains `TIMED_OUT/TIMEOUT` instead of being overwritten
+by a missing post-exit capture, while an explicit system or user-extension drift remains
+artifact-invalid. The isolation sidecar continues to expose either condition. Adapters declaring
+`review-craft.eval-timeout-control.v1` receive the inner sample deadline and a content-bound
+finalization-grace contract. The Codex adapter terminates its child tree and finalizes sidecars;
+the outer runner deadline is only a failsafe. This proves that the declared Codex-home skill/plugin
 surface remained stable after explicit preparation. It does not prove operating-system network or
-filesystem sandbox enforcement. Legacy plans,
+filesystem sandbox enforcement. Operational Canaries should use a separately sealed,
+responsiveness-oriented timeout rather than inheriting a longer quality-Campaign timeout. Legacy plans,
 lifecycle receipts, ledgers, run states, and stability reports remain validation-compatible. The
 legacy direct `run`
 command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,

@@ -143,6 +143,36 @@
         "environmentVariable": {"const": "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"}
       }
     },
+    "timeoutControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "transport",
+        "environmentVariable",
+        "timeoutExitCode",
+        "finalizationGraceSeconds"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "review-craft.eval-timeout-control.v1"
+        },
+        "transport": {
+          "const": "ENV_VALUE"
+        },
+        "environmentVariable": {
+          "const": "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
+        },
+        "timeoutExitCode": {
+          "const": 124
+        },
+        "finalizationGraceSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
+      }
+    },
     "isolationPreparation": {
       "type": "object",
       "additionalProperties": false,

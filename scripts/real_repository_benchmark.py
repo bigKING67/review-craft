@@ -98,6 +98,9 @@ PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
 ISOLATION_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"
 INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
+SAMPLE_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
+TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v1"
+TIMEOUT_EXIT_CODE = 124
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.locking import exclusive_file_lock  # noqa: E402
@@ -160,8 +163,12 @@ def _adapter_outcome(
     output_path: Path,
     repository: dict[str, Any],
     timeout_seconds: int,
+    managed_timeout_exit_code: int | None = None,
 ) -> tuple[str, str | None, str | None]:
-    if completed.timed_out:
+    if completed.timed_out or (
+        managed_timeout_exit_code is not None
+        and completed.returncode == managed_timeout_exit_code
+    ):
         return (
             "TIMED_OUT",
             f"adapter timed out after {timeout_seconds} seconds",
@@ -242,7 +249,36 @@ def _model_configuration(adapter_id: str, description: dict[str, Any]) -> dict[s
     isolation_receipt = description.get("isolationReceipt")
     if isinstance(isolation_receipt, dict):
         configuration["isolationReceiptProtocol"] = isolation_receipt.get("protocol")
+    timeout_control = description.get("timeoutControl")
+    if isinstance(timeout_control, dict):
+        configuration["timeoutControlSha256"] = sha256_json(timeout_control)
     return configuration
+
+
+def _adapter_timeout_control(
+    description: dict[str, Any], sample_timeout_seconds: int
+) -> tuple[int, dict[str, str], int | None]:
+    control = description.get("timeoutControl")
+    if control is None:
+        return sample_timeout_seconds, {}, None
+    if not isinstance(control, dict) or control.get("protocol") != TIMEOUT_CONTROL_PROTOCOL:
+        raise RealRepositoryError("adapter timeout control is invalid")
+    grace_seconds = control.get("finalizationGraceSeconds")
+    exit_code = control.get("timeoutExitCode")
+    environment_variable = control.get("environmentVariable")
+    if (
+        type(grace_seconds) is not int
+        or not 1 <= grace_seconds <= 300
+        or exit_code != TIMEOUT_EXIT_CODE
+        or control.get("transport") != "ENV_VALUE"
+        or environment_variable != SAMPLE_TIMEOUT_ENV
+    ):
+        raise RealRepositoryError("adapter timeout control is invalid")
+    return (
+        sample_timeout_seconds + grace_seconds,
+        {SAMPLE_TIMEOUT_ENV: str(sample_timeout_seconds)},
+        exit_code,
+    )
 
 
 def _adapter_evidence_args(treatment: str, evidence_root: Path) -> list[str]:
@@ -304,6 +340,16 @@ def _isolation_receipt_matches(payload: Any) -> bool:
     )
 
 
+def _isolation_receipt_reports_drift(payload: Any) -> bool:
+    if not isinstance(payload, dict) or schema_errors(payload, ISOLATION_SCHEMA):
+        return False
+    comparisons = payload["comparison"]
+    return comparisons["overall"] in {
+        "SYSTEM_STATE_DRIFT",
+        "USER_EXTENSION_DRIFT",
+    } or any(value == "DRIFTED" for value in comparisons.values())
+
+
 def _repository_usage_components(
     samples: list[dict[str, Any]], repository_id: str
 ) -> dict[str, int]:
@@ -358,6 +404,7 @@ def _finalize_progress(
     progress_path: Path,
     started_at: str,
     completed: ProcessResult | None,
+    timed_out: bool = False,
 ) -> dict[str, Any]:
     progress: dict[str, Any] | None = None
     unavailable_reason = "ADAPTER_DID_NOT_REPORT_PROGRESS"
@@ -377,7 +424,7 @@ def _finalize_progress(
     if completed is None:
         progress["terminationReason"] = "ADAPTER_UNAVAILABLE"
         progress["processTreeCleanup"] = "NOT_REQUIRED"
-    elif completed.timed_out:
+    elif completed.timed_out or timed_out:
         progress["terminationReason"] = "TIMEOUT"
         progress["processTreeCleanup"] = "COMPLETED"
         if (
@@ -804,6 +851,8 @@ def _run_sample(
     stdout = b""
     stderr = b""
     completed: ProcessResult | None = None
+    managed_timeout_exit_code: int | None = None
+    timeout_observed = False
     try:
         inactivity_env = {}
         if inactivity_warning_seconds is not None:
@@ -821,10 +870,13 @@ def _run_sample(
         isolation_env = (
             {ISOLATION_OUTPUT_ENV: str(isolation_path)} if isolation_required else {}
         )
+        outer_timeout_seconds, timeout_env, managed_timeout_exit_code = (
+            _adapter_timeout_control(description, timeout_seconds)
+        )
         completed = run_process(
             command,
             cwd=ROOT,
-            timeout=timeout_seconds,
+            timeout=outer_timeout_seconds,
             env={
                 **os.environ,
                 USAGE_OUTPUT_ENV: str(adapter_usage_path),
@@ -832,6 +884,7 @@ def _run_sample(
                 PROGRESS_OUTPUT_ENV: str(progress_path),
                 **isolation_env,
                 **inactivity_env,
+                **timeout_env,
             },
         )
         stdout = completed.stdout
@@ -841,6 +894,11 @@ def _run_sample(
             output_path=output_path,
             repository=repository,
             timeout_seconds=timeout_seconds,
+            managed_timeout_exit_code=managed_timeout_exit_code,
+        )
+        timeout_observed = completed.timed_out or (
+            managed_timeout_exit_code is not None
+            and completed.returncode == managed_timeout_exit_code
         )
         if completed.timed_out and failure_reason is not None:
             stderr += (failure_reason + "\n").encode("utf-8")
@@ -878,16 +936,21 @@ def _run_sample(
         progress_path=progress_path,
         started_at=started_at,
         completed=completed,
+        timed_out=timeout_observed,
     )
     if isolation_required:
         isolation_valid = False
+        isolation_candidate = None
         if isolation_path.is_file():
             try:
                 isolation_candidate = read_json(isolation_path)
             except (OSError, json.JSONDecodeError):
                 isolation_candidate = None
             isolation_valid = _isolation_receipt_matches(isolation_candidate)
-        if not isolation_valid:
+        if not isolation_valid and (
+            failure_class != "TIMEOUT"
+            or _isolation_receipt_reports_drift(isolation_candidate)
+        ):
             status = "FAILED"
             failure_reason = (
                 "per-invocation Codex home isolation receipt is missing, "

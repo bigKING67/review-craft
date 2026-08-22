@@ -481,6 +481,9 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             "evidenceKind": "REAL_HOST",
             "provider": {"name": "fixture-provider"},
             "isolation": {"fixture": True},
+            "isolationReceipt": {
+                "protocol": "review-craft.eval-isolation-receipt.v1"
+            },
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -557,6 +560,37 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 Path(env[runner.PROGRESS_OUTPUT_ENV]).write_text(
                     json.dumps(progress), encoding="utf-8"
                 )
+                surface = {
+                    "capturedAt": "2026-08-21T00:00:00Z",
+                    "systemFileCount": 2,
+                    "systemTreeSha256": "1" * 64,
+                    "userExtensionFileCount": 0,
+                    "userExtensionTreeSha256": "2" * 64,
+                }
+                runner.write_json(
+                    Path(env[runner.ISOLATION_OUTPUT_ENV]),
+                    {
+                        "schema": "review-craft.eval-isolation-receipt.v1",
+                        "availability": "UNAVAILABLE",
+                        "policy": {
+                            "homeMatchesCodexHome": True,
+                            "ignoreUserConfig": True,
+                            "ignoreRules": True,
+                            "allowCodexHomeExtensions": False,
+                        },
+                        "preRun": surface,
+                        "postStart": surface,
+                        "postExit": None,
+                        "comparison": {
+                            "postStartSystemState": "MATCHED",
+                            "postStartUserExtensionState": "MATCHED",
+                            "postExitSystemState": "NOT_CAPTURED",
+                            "postExitUserExtensionState": "NOT_CAPTURED",
+                            "overall": "CAPTURE_UNAVAILABLE",
+                        },
+                        "unavailableReason": "POST_EXIT_NOT_CAPTURED",
+                    },
+                )
                 return runner.ProcessResult(124, b'{"type":"item.completed"}\n', b"", True)
 
             with patch.object(runner, "run_process", side_effect=timed_out):
@@ -579,6 +613,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             self.assertEqual(sample["usage"]["toolCalls"], 1)
             self.assertIsNotNone(sample["artifacts"]["toolTraceSha256"])
             self.assertIsNotNone(sample["artifacts"]["progressSha256"])
+            self.assertIsNotNone(sample["artifacts"]["isolationReceiptSha256"])
             self.assertEqual(sample["lifecycle"]["lastEventType"], "turn.started")
             self.assertEqual(sample["lifecycle"]["terminationReason"], "TIMEOUT")
             self.assertEqual(sample["lifecycle"]["processTreeCleanup"], "COMPLETED")
@@ -614,6 +649,156 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                     skill_root=ROOT / "skills/review-craft",
                     evidence_root=ROOT / "evals/real-repositories/verifiers",
                 )
+
+    def test_adapter_managed_timeout_gets_finalization_grace_and_stays_timeout(
+        self,
+    ) -> None:
+        repository = self.suite["repositories"][0]
+        description = {
+            "name": "fixture-adapter",
+            "adapterVersion": "fixture-v1",
+            "version": "fixture-host-v1",
+            "model": "fixture-model",
+            "reasoning": "medium",
+            "evidenceKind": "REAL_HOST",
+            "provider": {"name": "fixture-provider"},
+            "isolation": {"fixture": True},
+            "isolationReceipt": {
+                "protocol": "review-craft.eval-isolation-receipt.v1"
+            },
+            "timeoutControl": {
+                "protocol": "review-craft.eval-timeout-control.v1",
+                "transport": "ENV_VALUE",
+                "environmentVariable": runner.SAMPLE_TIMEOUT_ENV,
+                "timeoutExitCode": 124,
+                "finalizationGraceSeconds": 30,
+            },
+        }
+        surface = {
+            "capturedAt": "2026-08-22T00:00:00Z",
+            "systemFileCount": 2,
+            "systemTreeSha256": "1" * 64,
+            "userExtensionFileCount": 0,
+            "userExtensionTreeSha256": "2" * 64,
+        }
+        receipt = {
+            "schema": "review-craft.eval-isolation-receipt.v1",
+            "availability": "AVAILABLE",
+            "policy": {
+                "homeMatchesCodexHome": True,
+                "ignoreUserConfig": True,
+                "ignoreRules": True,
+                "allowCodexHomeExtensions": False,
+            },
+            "preRun": surface,
+            "postStart": surface,
+            "postExit": surface,
+            "comparison": {
+                "postStartSystemState": "MATCHED",
+                "postStartUserExtensionState": "MATCHED",
+                "postExitSystemState": "MATCHED",
+                "postExitUserExtensionState": "MATCHED",
+                "overall": "MATCHED",
+            },
+            "unavailableReason": None,
+        }
+        progress = {
+            "schema": "review-craft.eval-progress.v1",
+            "availability": "AVAILABLE",
+            "startedAt": "2026-08-22T00:00:00Z",
+            "threadStartedAt": "2026-08-22T00:00:01Z",
+            "turnStartedAt": "2026-08-22T00:00:01Z",
+            "firstItemAt": None,
+            "lastEventAt": "2026-08-22T00:00:01Z",
+            "lastEventType": "turn.started",
+            "eventCount": 2,
+            "itemEventCount": 0,
+            "timeToFirstItemSeconds": None,
+            "timeToThreadStartedSeconds": 0.1,
+            "timeToTurnStartedSeconds": 0.2,
+            "firstToolCallAt": None,
+            "timeToFirstToolCallSeconds": None,
+            "lastSemanticProgressAt": None,
+            "lastSemanticProgressType": None,
+            "semanticProgressEventCount": 0,
+            "inactivityWarningSeconds": 1,
+            "inactivityDiagnosticSeconds": 2,
+            "inactivityState": "TIMED_OUT_BEFORE_FIRST_ITEM",
+            "inactivityAgeSeconds": 7.0,
+            "maximumPreItemInactivitySeconds": 7.0,
+            "diagnosticCapturedAt": "2026-08-22T00:00:03Z",
+            "processAliveWhenDiagnosticCaptured": True,
+            "terminationReason": "TIMEOUT",
+            "processTreeCleanup": "COMPLETED",
+            "unavailableReason": None,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository_root = root / "repository"
+            repository_root.mkdir()
+            runner.run_git("init", "--quiet", cwd=repository_root)
+            runner.run_git("config", "user.name", "Review Craft Tests", cwd=repository_root)
+            runner.run_git(
+                "config", "user.email", "review-craft-tests@example.invalid", cwd=repository_root
+            )
+            target = repository_root / repository["scope"][0]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fixture\n", encoding="utf-8")
+            runner.run_git("add", repository["scope"][0], cwd=repository_root)
+            runner.run_git("commit", "--quiet", "-m", "fixture", cwd=repository_root)
+
+            def managed_timeout(
+                _command: list[str],
+                *,
+                cwd: Path,
+                timeout: int,
+                env: dict[str, str],
+            ) -> runner.ProcessResult:
+                self.assertEqual(cwd, ROOT)
+                self.assertEqual(timeout, 37)
+                self.assertEqual(env[runner.SAMPLE_TIMEOUT_ENV], "7")
+                runner.write_json(
+                    Path(env[runner.USAGE_OUTPUT_ENV]),
+                    {
+                        "inputTokens": None,
+                        "outputTokens": None,
+                        "totalTokens": None,
+                        "toolCalls": None,
+                    },
+                )
+                runner.write_json(Path(env[runner.PROGRESS_OUTPUT_ENV]), progress)
+                runner.write_json(Path(env[runner.ISOLATION_OUTPUT_ENV]), receipt)
+                return runner.ProcessResult(124, b"", b"", False)
+
+            with patch.object(runner, "run_process", side_effect=managed_timeout):
+                sample = runner._run_sample(
+                    run_dir=root / "run",
+                    sample_ordinal=1,
+                    repository=repository,
+                    repository_root=repository_root,
+                    treatment="ORDINARY_PROMPT",
+                    repetition=1,
+                    adapter={"id": "fixture", "command": ["fixture-adapter"]},
+                    description=description,
+                    timeout_seconds=7,
+                    skill_root=ROOT / "skills/review-craft",
+                    evidence_root=ROOT / "evals/real-repositories/verifiers",
+                    inactivity_warning_seconds=1,
+                    inactivity_diagnostic_seconds=2,
+                )
+
+        self.assertEqual(sample["status"], "TIMED_OUT")
+        self.assertEqual(sample["failureClass"], "TIMEOUT")
+        self.assertEqual(sample["lifecycle"]["terminationReason"], "TIMEOUT")
+        self.assertEqual(sample["lifecycle"]["processTreeCleanup"], "COMPLETED")
+        self.assertIsNotNone(sample["artifacts"]["isolationReceiptSha256"])
+        self.assertEqual(
+            runner._model_configuration("fixture", description)[
+                "timeoutControlSha256"
+            ],
+            runner.sha256_json(description["timeoutControl"]),
+        )
 
     def test_runner_requires_matching_per_invocation_isolation_receipt(self) -> None:
         repository = self.suite["repositories"][0]
@@ -681,6 +866,15 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             }
             receipt["comparison"]["postExitSystemState"] = "DRIFTED"
             return receipt
+
+        self.assertFalse(
+            runner._isolation_receipt_reports_drift(isolation_receipt("MATCHED"))
+        )
+        self.assertTrue(
+            runner._isolation_receipt_reports_drift(
+                isolation_receipt("USER_EXTENSION_DRIFT")
+            )
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

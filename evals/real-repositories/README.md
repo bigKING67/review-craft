@@ -136,7 +136,11 @@ configurations by three repetitions. `--repository`, `--treatment`, and `--repet
 produce a labeled partial smoke, but partial output is never Golden. The runner stores exact
 prompt/output hashes, usage, wall time, adapter provenance, completion state, and before/after
 Git state; any target mutation fails the sample. Adapter processes run through the canonical
-process-lifecycle boundary, so timeout terminates the inherited process tree. The Codex adapter
+process-lifecycle boundary. When an adapter declares `review-craft.eval-timeout-control.v1`, the
+runner passes it the sample deadline and reserves a separate bounded finalization grace period.
+The Codex adapter owns termination of its child process tree, then writes final progress, usage,
+tool-trace, and post-exit isolation sidecars before returning the dedicated timeout exit code; the
+outer runner timeout remains a failsafe for an adapter that cannot finalize. The Codex adapter
 streams JSONL and atomically checkpoints sanitized tool traces and usage while it runs. A timed
 out sample therefore retains partial stdout and completed tool-call evidence when available;
 token counts remain null when no complete host usage event was emitted. When available, usage
@@ -146,9 +150,13 @@ of collapsing every host-reported component into one number.
 Codex adapter v6 also emits `review-craft.eval-isolation-receipt.v1` for every invocation. The
 receipt captures pre-run, post-start, and post-exit Codex-home fingerprints, separating managed
 `.system` files from user-installed extensions. A required receipt that is missing, malformed,
-unavailable, or drifted changes the sample to `FAILED/ARTIFACT_INVALID`; the runner neither deletes
-nor repairs that home automatically. This receipt verifies the declared Codex-home surface only.
-It is not evidence that the host enforced network denial or an operating-system filesystem sandbox.
+unavailable, or drifted changes a non-timeout sample to `FAILED/ARTIFACT_INVALID`; the runner
+neither deletes nor repairs that home automatically. A timeout with an unavailable post-exit
+capture remains `TIMED_OUT/TIMEOUT` so the capture gap cannot overwrite the primary lifecycle
+result, while an explicit system or user-extension drift remains artifact-invalid. The raw
+isolation sidecar preserves either condition. This receipt verifies the declared Codex-home surface
+only. It is not evidence that the host enforced network denial or an operating-system filesystem
+sandbox.
 
 High-cost campaigns must use a content-bound plan and `run-plan`. The legacy `run` command
 remains available for compatibility and bounded diagnostics, but it does not provide resumable
@@ -161,6 +169,12 @@ recovered-inactivity ceiling. They additionally bind reported input/total-token 
 sample and per natural repository shard. The defaults are 1.25M input and 1.5M total tokens per
 sample, plus 7M input and 8M total tokens per repository shard; these are safety stops, not target
 budgets or quality claims.
+
+An operational Canary and a quality Campaign need separate sealed plans. A Canary should use a
+bounded responsiveness timeout chosen from observed lifecycle data instead of automatically
+inheriting the longer Campaign timeout that may intentionally retain slow recovered samples. A
+Canary timeout is a fail-fast health decision, not evidence that the same model could never finish
+under a longer quality-study budget.
 
 Campaign-plan schemas remain backward-readable so historical evidence can still be validated.
 `run-plan` is stricter: plans without the current cumulative failure, inactivity, per-sample and

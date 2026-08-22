@@ -76,6 +76,16 @@ class CodexEvalAdapterTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            description["timeoutControl"],
+            {
+                "protocol": "review-craft.eval-timeout-control.v1",
+                "transport": "ENV_VALUE",
+                "environmentVariable": adapter.SAMPLE_TIMEOUT_ENV,
+                "timeoutExitCode": 124,
+                "finalizationGraceSeconds": 30,
+            },
+        )
+        self.assertEqual(
             description["isolationPreparation"],
             {
                 "protocol": "review-craft.eval-isolation-preparation.v1",
@@ -660,6 +670,17 @@ class CodexEvalAdapterTests(unittest.TestCase):
         ):
             adapter.inactivity_thresholds()
 
+    def test_sample_timeout_fails_closed(self) -> None:
+        for raw_timeout in ("0", "-1", "not-an-integer"):
+            with self.subTest(raw_timeout=raw_timeout), patch.dict(
+                os.environ,
+                {adapter.SAMPLE_TIMEOUT_ENV: raw_timeout},
+            ), self.assertRaisesRegex(
+                adapter.AdapterError,
+                "sample timeout must be a positive integer",
+            ):
+                adapter.sample_timeout_seconds()
+
     def test_explicit_provider_is_validated_and_rendered_as_codex_config(self) -> None:
         args = adapter.parse_args(
             [
@@ -922,6 +943,79 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(receipt["comparison"]["overall"], "MATCHED")
             self.assertIsNotNone(receipt["postStart"])
             self.assertIsNotNone(receipt["postExit"])
+
+    def test_codex_process_owns_timeout_and_finalizes_isolation(self) -> None:
+        events = [
+            {"type": "thread.started"},
+            {"type": "turn.started"},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            late_path = home / "late-descendant"
+            descendant = (
+                "from pathlib import Path; import time; time.sleep(2); "
+                f"Path({str(late_path)!r}).write_text('late')"
+            )
+            child = "\n".join(
+                (
+                    "import json, subprocess, sys, time",
+                    "sys.stdin.read()",
+                    f"subprocess.Popen([sys.executable, '-c', {descendant!r}])",
+                    f"print(json.dumps({events[0]!r}), flush=True)",
+                    f"print(json.dumps({events[1]!r}), flush=True)",
+                    "time.sleep(60)",
+                )
+            )
+            isolation_path = home / "isolation.json"
+            usage_path = home / "usage.json"
+            trace_path = home / "tool-trace.json"
+            progress_path = home / "progress.json"
+            environment = {
+                **os.environ,
+                "HOME": str(home),
+                "CODEX_HOME": str(home),
+                adapter.ISOLATION_OUTPUT_ENV: str(isolation_path),
+                adapter.USAGE_OUTPUT_ENV: str(usage_path),
+                adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
+                adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+            }
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(adapter.sys, "stdout", stdout),
+                patch.object(adapter.sys, "stderr", stderr),
+            ):
+                pre = adapter.codex_home_extension_state(allow_extensions=False)
+                started = time.monotonic()
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env=environment,
+                    replacements={},
+                    pre_run_isolation=pre,
+                    timeout_seconds=1,
+                )
+                elapsed = time.monotonic() - started
+
+            self.assertEqual(status, adapter.TIMEOUT_EXIT_CODE)
+            self.assertLess(elapsed, 10)
+            receipt = json.loads(isolation_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["availability"], "AVAILABLE")
+            self.assertEqual(receipt["comparison"]["overall"], "MATCHED")
+            self.assertIsNotNone(receipt["postExit"])
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["terminationReason"], "TIMEOUT")
+            self.assertEqual(progress["processTreeCleanup"], "COMPLETED")
+            self.assertEqual(
+                progress["inactivityState"], "TIMED_OUT_BEFORE_FIRST_ITEM"
+            )
+            self.assertGreater(progress["maximumPreItemInactivitySeconds"], 0.9)
+            usage = json.loads(usage_path.read_text(encoding="utf-8"))
+            self.assertEqual(usage["availability"], "UNAVAILABLE")
+            self.assertEqual(usage["unavailableReason"], "HOST_USAGE_MISSING")
+            time.sleep(2.5)
+            self.assertFalse(late_path.exists())
 
     def test_tool_trace_normalizes_paths_and_hashes_without_raw_output(self) -> None:
         output = "verification result\n"

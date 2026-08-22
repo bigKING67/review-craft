@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -27,6 +28,11 @@ ISOLATION_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"
 ISOLATION_PREPARATION_PROTOCOL = "review-craft.eval-isolation-preparation.v1"
 INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
+SAMPLE_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
+TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v1"
+TIMEOUT_EXIT_CODE = 124
+TIMEOUT_FINALIZATION_GRACE_SECONDS = 30
+PROCESS_TERMINATION_GRACE_SECONDS = 5
 INACTIVITY_POLL_SECONDS = 0.25
 USAGE_COLLECTOR = {
     "name": "codex-cli",
@@ -366,6 +372,96 @@ def inactivity_thresholds() -> tuple[int | None, int | None]:
     if warning >= diagnostic:
         raise AdapterError("inactivity warning threshold must be below diagnostic threshold")
     return warning, diagnostic
+
+
+def sample_timeout_seconds() -> int | None:
+    raw_timeout = os.environ.get(SAMPLE_TIMEOUT_ENV)
+    if raw_timeout is None:
+        return None
+    try:
+        timeout = int(raw_timeout)
+    except ValueError as error:
+        raise AdapterError("sample timeout must be a positive integer") from error
+    if timeout < 1:
+        raise AdapterError("sample timeout must be a positive integer")
+    return timeout
+
+
+def _posix_descendant_pids(root_pid: int) -> list[int]:
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=PROCESS_TERMINATION_GRACE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    children: dict[int, list[int]] = {}
+    for row in completed.stdout.splitlines():
+        fields = row.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, parent_pid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        children.setdefault(parent_pid, []).append(pid)
+    descendants: list[int] = []
+    pending = list(children.get(root_pid, []))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, []))
+    return descendants
+
+
+def _posix_pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_codex_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "posix":
+        targets = [process.pid, *_posix_descendant_pids(process.pid)]
+        for pid in targets:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            process.poll()
+            if not any(_posix_pid_exists(pid) for pid in targets):
+                break
+            time.sleep(0.02)
+        for pid in targets:
+            if _posix_pid_exists(pid):
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+    else:  # pragma: no cover - exercised by hosted Windows jobs.
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=PROCESS_TERMINATION_GRACE_SECONDS,
+            check=False,
+        )
+        if completed.returncode != 0 and process.poll() is None:
+            process.terminate()
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
 
 
 def _fingerprint_rows(paths: list[Path], *, home: Path) -> list[dict[str, Any]]:
@@ -927,6 +1023,7 @@ def run_codex_process(
     command_env: dict[str, str],
     replacements: dict[str, str],
     pre_run_isolation: dict[str, Any] | None = None,
+    timeout_seconds: int | None = None,
 ) -> int:
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -1128,7 +1225,13 @@ def run_codex_process(
     finally:
         process.stdin.close()
 
-    returncode = process.wait()
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_codex_process_tree(process)
+        returncode = TIMEOUT_EXIT_CODE
     monitor_stop.set()
     monitor_thread.join()
     stdout_thread.join()
@@ -1152,13 +1255,23 @@ def run_codex_process(
             )
         write_isolation_output(isolation_receipt)
     with progress_lock:
-        if (
-            warning_seconds is not None
-            and progress["firstItemAt"] is None
-        ):
-            progress["inactivityState"] = "NO_ITEM_BEFORE_EXIT"
-        progress["terminationReason"] = "PROCESS_EXIT"
-        progress["processTreeCleanup"] = "NOT_REQUIRED"
+        if timed_out:
+            if progress["firstItemAt"] is None:
+                baseline = turn_started or progress_started
+                inactivity_age = max(0.0, round(time.monotonic() - baseline, 3))
+                progress["inactivityAgeSeconds"] = inactivity_age
+                progress["maximumPreItemInactivitySeconds"] = max(
+                    progress["maximumPreItemInactivitySeconds"] or 0.0,
+                    inactivity_age,
+                )
+                progress["inactivityState"] = "TIMED_OUT_BEFORE_FIRST_ITEM"
+            progress["terminationReason"] = "TIMEOUT"
+            progress["processTreeCleanup"] = "COMPLETED"
+        else:
+            if warning_seconds is not None and progress["firstItemAt"] is None:
+                progress["inactivityState"] = "NO_ITEM_BEFORE_EXIT"
+            progress["terminationReason"] = "PROCESS_EXIT"
+            progress["processTreeCleanup"] = "NOT_REQUIRED"
     persist_stdout()
     return returncode
 
@@ -1224,6 +1337,13 @@ def main(argv: list[str] | None = None) -> int:
                         "protocol": "review-craft.eval-isolation-receipt.v1",
                         "transport": "ENV_PATH",
                         "environmentVariable": ISOLATION_OUTPUT_ENV,
+                    },
+                    "timeoutControl": {
+                        "protocol": TIMEOUT_CONTROL_PROTOCOL,
+                        "transport": "ENV_VALUE",
+                        "environmentVariable": SAMPLE_TIMEOUT_ENV,
+                        "timeoutExitCode": TIMEOUT_EXIT_CODE,
+                        "finalizationGraceSeconds": TIMEOUT_FINALIZATION_GRACE_SECONDS,
                     },
                     "isolationPreparation": {
                         "protocol": ISOLATION_PREPARATION_PROTOCOL,
@@ -1310,6 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
         command_env=command_env,
         replacements=replacements,
         pre_run_isolation=isolation,
+        timeout_seconds=sample_timeout_seconds(),
     )
 
 
