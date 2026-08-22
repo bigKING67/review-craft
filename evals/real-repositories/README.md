@@ -180,6 +180,10 @@ committed checkpoint; it cannot recreate a missing ledger or switch to an older 
 usage is known only after an adapter checkpoint, so every reported-token ceiling stops before the
 next sample and may be exceeded by the final completed sample's reported usage. Per-sample limits
 therefore detect an oversized completed attempt; they do not terminate a model request mid-stream.
+All budget and circuit-breaker signals are admission stops: when the final scheduled attempt
+reaches a threshold, the exhausted shard remains `COMPLETED/SCHEDULE_COMPLETE`, while the shared
+ledger retains the threshold and prevents a later shard from admitting its first sample. Safety
+failures such as source mutation or credential exposure still fail an exhausted shard.
 
 `merge-campaign-runs` rejects running states, duplicate shards, duplicate cells, plan drift,
 budget-ledger drift, model-configuration drift, and samples outside the plan. Its receipt binds

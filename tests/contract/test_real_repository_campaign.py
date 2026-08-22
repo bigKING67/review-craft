@@ -64,6 +64,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self,
         *,
         repositories: list[str] | None = None,
+        repetitions: int = 3,
         token_ceiling: int = 60_000_000,
         max_unknown_usage_samples: int = 1,
         max_timed_out_samples_per_model_profile: int = 1,
@@ -84,7 +85,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             campaign_id="fixture-campaign-144",
             repository_ids=repository_ids,
             treatments=list(contracts.TREATMENTS),
-            repetitions=3,
+            repetitions=repetitions,
             sample_timeout_seconds=1800,
             soft_wall_time_seconds=64800,
             hard_wall_time_seconds=86400,
@@ -1170,6 +1171,60 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(state["reportedTokens"], 240)
             self.assertEqual(state["stopReason"], "TOKEN_CEILING")
 
+    def test_final_sample_budget_signal_completes_exhausted_schedule(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id], token_ceiling=2_160)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(
+                    runner,
+                    "_repository_state",
+                    side_effect=self._repository_state,
+                ),
+                patch.object(
+                    runner, "_run_sample", side_effect=self._sample
+                ) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            ledger = json.loads(
+                Path(args.budget_ledger).read_text(encoding="utf-8")
+            )
+            self.assertEqual(run_sample.call_count, 18)
+            self.assertEqual(state["status"], "COMPLETED")
+            self.assertEqual(state["stopReason"], "SCHEDULE_COMPLETE")
+            self.assertEqual(state["reportedTokens"], 2_160)
+            self.assertEqual(campaign_runtime.budget_ledger_totals(ledger)[0], 2_160)
+
+    def test_safety_failure_precedes_final_schedule_completion(self) -> None:
+        self.assertEqual(
+            runner._terminal_run_state(
+                "SOURCE_MUTATION",
+                "TOKEN_CEILING",
+                schedule_complete=True,
+            ),
+            ("FAILED", "SOURCE_MUTATION"),
+        )
+        self.assertEqual(
+            runner._terminal_run_state(
+                "CREDENTIAL_EXPOSURE",
+                "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
+                schedule_complete=True,
+            ),
+            ("FAILED", "CREDENTIAL_EXPOSURE"),
+        )
+
     def test_runner_stops_after_sample_input_token_ceiling(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]
         plan = self._plan(
@@ -1323,6 +1378,96 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                     ledger
                 ),
                 {"fixture-standard": 2},
+            )
+
+    def test_final_recovered_inactivity_completes_shard_and_blocks_next_shard(
+        self,
+    ) -> None:
+        repositories = [row["id"] for row in self.suite["repositories"][:2]]
+        plan = self._plan(
+            repositories=repositories,
+            repetitions=1,
+            max_recovered_inactivity_samples_per_model_profile=2,
+        )
+        first_calls = 0
+
+        def first_shard_sample(**kwargs: object) -> dict:
+            nonlocal first_calls
+            first_calls += 1
+            if first_calls in {4, 6}:
+                return self._recovered_inactivity_sample(**kwargs)
+            return self._sample(**kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            args.shard = repositories[0]
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(
+                    runner,
+                    "_repository_state",
+                    side_effect=self._repository_state,
+                ),
+                patch.object(
+                    runner, "_run_sample", side_effect=first_shard_sample
+                ) as first,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            first_state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(first.call_count, 6)
+            self.assertEqual(first_state["status"], "COMPLETED")
+            self.assertEqual(first_state["stopReason"], "SCHEDULE_COMPLETE")
+            self.assertEqual(
+                first_state["recoveredInactivitySamplesByModelProfile"],
+                {"fixture-assured": 2},
+            )
+
+            args.run_dir = str(root / "run-second")
+            args.shard = repositories[1]
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(
+                    runner,
+                    "_repository_state",
+                    side_effect=self._repository_state,
+                ),
+                patch.object(
+                    runner, "_run_sample", side_effect=self._sample
+                ) as second,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+            second_state = json.loads(
+                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
+            )
+            ledger = json.loads(
+                Path(args.budget_ledger).read_text(encoding="utf-8")
+            )
+            self.assertEqual(second.call_count, 0)
+            self.assertEqual(second_state["status"], "STOPPED")
+            self.assertEqual(
+                second_state["stopReason"],
+                "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
+            )
+            self.assertEqual(
+                campaign_runtime.budget_ledger_recovered_inactivity_samples_by_model_profile(
+                    ledger
+                ),
+                {"fixture-assured": 2},
             )
 
     def test_eight_repository_shards_merge_to_the_same_complete_matrix(self) -> None:

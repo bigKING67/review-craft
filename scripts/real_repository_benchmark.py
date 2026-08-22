@@ -2082,11 +2082,15 @@ def _resume_or_initialize_run(
 def _terminal_run_state(
     failure_class: str | None,
     budget_reason: str | None,
+    *,
+    schedule_complete: bool = False,
 ) -> tuple[str, str | None]:
     if failure_class == "SOURCE_MUTATION":
         return "FAILED", "SOURCE_MUTATION"
     if failure_class == "CREDENTIAL_EXPOSURE":
         return "FAILED", "CREDENTIAL_EXPOSURE"
+    if schedule_complete:
+        return "COMPLETED", "SCHEDULE_COMPLETE"
     if budget_reason is not None:
         return "STOPPED", budget_reason
     return "RUNNING", None
@@ -2363,7 +2367,9 @@ def _command_run_campaign_plan_locked(
             shard_reported_tokens=shard_usage["totalTokens"],
         )
         state_status, stop_reason = _terminal_run_state(
-            sample.get("failureClass"), budget_reason
+            sample.get("failureClass"),
+            budget_reason,
+            schedule_complete=len(campaign["samples"]) == len(scheduled),
         )
         _campaign_checkpoint(
             campaign=campaign,
