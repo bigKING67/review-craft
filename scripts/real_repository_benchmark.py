@@ -80,6 +80,12 @@ ADAPTER_SCHEMA = ROOT / "evals/schemas/eval-adapter.schema.json"
 TOOL_TRACE_SCHEMA = ROOT / "evals/schemas/eval-tool-trace.schema.json"
 PROGRESS_SCHEMA = ROOT / "evals/schemas/eval-progress.schema.json"
 ISOLATION_SCHEMA = ROOT / "evals/schemas/eval-isolation-receipt.schema.json"
+ISOLATION_PREPARATION_SCHEMA = (
+    ROOT / "evals/schemas/eval-isolation-preparation.schema.json"
+)
+ISOLATION_PREPARATION_SET_SCHEMA = (
+    ROOT / "evals/schemas/eval-real-repository-isolation-preparation.schema.json"
+)
 DEFAULT_SKILL = ROOT / "skills/review-craft"
 DEFAULT_EVIDENCE_ROOT = ROOT / "evals/real-repositories/verifiers"
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
@@ -437,6 +443,130 @@ def _bind_content_hash(payload: dict[str, Any]) -> dict[str, Any]:
         {key: value for key, value in payload.items() if key != "contentSha256"}
     )
     return payload
+
+
+def _validate_isolation_preparation_receipt(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["isolation preparation receipt must be an object"]
+    errors = schema_errors(payload, ISOLATION_PREPARATION_SCHEMA)
+    if errors:
+        return errors
+    expected_hash = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
+    )
+    if payload["contentSha256"] != expected_hash:
+        errors.append("isolation preparation receipt contentSha256 mismatch")
+    before = payload["before"]
+    after = payload["after"]
+    if payload["status"] == "ALREADY_PREPARED" and before != after:
+        errors.append("already-prepared isolation receipt changed the home surface")
+    if after["systemFileCount"] < 1:
+        errors.append("isolation preparation did not materialize managed system files")
+    if after["userExtensionFileCount"] != 0:
+        errors.append("isolation preparation contains user extensions")
+    return errors
+
+
+def _prepare_adapter_isolation(
+    command: list[str], adapter_id: str, *, timeout_seconds: int
+) -> dict[str, Any]:
+    _validate_adapter_command(command)
+    completed = run_process(
+        [*command, "--prepare-isolation"],
+        cwd=ROOT,
+        timeout=timeout_seconds,
+    )
+    if completed.timed_out:
+        raise RealRepositoryError(
+            f"adapter {adapter_id} isolation preparation timed out after "
+            f"{timeout_seconds} seconds"
+        )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        raise RealRepositoryError(
+            f"adapter {adapter_id} isolation preparation failed: "
+            f"{detail or f'exit {completed.returncode}'}"
+        )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RealRepositoryError(
+            f"adapter {adapter_id} isolation preparation returned invalid JSON: {error}"
+        ) from error
+    errors = _validate_isolation_preparation_receipt(payload)
+    if errors:
+        raise RealRepositoryError(
+            f"adapter {adapter_id} isolation preparation receipt is invalid: "
+            + "; ".join(errors)
+        )
+    return payload
+
+
+def _require_prepared_adapter_isolation(
+    descriptions: dict[str, dict[str, Any]],
+) -> None:
+    empty_tree = sha256_json([])
+    unprepared = []
+    for adapter_id, description in descriptions.items():
+        capability = description.get("isolationPreparation")
+        if not isinstance(capability, dict):
+            continue
+        isolation = description["isolation"]
+        if (
+            isolation["codexHomeSystemFileCount"] < 1
+            or isolation["codexHomeSystemTreeSha256"] == empty_tree
+        ):
+            unprepared.append(adapter_id)
+    if unprepared:
+        raise RealRepositoryError(
+            "managed Codex system skills are not prepared for adapters: "
+            + ", ".join(sorted(unprepared))
+            + "; run prepare-campaign-isolation before sealing the campaign plan"
+        )
+
+
+def _validate_isolation_preparation_set(
+    payload: Any, adapter_config: dict[str, Any]
+) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["isolation preparation set must be an object"]
+    errors = schema_errors(payload, ISOLATION_PREPARATION_SET_SCHEMA)
+    if errors:
+        return errors
+    expected_hash = sha256_json(
+        {key: value for key, value in payload.items() if key != "contentSha256"}
+    )
+    if payload["contentSha256"] != expected_hash:
+        errors.append("isolation preparation set contentSha256 mismatch")
+    if payload["adapterConfigSha256"] != sha256_json(adapter_config):
+        errors.append("isolation preparation set adapterConfigSha256 mismatch")
+    adapter_ids = [row["id"] for row in adapter_config["adapters"]]
+    model_ids = [row["id"] for row in payload["modelConfigurations"]]
+    preparation_ids = [row["adapterId"] for row in payload["preparations"]]
+    if model_ids != adapter_ids:
+        errors.append("isolation preparation model configuration order mismatch")
+    if len(preparation_ids) != len(set(preparation_ids)):
+        errors.append("isolation preparation set contains duplicate adapter ids")
+    unknown = set(preparation_ids) - set(adapter_ids)
+    if unknown:
+        errors.append(
+            "isolation preparation set references unknown adapters: "
+            + ", ".join(sorted(unknown))
+        )
+    models = {row["id"]: row for row in payload["modelConfigurations"]}
+    for row in payload["preparations"]:
+        receipt_errors = _validate_isolation_preparation_receipt(row["receipt"])
+        errors.extend(
+            f"adapter {row['adapterId']}: {error}" for error in receipt_errors
+        )
+        model = models.get(row["adapterId"])
+        if model is not None and row["receipt"]["hostVersion"] != model["hostVersion"]:
+            errors.append(
+                f"adapter {row['adapterId']}: preparation host version mismatch"
+            )
+    return errors
 
 
 def _content_bound_errors(
@@ -1550,11 +1680,137 @@ def _load_campaign_plan_context(
         adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
         for adapter in adapter_config["adapters"]
     }
+    _require_prepared_adapter_isolation(descriptions)
     model_configurations = [
         _model_configuration(adapter["id"], descriptions[adapter["id"]])
         for adapter in adapter_config["adapters"]
     ]
     return suite, blind, receipt, adapter_config, descriptions, model_configurations
+
+
+def command_prepare_campaign_isolation(args: argparse.Namespace) -> int:
+    adapter_config = read_json(Path(args.adapter_config).expanduser().resolve(strict=True))
+    adapter_errors = validate_adapter_config(adapter_config)
+    if adapter_errors:
+        raise RealRepositoryError(
+            "invalid adapter configuration: " + "; ".join(adapter_errors)
+        )
+    if args.timeout_seconds < 1:
+        raise RealRepositoryError("isolation preparation timeout must be positive")
+    initial_descriptions = {
+        adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
+        for adapter in adapter_config["adapters"]
+    }
+    capable = [
+        adapter
+        for adapter in adapter_config["adapters"]
+        if isinstance(
+            initial_descriptions[adapter["id"]].get("isolationPreparation"),
+            dict,
+        )
+    ]
+    if not capable:
+        raise RealRepositoryError(
+            "adapter configuration has no isolation-preparation-capable adapters"
+        )
+    preparations = [
+        {
+            "adapterId": adapter["id"],
+            "receipt": _prepare_adapter_isolation(
+                adapter["command"],
+                adapter["id"],
+                timeout_seconds=args.timeout_seconds,
+            ),
+        }
+        for adapter in capable
+    ]
+    descriptions = {
+        adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
+        for adapter in adapter_config["adapters"]
+    }
+    _require_prepared_adapter_isolation(descriptions)
+    for row in preparations:
+        description = descriptions[row["adapterId"]]
+        receipt = row["receipt"]
+        isolation = description["isolation"]
+        expected_after = {
+            "systemFileCount": isolation["codexHomeSystemFileCount"],
+            "systemTreeSha256": isolation["codexHomeSystemTreeSha256"],
+            "userExtensionFileCount": isolation["codexHomeExtensionFileCount"],
+            "userExtensionTreeSha256": isolation[
+                "codexHomeExtensionTreeSha256"
+            ],
+        }
+        if receipt["hostVersion"] != description["version"]:
+            raise RealRepositoryError(
+                f"adapter {row['adapterId']} host version changed during isolation preparation"
+            )
+        if receipt["after"] != expected_after:
+            raise RealRepositoryError(
+                f"adapter {row['adapterId']} isolation changed after preparation"
+            )
+    payload = seal(
+        {
+            "schema": "review-craft.eval-real-repository-isolation-preparation.v1",
+            "adapterConfigSha256": sha256_json(adapter_config),
+            "preparations": preparations,
+            "modelConfigurations": [
+                _model_configuration(adapter["id"], descriptions[adapter["id"]])
+                for adapter in adapter_config["adapters"]
+            ],
+            "contentSha256": "0" * 64,
+        }
+    )
+    errors = _validate_isolation_preparation_set(payload, adapter_config)
+    if errors:
+        raise RealRepositoryError(
+            "generated isolation preparation set is invalid: " + "; ".join(errors)
+        )
+    output = Path(args.output).expanduser().resolve()
+    if output.exists():
+        raise RealRepositoryError(
+            f"isolation preparation output already exists: {output}"
+        )
+    write_json(output, payload)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "adapters": len(preparations),
+                "contentSha256": payload["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_validate_campaign_isolation(args: argparse.Namespace) -> int:
+    adapter_config = read_json(Path(args.adapter_config).expanduser().resolve(strict=True))
+    adapter_errors = validate_adapter_config(adapter_config)
+    if adapter_errors:
+        raise RealRepositoryError(
+            "invalid adapter configuration: " + "; ".join(adapter_errors)
+        )
+    payload = read_json(Path(args.receipt).expanduser().resolve(strict=True))
+    errors = _validate_isolation_preparation_set(payload, adapter_config)
+    if errors:
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "adapters": len(payload["preparations"]),
+                "contentSha256": payload["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def command_plan_campaign(args: argparse.Namespace) -> int:
@@ -2361,6 +2617,7 @@ def command_run_campaign(args: argparse.Namespace) -> int:
         adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
         for adapter in adapter_config["adapters"]
     }
+    _require_prepared_adapter_isolation(descriptions)
     workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
     run_dir = Path(args.run_dir).expanduser().resolve()
     if run_dir.exists() and any(run_dir.iterdir()):
@@ -2633,6 +2890,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
     )
     plan_campaign.set_defaults(handler=command_plan_campaign)
+
+    prepare_isolation = subparsers.add_parser("prepare-campaign-isolation")
+    prepare_isolation.add_argument("--adapter-config", required=True)
+    prepare_isolation.add_argument("--output", required=True)
+    prepare_isolation.add_argument("--timeout-seconds", type=int, default=30)
+    prepare_isolation.set_defaults(handler=command_prepare_campaign_isolation)
+
+    validate_isolation = subparsers.add_parser(
+        "validate-campaign-isolation-preparation"
+    )
+    validate_isolation.add_argument("--adapter-config", required=True)
+    validate_isolation.add_argument("--receipt", required=True)
+    validate_isolation.set_defaults(handler=command_validate_campaign_isolation)
 
     validate_plan = subparsers.add_parser("validate-campaign-plan")
     validate_plan.add_argument("--suite", default=str(DEFAULT_SUITE))

@@ -7,6 +7,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -22,6 +24,7 @@ USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
 ISOLATION_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"
+ISOLATION_PREPARATION_PROTOCOL = "review-craft.eval-isolation-preparation.v1"
 INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 INACTIVITY_POLL_SECONDS = 0.25
@@ -128,6 +131,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--allow-codex-home-extensions", action="store_true")
     parser.add_argument("--describe", action="store_true")
+    parser.add_argument("--prepare-isolation", action="store_true")
     parser.add_argument("--fixture-root")
     parser.add_argument("--skill-root")
     parser.add_argument("--evidence-root")
@@ -548,6 +552,222 @@ def mark_isolation_capture_unavailable(
     receipt["unavailableReason"] = reason
 
 
+def _preparation_surface(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "systemFileCount": state["codexHomeSystemFileCount"],
+        "systemTreeSha256": state["codexHomeSystemTreeSha256"],
+        "userExtensionFileCount": state["codexHomeExtensionFileCount"],
+        "userExtensionTreeSha256": state["codexHomeExtensionTreeSha256"],
+    }
+
+
+def _seal_preparation_receipt(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["contentSha256"] = hashlib.sha256(
+        _canonical_bytes(
+            {key: value for key, value in payload.items() if key != "contentSha256"}
+        )
+    ).hexdigest()
+    return payload
+
+
+def build_isolation_preparation_command(
+    *, executable: str, model: str, reasoning: str, home: Path, port: int
+) -> list[str]:
+    provider = "review_craft_bootstrap"
+    return [
+        executable,
+        "exec",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--color",
+        "never",
+        "--json",
+        "--cd",
+        str(home),
+        "--model",
+        model,
+        "--config",
+        f"model_reasoning_effort={_toml_string(reasoning)}",
+        "--config",
+        f'model_provider="{provider}"',
+        "--config",
+        f'model_providers.{provider}.name="{provider}"',
+        "--config",
+        f'model_providers.{provider}.base_url="http://127.0.0.1:{port}/v1"',
+        "--config",
+        f'model_providers.{provider}.wire_api="responses"',
+        "--config",
+        f"model_providers.{provider}.requires_openai_auth=false",
+        "--config",
+        f"model_providers.{provider}.supports_websockets=false",
+        "--config",
+        f"model_providers.{provider}.request_max_retries=0",
+        "--config",
+        f"model_providers.{provider}.stream_max_retries=0",
+        "-",
+    ]
+
+
+def _terminate_preparation_process(process: subprocess.Popen[str]) -> str:
+    if process.poll() is not None:
+        return "PROCESS_EXITED_AFTER_MATERIALIZATION"
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:  # pragma: no cover - exercised by hosted Windows contract jobs.
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+            if completed.returncode != 0 and process.poll() is None:
+                process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:  # pragma: no cover - exercised by hosted Windows contract jobs.
+            process.kill()
+        process.wait(timeout=5)
+    return "TERMINATED_AFTER_MATERIALIZATION"
+
+
+def prepare_codex_home_isolation(
+    *,
+    executable: str,
+    model: str,
+    reasoning: str,
+    initial_state: dict[str, Any],
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    started_at = utc_now()
+    started = time.monotonic()
+    before = _preparation_surface(initial_state)
+    if before["userExtensionFileCount"] != 0:
+        raise AdapterError("isolation preparation requires an auth-only Codex home")
+    if before["systemFileCount"] > 0:
+        return _seal_preparation_receipt(
+            {
+                "schema": ISOLATION_PREPARATION_PROTOCOL,
+                "status": "ALREADY_PREPARED",
+                "hostVersion": codex_version(),
+                "startedAt": started_at,
+                "completedAt": utc_now(),
+                "before": before,
+                "after": before,
+                "networkBoundary": "NOT_USED",
+                "processTermination": "NOT_STARTED",
+                "durationSeconds": round(time.monotonic() - started, 3),
+                "contentSha256": "0" * 64,
+            }
+        )
+
+    process: subprocess.Popen[str] | None = None
+    termination = "NOT_STARTED"
+    stable_state: dict[str, Any] | None = None
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = int(listener.getsockname()[1])
+        command = build_isolation_preparation_command(
+            executable=executable,
+            model=model,
+            reasoning=reasoning,
+            home=Path(os.environ["CODEX_HOME"]).resolve(),
+            port=port,
+        )
+        command_env = {
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "NO_PROXY": "127.0.0.1,localhost",
+            "no_proxy": "127.0.0.1,localhost",
+        }
+        popen_options: dict[str, Any] = {"start_new_session": os.name == "posix"}
+        if os.name == "nt":  # pragma: no cover - exercised by hosted Windows jobs.
+            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=command_env,
+            **popen_options,
+        )
+        if process.stdin is None:
+            raise AdapterError("isolation preparation process stdin is unavailable")
+        process.stdin.write("Initialize managed system skills only.\n")
+        process.stdin.close()
+
+        deadline = time.monotonic() + timeout_seconds
+        stable_key: tuple[int, str] | None = None
+        stable_observations = 0
+        while time.monotonic() < deadline:
+            try:
+                current = codex_home_extension_state(allow_extensions=False)
+            except OSError:
+                time.sleep(0.1)
+                continue
+            current_surface = _preparation_surface(current)
+            if current_surface["userExtensionFileCount"] != 0:
+                raise AdapterError(
+                    "user extension state appeared during isolation preparation"
+                )
+            key = (
+                current_surface["systemFileCount"],
+                current_surface["systemTreeSha256"],
+            )
+            if key[0] > 0:
+                if key == stable_key:
+                    stable_observations += 1
+                else:
+                    stable_key = key
+                    stable_observations = 1
+                if stable_observations >= 3:
+                    stable_state = current
+                    break
+            if process.poll() is not None and key[0] == 0:
+                raise AdapterError(
+                    "Codex exited before managed system skills were materialized"
+                )
+            time.sleep(0.1)
+        if stable_state is None:
+            raise AdapterError(
+                "timed out waiting for a stable managed system skill tree"
+            )
+    finally:
+        if process is not None:
+            termination = _terminate_preparation_process(process)
+        listener.close()
+
+    final_state = codex_home_extension_state(allow_extensions=False)
+    after = _preparation_surface(final_state)
+    if stable_state is None or after != _preparation_surface(stable_state):
+        raise AdapterError("managed system skill tree changed during process cleanup")
+    return _seal_preparation_receipt(
+        {
+            "schema": ISOLATION_PREPARATION_PROTOCOL,
+            "status": "MATERIALIZED",
+            "hostVersion": codex_version(),
+            "startedAt": started_at,
+            "completedAt": utc_now(),
+            "before": before,
+            "after": after,
+            "networkBoundary": "OWNED_LOOPBACK_BLACKHOLE",
+            "processTermination": termination,
+            "durationSeconds": round(time.monotonic() - started, 3),
+            "contentSha256": "0" * 64,
+        }
+    )
+
+
 def provider_metadata(args: argparse.Namespace) -> dict[str, Any]:
     if PROVIDER_NAME.fullmatch(args.provider_name) is None:
         raise AdapterError(
@@ -945,10 +1165,33 @@ def run_codex_process(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.describe and args.prepare_isolation:
+        raise AdapterError("--describe and --prepare-isolation are mutually exclusive")
     provider = provider_metadata(args)
     isolation = codex_home_extension_state(
         allow_extensions=args.allow_codex_home_extensions
     )
+    if args.prepare_isolation:
+        if args.allow_codex_home_extensions:
+            raise AdapterError(
+                "isolation preparation does not allow Codex home extensions"
+            )
+        executable = shutil.which("codex")
+        if executable is None:
+            raise AdapterError("codex executable is unavailable")
+        print(
+            json.dumps(
+                prepare_codex_home_isolation(
+                    executable=executable,
+                    model=args.model,
+                    reasoning=args.reasoning,
+                    initial_state=isolation,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
     if args.describe:
         print(
             json.dumps(
@@ -981,6 +1224,13 @@ def main(argv: list[str] | None = None) -> int:
                         "protocol": "review-craft.eval-isolation-receipt.v1",
                         "transport": "ENV_PATH",
                         "environmentVariable": ISOLATION_OUTPUT_ENV,
+                    },
+                    "isolationPreparation": {
+                        "protocol": ISOLATION_PREPARATION_PROTOCOL,
+                        "invocation": "APPEND_FLAG",
+                        "flag": "--prepare-isolation",
+                        "requiredWhenSystemTreeEmpty": True,
+                        "networkBoundary": "OWNED_LOOPBACK_BLACKHOLE",
                     },
                     "capabilities": {
                         "operations": ["REVIEW", "REPAIR"],

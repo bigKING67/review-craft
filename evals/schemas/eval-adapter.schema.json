@@ -143,6 +143,26 @@
         "environmentVariable": {"const": "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"}
       }
     },
+    "isolationPreparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "invocation",
+        "flag",
+        "requiredWhenSystemTreeEmpty",
+        "networkBoundary"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "review-craft.eval-isolation-preparation.v1"
+        },
+        "invocation": {"const": "APPEND_FLAG"},
+        "flag": {"const": "--prepare-isolation"},
+        "requiredWhenSystemTreeEmpty": {"const": true},
+        "networkBoundary": {"const": "OWNED_LOOPBACK_BLACKHOLE"}
+      }
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,

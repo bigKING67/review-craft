@@ -76,6 +76,16 @@ class CodexEvalAdapterTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            description["isolationPreparation"],
+            {
+                "protocol": "review-craft.eval-isolation-preparation.v1",
+                "invocation": "APPEND_FLAG",
+                "flag": "--prepare-isolation",
+                "requiredWhenSystemTreeEmpty": True,
+                "networkBoundary": "OWNED_LOOPBACK_BLACKHOLE",
+            },
+        )
+        self.assertEqual(
             description["capabilities"],
             {
                 "operations": ["REVIEW", "REPAIR"],
@@ -728,6 +738,113 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 state["codexHomeExtensionTreeSha256"],
                 hashlib.sha256(b"[]").hexdigest(),
             )
+
+    def test_isolation_preparation_is_noop_when_system_tree_exists(self) -> None:
+        empty_hash = hashlib.sha256(b"[]").hexdigest()
+        initial = {
+            "homeMatchesCodexHome": True,
+            "ignoreUserConfig": True,
+            "ignoreRules": True,
+            "allowCodexHomeExtensions": False,
+            "codexHomeSystemFileCount": 1,
+            "codexHomeSystemTreeSha256": "1" * 64,
+            "codexHomeExtensionFileCount": 0,
+            "codexHomeExtensionTreeSha256": empty_hash,
+        }
+        with (
+            patch.object(adapter, "codex_version", return_value="codex-cli test"),
+            patch.object(adapter.subprocess, "Popen") as popen,
+        ):
+            receipt = adapter.prepare_codex_home_isolation(
+                executable="codex",
+                model="gpt-test",
+                reasoning="high",
+                initial_state=initial,
+            )
+        popen.assert_not_called()
+        self.assertEqual(receipt["status"], "ALREADY_PREPARED")
+        self.assertEqual(receipt["networkBoundary"], "NOT_USED")
+        self.assertEqual(receipt["before"], receipt["after"])
+
+    def test_isolation_preparation_materializes_before_any_provider_response(
+        self,
+    ) -> None:
+        empty_hash = hashlib.sha256(b"[]").hexdigest()
+        initial = {
+            "homeMatchesCodexHome": True,
+            "ignoreUserConfig": True,
+            "ignoreRules": True,
+            "allowCodexHomeExtensions": False,
+            "codexHomeSystemFileCount": 0,
+            "codexHomeSystemTreeSha256": empty_hash,
+            "codexHomeExtensionFileCount": 0,
+            "codexHomeExtensionTreeSha256": empty_hash,
+        }
+        prepared = {
+            **initial,
+            "codexHomeSystemFileCount": 60,
+            "codexHomeSystemTreeSha256": "2" * 64,
+        }
+
+        class FakeStdin:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def write(self, value: str) -> None:
+                self.value += value
+
+            def close(self) -> None:
+                return None
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = FakeStdin()
+                self.pid = 12345
+
+            def poll(self) -> None:
+                return None
+
+        process = FakeProcess()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"HOME": directory, "CODEX_HOME": directory},
+        ), patch.object(
+            adapter.subprocess, "Popen", return_value=process
+        ) as popen, patch.object(
+            adapter,
+            "codex_home_extension_state",
+            side_effect=[prepared, prepared, prepared, prepared],
+        ), patch.object(
+            adapter,
+            "_terminate_preparation_process",
+            return_value="TERMINATED_AFTER_MATERIALIZATION",
+        ), patch.object(
+            adapter, "codex_version", return_value="codex-cli test"
+        ):
+            receipt = adapter.prepare_codex_home_isolation(
+                executable="codex",
+                model="gpt-test",
+                reasoning="high",
+                initial_state=initial,
+            )
+        command = popen.call_args.args[0]
+        self.assertIn('model_provider="review_craft_bootstrap"', command)
+        self.assertTrue(
+            any("http://127.0.0.1:" in argument for argument in command)
+        )
+        self.assertEqual(receipt["status"], "MATERIALIZED")
+        self.assertEqual(receipt["after"]["systemFileCount"], 60)
+        self.assertEqual(
+            receipt["networkBoundary"], "OWNED_LOOPBACK_BLACKHOLE"
+        )
+        schema = json.loads(
+            (
+                ROOT / "evals/schemas/eval-isolation-preparation.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            list(Draft202012Validator(schema).iter_errors(receipt)), []
+        )
 
     def test_codex_home_isolation_requires_home_and_scans_dot_agents(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

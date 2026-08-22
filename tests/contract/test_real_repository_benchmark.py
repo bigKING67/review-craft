@@ -658,6 +658,26 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 "unavailableReason": None,
             }
 
+        def managed_system_bootstrap_receipt() -> dict:
+            receipt = isolation_receipt("SYSTEM_STATE_DRIFT")
+            empty_tree = runner.sha256_json([])
+            empty_surface = {
+                **surface,
+                "systemFileCount": 0,
+                "systemTreeSha256": empty_tree,
+                "userExtensionFileCount": 0,
+                "userExtensionTreeSha256": empty_tree,
+            }
+            receipt["preRun"] = empty_surface
+            receipt["postStart"] = empty_surface
+            receipt["postExit"] = {
+                **empty_surface,
+                "systemFileCount": 60,
+                "systemTreeSha256": "3" * 64,
+            }
+            receipt["comparison"]["postExitSystemState"] = "DRIFTED"
+            return receipt
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repository_root = root / "repository"
@@ -673,7 +693,14 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             runner.run_git("add", repository["scope"][0], cwd=repository_root)
             runner.run_git("commit", "--quiet", "-m", "fixture", cwd=repository_root)
 
-            for mode in ("matched", "drifted", "contradictory", "missing"):
+            for mode in (
+                "matched",
+                "managed-bootstrap",
+                "system-drift",
+                "drifted",
+                "contradictory",
+                "missing",
+            ):
                 with self.subTest(mode=mode):
 
                     def completed(
@@ -698,12 +725,26 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                             },
                         )
                         if _mode != "missing":
-                            overall = (
-                                "MATCHED"
-                                if _mode in {"matched", "contradictory"}
-                                else "USER_EXTENSION_DRIFT"
-                            )
-                            receipt = isolation_receipt(overall)
+                            if _mode == "managed-bootstrap":
+                                receipt = managed_system_bootstrap_receipt()
+                            else:
+                                overall = (
+                                    "MATCHED"
+                                    if _mode in {"matched", "contradictory"}
+                                    else "SYSTEM_STATE_DRIFT"
+                                    if _mode == "system-drift"
+                                    else "USER_EXTENSION_DRIFT"
+                                )
+                                receipt = isolation_receipt(overall)
+                                if _mode == "system-drift":
+                                    receipt["postExit"] = {
+                                        **surface,
+                                        "systemFileCount": 3,
+                                        "systemTreeSha256": "3" * 64,
+                                    }
+                                    receipt["comparison"][
+                                        "postExitSystemState"
+                                    ] = "DRIFTED"
                             if _mode == "contradictory":
                                 receipt["comparison"][
                                     "postExitUserExtensionState"
@@ -738,6 +779,156 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                         self.assertEqual(sample["status"], "FAILED")
                         self.assertEqual(sample["failureClass"], "ARTIFACT_INVALID")
                         self.assertIn("isolation receipt", sample["failureReason"])
+
+    def test_campaign_plan_requires_prepared_managed_system_state(self) -> None:
+        empty_tree = runner.sha256_json([])
+        description = {
+            "isolationPreparation": {
+                "protocol": "review-craft.eval-isolation-preparation.v1"
+            },
+            "isolation": {
+                "codexHomeSystemFileCount": 0,
+                "codexHomeSystemTreeSha256": empty_tree,
+            },
+        }
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "prepare-campaign-isolation",
+        ):
+            runner._require_prepared_adapter_isolation({"model-a": description})
+        description["isolation"] = {
+            "codexHomeSystemFileCount": 60,
+            "codexHomeSystemTreeSha256": "1" * 64,
+        }
+        runner._require_prepared_adapter_isolation({"model-a": description})
+
+    def test_prepare_campaign_isolation_seals_final_adapter_state(self) -> None:
+        adapter_config = {
+            "schema": "review-craft.eval-real-repository-adapters.v1",
+            "adapters": [{"id": "model-a", "command": ["fixture-adapter"]}],
+        }
+        isolation = {
+            "homeMatchesCodexHome": True,
+            "ignoreUserConfig": True,
+            "ignoreRules": True,
+            "allowCodexHomeExtensions": False,
+            "codexHomeSystemFileCount": 60,
+            "codexHomeSystemTreeSha256": "1" * 64,
+            "codexHomeExtensionFileCount": 0,
+            "codexHomeExtensionTreeSha256": runner.sha256_json([]),
+        }
+        description = {
+            "schema": "review-craft.eval-adapter.v6",
+            "name": "codex-cli",
+            "version": "codex-cli test",
+            "model": "gpt-test",
+            "reasoning": "high",
+            "adapterVersion": "0.6.4",
+            "evidenceKind": "REAL_HOST",
+            "provider": {
+                "name": "fixture",
+                "baseUrl": "http://127.0.0.1:8317/v1",
+                "wireApi": "responses",
+                "requiresOpenAIAuth": True,
+                "supportsWebsockets": False,
+            },
+            "isolation": isolation,
+            "isolationReceipt": {
+                "protocol": "review-craft.eval-isolation-receipt.v1",
+                "transport": "ENV_PATH",
+                "environmentVariable": runner.ISOLATION_OUTPUT_ENV,
+            },
+            "isolationPreparation": {
+                "protocol": "review-craft.eval-isolation-preparation.v1",
+                "invocation": "APPEND_FLAG",
+                "flag": "--prepare-isolation",
+                "requiredWhenSystemTreeEmpty": True,
+                "networkBoundary": "OWNED_LOOPBACK_BLACKHOLE",
+            },
+        }
+        receipt = {
+            "schema": "review-craft.eval-isolation-preparation.v1",
+            "status": "MATERIALIZED",
+            "hostVersion": description["version"],
+            "startedAt": "2026-08-22T00:00:00Z",
+            "completedAt": "2026-08-22T00:00:01Z",
+            "before": {
+                "systemFileCount": 0,
+                "systemTreeSha256": runner.sha256_json([]),
+                "userExtensionFileCount": 0,
+                "userExtensionTreeSha256": runner.sha256_json([]),
+            },
+            "after": {
+                "systemFileCount": 60,
+                "systemTreeSha256": "1" * 64,
+                "userExtensionFileCount": 0,
+                "userExtensionTreeSha256": runner.sha256_json([]),
+            },
+            "networkBoundary": "OWNED_LOOPBACK_BLACKHOLE",
+            "processTermination": "TERMINATED_AFTER_MATERIALIZATION",
+            "durationSeconds": 0.5,
+            "contentSha256": "0" * 64,
+        }
+        receipt["contentSha256"] = runner.sha256_json(
+            {
+                key: value
+                for key, value in receipt.items()
+                if key != "contentSha256"
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "adapters.json"
+            output_path = root / "preparation.json"
+            runner.write_json(config_path, adapter_config)
+            args = SimpleNamespace(
+                adapter_config=str(config_path),
+                output=str(output_path),
+                timeout_seconds=30,
+            )
+            with patch.object(
+                runner,
+                "_describe_adapter",
+                return_value=description,
+            ), patch.object(
+                runner,
+                "_prepare_adapter_isolation",
+                return_value=receipt,
+            ), patch("builtins.print"):
+                status = runner.command_prepare_campaign_isolation(args)
+            self.assertEqual(status, 0)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["preparations"][0]["receipt"], receipt)
+            self.assertEqual(
+                payload["modelConfigurations"][0]["isolationSha256"],
+                runner.sha256_json(isolation),
+            )
+            self.assertEqual(
+                payload["contentSha256"],
+                runner.sha256_json(
+                    {
+                        key: value
+                        for key, value in payload.items()
+                        if key != "contentSha256"
+                    }
+                ),
+            )
+            self.assertEqual(
+                runner._validate_isolation_preparation_set(
+                    payload, adapter_config
+                ),
+                [],
+            )
+            drifted = copy.deepcopy(payload)
+            drifted["preparations"][0]["receipt"]["after"][
+                "systemTreeSha256"
+            ] = "9" * 64
+            self.assertIn(
+                "isolation preparation set contentSha256 mismatch",
+                runner._validate_isolation_preparation_set(
+                    drifted, adapter_config
+                ),
+            )
 
     def test_blinded_adjudication_packets_cover_probes_and_additional_findings(self) -> None:
         campaign, blind = self._campaign(additional_finding=True)

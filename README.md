@@ -785,9 +785,31 @@ identity or exact evidence locations rather than free-text root-cause wording. T
 projection is a conservative proxy: range drift can under-match, while two findings on the exact
 same span can over-match. The v6 Codex adapter also writes a per-invocation isolation receipt at
 pre-run, post-start, and post-exit. It fingerprints managed `.system` state separately from user
-extensions; a missing, invalid, unavailable, or drifted receipt makes the sample artifact-invalid.
-This receipt proves the declared Codex-home surface remained stable, not that the operating system
-enforced network or filesystem sandboxing. Legacy plans,
+extensions. A fresh auth-only Codex home must first run `prepare-campaign-isolation`. That explicit
+host-preparation step points a short-lived Codex process at an owned loopback blackhole, waits for
+the bundled managed-system tree to become stable, terminates the process before any provider can
+respond, and emits a content-bound preparation receipt. Generate the sealed campaign plan only
+afterward, so its existing `isolationSha256` binds the fully materialized tree rather than an empty
+pre-bootstrap home:
+
+```text
+uv run --locked python scripts/real_repository_benchmark.py \
+  prepare-campaign-isolation \
+  --adapter-config <adapter-config.json> \
+  --output <isolation-preparation.json>
+
+uv run --locked python scripts/real_repository_benchmark.py \
+  validate-campaign-isolation-preparation \
+  --adapter-config <adapter-config.json> \
+  --receipt <isolation-preparation.json>
+```
+
+`plan-campaign`, `run-plan`, and the legacy direct runner reject preparation-capable adapters whose
+managed-system tree is still empty. During every campaign invocation, a missing, invalid,
+unavailable, system-drifted, or user-extension-drifted receipt makes the sample artifact-invalid;
+there is no first-sample drift exception. This proves that the declared Codex-home skill/plugin
+surface remained stable after explicit preparation. It does not prove operating-system network or
+filesystem sandbox enforcement. Legacy plans,
 lifecycle receipts, ledgers, run states, and stability reports remain validation-compatible. The
 legacy direct `run`
 command remains compatibility-only for bounded diagnostics; use `plan-campaign`, `run-plan`,
