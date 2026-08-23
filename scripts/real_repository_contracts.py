@@ -29,6 +29,9 @@ ADJUDICATION_V2_SCHEMA = (
 ADJUDICATION_V3_SCHEMA = (
     SCHEMA_ROOT / "eval-real-repository-adjudication-v3.schema.json"
 )
+ORACLE_ASSESSMENT_SCHEMA = (
+    SCHEMA_ROOT / "eval-real-repository-oracle-assessment.schema.json"
+)
 ADJUDICATION_PACKET_SCHEMA = (
     SCHEMA_ROOT / "eval-real-repository-adjudication-packet.schema.json"
 )
@@ -45,6 +48,9 @@ ADJUDICATION_SUBMISSION_V2_SCHEMA = (
     SCHEMA_ROOT / "eval-real-repository-adjudication-submission-v2.schema.json"
 )
 STABILITY_SCHEMA = SCHEMA_ROOT / "eval-real-repository-stability.schema.json"
+STABILITY_V2_SCHEMA = (
+    SCHEMA_ROOT / "eval-real-repository-stability-v2.schema.json"
+)
 ADAPTERS_SCHEMA = SCHEMA_ROOT / "eval-real-repository-adapters.schema.json"
 
 TREATMENTS = (
@@ -98,6 +104,9 @@ ECOSYSTEM_MINIMUMS = {
 KEEP_PROMPT_PREFIX = "Determine whether evidence supports keeping "
 PRESERVATION_DECISIONS = frozenset({"KEEP", "DEFER", "DOCUMENT"})
 MATERIALIZATION_BINDING_KIND = "SOURCE_MATERIALIZATION_V1"
+ORACLE_MATCH_RUBRIC_VERSION = (
+    "review-craft.real-repository-oracle-match-rubric.v1"
+)
 
 
 class RealRepositoryError(ValueError):
@@ -916,6 +925,258 @@ def validate_adjudication(
     return [f"adjudication has unsupported schema {schema!r}"]
 
 
+def _oracle_content_sha256(repository: dict[str, Any], probe: dict[str, Any]) -> str:
+    return sha256_json(
+        {
+            "repositoryId": repository["id"],
+            "probeId": probe["id"],
+            "rationale": probe["rationale"],
+            "upstreamFix": probe["upstreamFix"],
+        }
+    )
+
+
+def _oracle_response_validity(resolution: dict[str, Any]) -> str:
+    resolved = resolution["resolvedLabel"]
+    return resolved if resolved in {"CORRECT", "INCORRECT"} else "UNRESOLVED"
+
+
+def oracle_assessment_rows(
+    source_suite: dict[str, Any],
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build the immutable portion of the post-blind oracle assessment."""
+    repositories = {row["id"]: row for row in source_suite["repositories"]}
+    resolutions = {
+        (row["sampleId"], row["subjectType"], row["subjectKey"]): row
+        for row in adjudication["subjectResolutions"]
+    }
+    subject_hashes = adjudication_subject_content_hashes(campaign)
+    rows = []
+    for sample in campaign["samples"]:
+        if sample["status"] != "COMPLETED" or sample["output"] is None:
+            continue
+        repository = repositories[sample["repositoryId"]]
+        probes_by_id = {row["probeId"]: row for row in sample["output"]["probes"]}
+        for probe in repository["probes"]:
+            if probe["kind"] != "REAL_FINDING":
+                continue
+            subject = (sample["sampleId"], "PROBE_RESPONSE", probe["id"])
+            response = probes_by_id[probe["id"]]
+            rows.append(
+                {
+                    "sampleId": sample["sampleId"],
+                    "repositoryId": repository["id"],
+                    "probeId": probe["id"],
+                    "subjectContentSha256": subject_hashes[subject],
+                    "oracleContentSha256": _oracle_content_sha256(
+                        repository, probe
+                    ),
+                    "responseValidity": _oracle_response_validity(
+                        resolutions[subject]
+                    ),
+                    "observedRootCauseKey": response["rootCauseKey"],
+                    "classification": None,
+                    "rationale": None,
+                }
+            )
+    return sorted(rows, key=lambda row: (row["sampleId"], row["probeId"]))
+
+
+def build_oracle_assessment_template(
+    source_suite: dict[str, Any],
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any],
+    *,
+    verifier_id: str,
+    verifier_kind: str,
+) -> dict[str, Any]:
+    suite_errors = validate_suite(source_suite)
+    if suite_errors:
+        raise RealRepositoryError("invalid source suite: " + "; ".join(suite_errors))
+    campaign_errors = validate_campaign(
+        campaign, source_suite, blind_suite(source_suite)
+    )
+    if campaign_errors:
+        raise RealRepositoryError("invalid campaign: " + "; ".join(campaign_errors))
+    adjudication_errors = validate_adjudication(adjudication, campaign)
+    if adjudication_errors:
+        raise RealRepositoryError(
+            "invalid adjudication: " + "; ".join(adjudication_errors)
+        )
+    if adjudication["schema"] != "review-craft.eval-real-repository-adjudication.v3":
+        raise RealRepositoryError("oracle assessment requires adjudication.v3")
+    source_suite_sha256 = sha256_json(source_suite)
+    if campaign["suiteSha256"] != source_suite_sha256:
+        raise RealRepositoryError("campaign suiteSha256 does not match source suite")
+    payload = {
+        "schema": "review-craft.eval-real-repository-oracle-assessment.v1",
+        "status": "DRAFT",
+        "sourceSuiteSha256": source_suite_sha256,
+        "campaignContentSha256": campaign["contentSha256"],
+        "adjudicationContentSha256": adjudication["contentSha256"],
+        "rubricVersion": ORACLE_MATCH_RUBRIC_VERSION,
+        "verifier": {"id": verifier_id, "kind": verifier_kind},
+        "assessments": oracle_assessment_rows(
+            source_suite, campaign, adjudication
+        ),
+        "contentSha256": "0" * 64,
+    }
+    payload["contentSha256"] = sha256_json(_without_content_hash(payload))
+    errors = validate_oracle_assessment(
+        payload,
+        source_suite,
+        campaign,
+        adjudication,
+        require_complete=False,
+    )
+    if errors:
+        raise RealRepositoryError(
+            "generated oracle assessment template is invalid: " + "; ".join(errors)
+        )
+    return payload
+
+
+def _oracle_assessment_context_errors(
+    payload: dict[str, Any],
+    source_suite: dict[str, Any],
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    suite_errors = validate_suite(source_suite)
+    if suite_errors:
+        errors.extend(f"source suite: {error}" for error in suite_errors)
+        return errors
+    campaign_errors = validate_campaign(
+        campaign, source_suite, blind_suite(source_suite)
+    )
+    if campaign_errors:
+        errors.extend(f"campaign: {error}" for error in campaign_errors)
+        return errors
+    adjudication_errors = validate_adjudication(adjudication, campaign)
+    if adjudication_errors:
+        errors.extend(f"adjudication: {error}" for error in adjudication_errors)
+        return errors
+    if adjudication["schema"] != "review-craft.eval-real-repository-adjudication.v3":
+        errors.append("oracle assessment requires adjudication.v3")
+        return errors
+
+    source_suite_sha256 = sha256_json(source_suite)
+    if payload["sourceSuiteSha256"] != source_suite_sha256:
+        errors.append("oracle assessment sourceSuiteSha256 mismatch")
+    if campaign["suiteSha256"] != source_suite_sha256:
+        errors.append("campaign suiteSha256 does not match source suite")
+    if payload["campaignContentSha256"] != campaign["contentSha256"]:
+        errors.append("oracle assessment campaignContentSha256 mismatch")
+    if payload["adjudicationContentSha256"] != adjudication["contentSha256"]:
+        errors.append("oracle assessment adjudicationContentSha256 mismatch")
+    return errors
+
+
+def _oracle_assessment_row_errors(
+    row: dict[str, Any],
+    expected: dict[str, Any],
+    sample: dict[str, Any],
+    *,
+    require_complete: bool,
+) -> list[str]:
+    key = (row["sampleId"], row["probeId"])
+    errors = [
+        f"oracle assessment {field} mismatch for {key}"
+        for field in (
+            "repositoryId",
+            "subjectContentSha256",
+            "oracleContentSha256",
+            "responseValidity",
+            "observedRootCauseKey",
+        )
+        if row[field] != expected[field]
+    ]
+    classification = row["classification"]
+    rationale = row["rationale"]
+    if require_complete and classification is None:
+        errors.append(f"oracle assessment classification is incomplete for {key}")
+    if require_complete and (
+        not isinstance(rationale, str) or not rationale.strip()
+    ):
+        errors.append(f"oracle assessment rationale is incomplete for {key}")
+    if classification not in {
+        "EXACT_ORACLE_MATCH",
+        "ALTERNATIVE_VALID_FINDING",
+    }:
+        return errors
+    response = next(
+        probe
+        for probe in sample["output"]["probes"]
+        if probe["probeId"] == row["probeId"]
+    )
+    raised = (
+        response["disposition"] == "VALIDATED"
+        and response["severity"] is not None
+        and response["rootCauseKey"] is not None
+    )
+    if not raised:
+        errors.append(
+            "oracle assessment cannot classify an unraised response as "
+            f"{classification} for {key}"
+        )
+    return errors
+
+
+def validate_oracle_assessment(
+    payload: dict[str, Any],
+    source_suite: dict[str, Any],
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any],
+    *,
+    require_complete: bool = True,
+) -> list[str]:
+    errors = schema_errors(payload, ORACLE_ASSESSMENT_SCHEMA)
+    if errors:
+        return errors
+    errors.extend(_content_hash_errors(payload, "oracle assessment"))
+    expected_status = "FINAL" if require_complete else "DRAFT"
+    if payload["status"] != expected_status:
+        errors.append(f"oracle assessment status must be {expected_status}")
+    context_errors = _oracle_assessment_context_errors(
+        payload, source_suite, campaign, adjudication
+    )
+    errors.extend(context_errors)
+    if context_errors:
+        return errors
+
+    expected_rows = oracle_assessment_rows(source_suite, campaign, adjudication)
+    expected_by_key = {
+        (row["sampleId"], row["probeId"]): row for row in expected_rows
+    }
+    actual_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    sample_by_id = {row["sampleId"]: row for row in campaign["samples"]}
+    for row in payload["assessments"]:
+        key = (row["sampleId"], row["probeId"])
+        if key in actual_by_key:
+            errors.append(f"oracle assessment contains duplicate subject {key}")
+            continue
+        actual_by_key[key] = row
+        expected = expected_by_key.get(key)
+        if expected is None:
+            errors.append(f"oracle assessment references unexpected subject {key}")
+            continue
+        errors.extend(
+            _oracle_assessment_row_errors(
+                row,
+                expected,
+                sample_by_id[row["sampleId"]],
+                require_complete=require_complete,
+            )
+        )
+    missing = set(expected_by_key) - set(actual_by_key)
+    if missing:
+        errors.append(f"oracle assessment is missing {len(missing)} subjects")
+    return errors
+
+
 def _ratio(numerator: int, denominator: int) -> dict[str, Any]:
     return {
         "numerator": numerator,
@@ -1042,44 +1303,15 @@ def _adjudication_metrics(
     return _ratio(agreements, comparisons), (false_positives, resolved)
 
 
-def build_stability_report(
-    source_suite: dict[str, Any],
-    campaign: dict[str, Any],
-    adjudication: dict[str, Any] | None = None,
+def _repeated_output_metrics(
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    campaign_errors = schema_errors(campaign, CAMPAIGN_SCHEMA)
-    if campaign_errors:
-        raise RealRepositoryError("invalid campaign: " + "; ".join(campaign_errors))
-    if adjudication is not None:
-        adjudication_errors = validate_adjudication(adjudication, campaign)
-        if adjudication_errors:
-            raise RealRepositoryError(
-                "invalid adjudication: " + "; ".join(adjudication_errors)
-            )
-
-    completed = [
-        sample
-        for sample in campaign["samples"]
-        if sample["status"] == "COMPLETED"
-        and not sample["sourceMutationDetected"]
-        and sample["output"] is not None
-    ]
-    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
-    for sample in completed:
-        grouped[
-            (
-                sample["repositoryId"],
-                sample["treatment"],
-                sample["modelConfiguration"]["id"],
-            )
-        ].append(sample)
-
-    finding_overlap_numerator = 0
-    finding_overlap_denominator = 0
-    root_overlap_numerator = 0
-    root_overlap_denominator = 0
-    root_identity_numerator = 0
-    root_identity_denominator = 0
+    finding_numerator = 0
+    finding_denominator = 0
+    root_numerator = 0
+    root_denominator = 0
+    identity_numerator = 0
+    identity_denominator = 0
     decision_numerator = 0
     decision_denominator = 0
     severity_numerator = 0
@@ -1116,16 +1348,16 @@ def build_stability_report(
             }
             for output in outputs
         ]
-        root_identity_sets = [_root_cause_identity_set(output) for output in outputs]
+        identity_sets = [_root_cause_identity_set(output) for output in outputs]
         finding_ratio = _pairwise_jaccard(finding_sets)
         root_ratio = _pairwise_jaccard(root_sets)
-        root_identity_ratio = _pairwise_jaccard(root_identity_sets)
-        finding_overlap_numerator += finding_ratio["numerator"]
-        finding_overlap_denominator += finding_ratio["denominator"]
-        root_overlap_numerator += root_ratio["numerator"]
-        root_overlap_denominator += root_ratio["denominator"]
-        root_identity_numerator += root_identity_ratio["numerator"]
-        root_identity_denominator += root_identity_ratio["denominator"]
+        identity_ratio = _pairwise_jaccard(identity_sets)
+        finding_numerator += finding_ratio["numerator"]
+        finding_denominator += finding_ratio["denominator"]
+        root_numerator += root_ratio["numerator"]
+        root_denominator += root_ratio["denominator"]
+        identity_numerator += identity_ratio["numerator"]
+        identity_denominator += identity_ratio["denominator"]
         item_maps = [_item_maps(output) for output in outputs]
         decision_ratio = _agreement([item[0] for item in item_maps])
         severity_ratio = _agreement([item[1] for item in item_maps])
@@ -1142,7 +1374,172 @@ def build_stability_report(
             center = statistics.median(scores)
             score_mads.append(statistics.median(abs(score - center) for score in scores))
             score_ranges.append(max(scores) - min(scores))
+    return {
+        "findingOverlap": _ratio(finding_numerator, finding_denominator),
+        "rootCauseOverlap": _ratio(root_numerator, root_denominator),
+        "rootCauseIdentityOverlap": _ratio(
+            identity_numerator, identity_denominator
+        ),
+        "decisionStability": _ratio(decision_numerator, decision_denominator),
+        "severityAgreement": _ratio(severity_numerator, severity_denominator),
+        "scoreVariance": {
+            "sampleGroups": len(score_mads),
+            "medianAbsoluteDeviation": (
+                statistics.median(score_mads) if score_mads else None
+            ),
+            "maximumRange": max(score_ranges) if score_ranges else None,
+        },
+    }
 
+
+def _oracle_stability_projection(
+    oracle_assessment: dict[str, Any],
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    rows = oracle_assessment["assessments"]
+    by_sample: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        if row["classification"] == "EXACT_ORACLE_MATCH":
+            by_sample[row["sampleId"]].add(row["oracleContentSha256"])
+    overlap_numerator = 0
+    overlap_denominator = 0
+    for samples in grouped.values():
+        ratio = _pairwise_jaccard(
+            [by_sample[sample["sampleId"]] for sample in samples]
+        )
+        overlap_numerator += ratio["numerator"]
+        overlap_denominator += ratio["denominator"]
+
+    total = len(rows)
+    response_resolved = sum(
+        row["responseValidity"] != "UNRESOLVED" for row in rows
+    )
+    oracle_resolved = sum(
+        row["classification"] != "UNRESOLVED" for row in rows
+    )
+    limitations = []
+    if oracle_resolved != total:
+        limitations.append("oracle assessment contains unresolved classifications")
+    if oracle_assessment["verifier"]["kind"] != "HUMAN":
+        limitations.append("oracle assessment is agent-assisted, not human-verified")
+    return {
+        "coverage": {
+            "oracleSubjects": total,
+            "resolvedOracleSubjects": oracle_resolved,
+        },
+        "metrics": {
+            "responseValidityRate": _ratio(
+                sum(row["responseValidity"] == "CORRECT" for row in rows),
+                response_resolved,
+            ),
+            "responseResolutionRate": _ratio(response_resolved, total),
+            "exactOracleRecall": _ratio(
+                sum(row["classification"] == "EXACT_ORACLE_MATCH" for row in rows),
+                total,
+            ),
+            "alternativeValidFindingRate": _ratio(
+                sum(
+                    row["classification"] == "ALTERNATIVE_VALID_FINDING"
+                    for row in rows
+                ),
+                total,
+            ),
+            "oracleMissRate": _ratio(
+                sum(row["classification"] == "MISSED" for row in rows), total
+            ),
+            "oracleResolutionRate": _ratio(oracle_resolved, total),
+            "oracleRootCauseOverlap": _ratio(
+                overlap_numerator, overlap_denominator
+            ),
+        },
+        "limitations": limitations,
+    }
+
+
+def _stability_limitations(
+    source_suite: dict[str, Any],
+    adjudicator_kinds: set[str],
+    repository_ids: set[str],
+    treatment_ids: set[str],
+    model_ids: set[str],
+    minimum_repetitions: int,
+    required_matrix: set[tuple[str, str, str, int]],
+    completed_matrix: set[tuple[str, str, str, int]],
+) -> list[str]:
+    limitations = []
+    if repository_ids != {row["id"] for row in source_suite["repositories"]}:
+        limitations.append("not all pinned repositories are represented")
+    if treatment_ids != set(TREATMENTS):
+        limitations.append("not all canonical treatments are represented")
+    if len(model_ids) < source_suite["protocol"]["minimumModelConfigurations"]:
+        limitations.append("fewer than the required model configurations are represented")
+    if minimum_repetitions < source_suite["protocol"]["repetitions"]:
+        limitations.append("fewer than the required repetitions are represented")
+    if not required_matrix <= completed_matrix:
+        limitations.append("the required campaign matrix is not fully completed")
+    if not adjudicator_kinds:
+        limitations.append("independent human adjudication is not attached")
+    elif adjudicator_kinds != {"HUMAN"}:
+        limitations.append(
+            "adjudication is agent-assisted, not independent human adjudication"
+        )
+    return limitations
+
+
+def build_stability_report(
+    source_suite: dict[str, Any],
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any] | None = None,
+    oracle_assessment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    campaign_errors = schema_errors(campaign, CAMPAIGN_SCHEMA)
+    if campaign_errors:
+        raise RealRepositoryError("invalid campaign: " + "; ".join(campaign_errors))
+    if adjudication is not None:
+        adjudication_errors = validate_adjudication(adjudication, campaign)
+        if adjudication_errors:
+            raise RealRepositoryError(
+                "invalid adjudication: " + "; ".join(adjudication_errors)
+            )
+    if oracle_assessment is not None:
+        if adjudication is None:
+            raise RealRepositoryError(
+                "oracle assessment requires an attached adjudication"
+            )
+        oracle_errors = validate_oracle_assessment(
+            oracle_assessment,
+            source_suite,
+            campaign,
+            adjudication,
+        )
+        if oracle_errors:
+            raise RealRepositoryError(
+                "invalid oracle assessment: " + "; ".join(oracle_errors)
+            )
+
+    completed = [
+        sample
+        for sample in campaign["samples"]
+        if sample["status"] == "COMPLETED"
+        and not sample["sourceMutationDetected"]
+        and sample["output"] is not None
+    ]
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for sample in completed:
+        grouped[
+            (
+                sample["repositoryId"],
+                sample["treatment"],
+                sample["modelConfiguration"]["id"],
+            )
+        ].append(sample)
+
+    repeated_metrics = _repeated_output_metrics(grouped)
+    oracle_projection = (
+        _oracle_stability_projection(oracle_assessment, grouped)
+        if oracle_assessment is not None
+        else None
+    )
     decoy_results = []
     probe_kind_by_id = {
         probe["id"]: probe["kind"]
@@ -1173,7 +1570,6 @@ def build_stability_report(
     )
     false_positive_numerator = decoy_false_positives + adjudicated_false_positives[0]
     false_positive_denominator = len(decoy_results) + adjudicated_false_positives[1]
-
     expected, completed_matrix = _campaign_matrix(campaign, source_suite)
     model_ids = {
         sample["modelConfiguration"]["id"] for sample in campaign["samples"]
@@ -1193,23 +1589,18 @@ def build_stability_report(
         (len(values) for values in repetitions_by_group.values()), default=0
     )
 
-    limitations: list[str] = []
-    if repository_ids != {row["id"] for row in source_suite["repositories"]}:
-        limitations.append("not all pinned repositories are represented")
-    if treatments != set(TREATMENTS):
-        limitations.append("not all canonical treatments are represented")
-    if len(model_ids) < source_suite["protocol"]["minimumModelConfigurations"]:
-        limitations.append("fewer than the required model configurations are represented")
-    if minimum_repetitions < source_suite["protocol"]["repetitions"]:
-        limitations.append("fewer than the required repetitions are represented")
-    if not expected <= completed_matrix:
-        limitations.append("the required campaign matrix is not fully completed")
-    if adjudication is None:
-        limitations.append("independent human adjudication is not attached")
-    elif adjudicator_kinds != {"HUMAN"}:
-        limitations.append(
-            "adjudication is agent-assisted, not independent human adjudication"
-        )
+    limitations = _stability_limitations(
+        source_suite,
+        adjudicator_kinds,
+        repository_ids,
+        treatments,
+        model_ids,
+        minimum_repetitions,
+        expected,
+        completed_matrix,
+    )
+    if oracle_projection is not None:
+        limitations.extend(oracle_projection["limitations"])
     complete = not limitations and campaign["status"] == "COMPLETED"
 
     durations = [float(sample["durationSeconds"]) for sample in campaign["samples"]]
@@ -1218,8 +1609,13 @@ def build_stability_report(
         for sample in campaign["samples"]
         if sample["usage"]["totalTokens"] is not None
     ]
+    stability_v2 = oracle_assessment is not None
     report = {
-        "schema": "review-craft.eval-real-repository-stability.v1",
+        "schema": (
+            "review-craft.eval-real-repository-stability.v2"
+            if stability_v2
+            else "review-craft.eval-real-repository-stability.v1"
+        ),
         "status": "COMPLETE" if complete else "PARTIAL",
         "campaignContentSha256": campaign["contentSha256"],
         "adjudicationContentSha256": (
@@ -1234,22 +1630,7 @@ def build_stability_report(
             "completedSamples": len(completed),
         },
         "metrics": {
-            "findingOverlap": _ratio(
-                finding_overlap_numerator, finding_overlap_denominator
-            ),
-            "rootCauseOverlap": _ratio(root_overlap_numerator, root_overlap_denominator),
-            "rootCauseIdentityOverlap": _ratio(
-                root_identity_numerator, root_identity_denominator
-            ),
-            "decisionStability": _ratio(decision_numerator, decision_denominator),
-            "severityAgreement": _ratio(severity_numerator, severity_denominator),
-            "scoreVariance": {
-                "sampleGroups": len(score_mads),
-                "medianAbsoluteDeviation": (
-                    statistics.median(score_mads) if score_mads else None
-                ),
-                "maximumRange": max(score_ranges) if score_ranges else None,
-            },
+            **repeated_metrics,
             "falsePositiveRate": _ratio(
                 false_positive_numerator, false_positive_denominator
             ),
@@ -1275,8 +1656,16 @@ def build_stability_report(
         "limitations": limitations,
         "contentSha256": "0" * 64,
     }
+    if oracle_assessment is not None:
+        report["oracleAssessmentContentSha256"] = oracle_assessment[
+            "contentSha256"
+        ]
+        report["coverage"].update(oracle_projection["coverage"])
+        report["metrics"].update(oracle_projection["metrics"])
     report["contentSha256"] = sha256_json(_without_content_hash(report))
-    stability_errors = schema_errors(report, STABILITY_SCHEMA)
+    stability_errors = schema_errors(
+        report, STABILITY_V2_SCHEMA if stability_v2 else STABILITY_SCHEMA
+    )
     if stability_errors:
         raise RealRepositoryError(
             "generated stability report is invalid: " + "; ".join(stability_errors)
@@ -1289,15 +1678,29 @@ def validate_stability_report(
     source_suite: dict[str, Any],
     campaign: dict[str, Any],
     adjudication: dict[str, Any] | None = None,
+    oracle_assessment: dict[str, Any] | None = None,
 ) -> list[str]:
-    errors = schema_errors(payload, STABILITY_SCHEMA)
+    schema = payload.get("schema") if isinstance(payload, dict) else None
+    if schema == "review-craft.eval-real-repository-stability.v1":
+        selected_schema = STABILITY_SCHEMA
+    elif schema == "review-craft.eval-real-repository-stability.v2":
+        selected_schema = STABILITY_V2_SCHEMA
+    else:
+        return [f"stability report has unsupported schema {schema!r}"]
+    errors = schema_errors(payload, selected_schema)
     if errors:
         return errors
     errors.extend(_content_hash_errors(payload, "stability report"))
-    expected = build_stability_report(source_suite, campaign, adjudication)
+    expected = build_stability_report(
+        source_suite, campaign, adjudication, oracle_assessment
+    )
     if payload == expected:
         return errors
-    if "rootCauseIdentityOverlap" not in payload["metrics"]:
+    if (
+        schema == "review-craft.eval-real-repository-stability.v1"
+        and oracle_assessment is None
+        and "rootCauseIdentityOverlap" not in payload["metrics"]
+    ):
         legacy_metrics = dict(expected["metrics"])
         legacy_metrics.pop("rootCauseIdentityOverlap")
         legacy_expected = {**expected, "metrics": legacy_metrics}

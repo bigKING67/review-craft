@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bigKING67/review-craft/schemas/eval-real-repository-stability-v2.schema.json",
+  "title": "Oracle-aware real-repository benchmark stability report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "campaignContentSha256",
+    "adjudicationContentSha256",
+    "oracleAssessmentContentSha256",
+    "coverage",
+    "metrics",
+    "limitations",
+    "contentSha256"
+  ],
+  "properties": {
+    "schema": {"const": "review-craft.eval-real-repository-stability.v2"},
+    "status": {"enum": ["COMPLETE", "PARTIAL"]},
+    "campaignContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adjudicationContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "oracleAssessmentContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositories",
+        "treatments",
+        "modelConfigurations",
+        "minimumRepetitions",
+        "samples",
+        "completedSamples",
+        "oracleSubjects",
+        "resolvedOracleSubjects"
+      ],
+      "properties": {
+        "repositories": {"type": "integer", "minimum": 0},
+        "treatments": {"type": "integer", "minimum": 0},
+        "modelConfigurations": {"type": "integer", "minimum": 0},
+        "minimumRepetitions": {"type": "integer", "minimum": 0},
+        "samples": {"type": "integer", "minimum": 0},
+        "completedSamples": {"type": "integer", "minimum": 0},
+        "oracleSubjects": {"type": "integer", "minimum": 1},
+        "resolvedOracleSubjects": {"type": "integer", "minimum": 0}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findingOverlap",
+        "rootCauseOverlap",
+        "rootCauseIdentityOverlap",
+        "decisionStability",
+        "severityAgreement",
+        "scoreVariance",
+        "falsePositiveRate",
+        "falsificationAccuracy",
+        "completionRate",
+        "wallTime",
+        "tokenCost",
+        "humanAgreement",
+        "adjudicatorAgreement",
+        "responseValidityRate",
+        "responseResolutionRate",
+        "exactOracleRecall",
+        "alternativeValidFindingRate",
+        "oracleMissRate",
+        "oracleResolutionRate",
+        "oracleRootCauseOverlap"
+      ],
+      "properties": {
+        "findingOverlap": {"$ref": "#/$defs/ratio"},
+        "rootCauseOverlap": {"$ref": "#/$defs/ratio"},
+        "rootCauseIdentityOverlap": {"$ref": "#/$defs/ratio"},
+        "decisionStability": {"$ref": "#/$defs/ratio"},
+        "severityAgreement": {"$ref": "#/$defs/ratio"},
+        "scoreVariance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sampleGroups", "medianAbsoluteDeviation", "maximumRange"],
+          "properties": {
+            "sampleGroups": {"type": "integer", "minimum": 0},
+            "medianAbsoluteDeviation": {"type": ["number", "null"], "minimum": 0},
+            "maximumRange": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "falsePositiveRate": {"$ref": "#/$defs/ratio"},
+        "falsificationAccuracy": {"$ref": "#/$defs/ratio"},
+        "completionRate": {"$ref": "#/$defs/ratio"},
+        "wallTime": {"$ref": "#/$defs/distribution"},
+        "tokenCost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availableSamples", "totalTokens", "medianTokens"],
+          "properties": {
+            "availableSamples": {"type": "integer", "minimum": 0},
+            "totalTokens": {"type": ["integer", "null"], "minimum": 0},
+            "medianTokens": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "humanAgreement": {"$ref": "#/$defs/ratio"},
+        "adjudicatorAgreement": {"$ref": "#/$defs/ratio"},
+        "responseValidityRate": {"$ref": "#/$defs/ratio"},
+        "responseResolutionRate": {"$ref": "#/$defs/ratio"},
+        "exactOracleRecall": {"$ref": "#/$defs/ratio"},
+        "alternativeValidFindingRate": {"$ref": "#/$defs/ratio"},
+        "oracleMissRate": {"$ref": "#/$defs/ratio"},
+        "oracleResolutionRate": {"$ref": "#/$defs/ratio"},
+        "oracleRootCauseOverlap": {"$ref": "#/$defs/ratio"}
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "ratio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples", "p50", "p95", "maximum"],
+      "properties": {
+        "samples": {"type": "integer", "minimum": 0},
+        "p50": {"type": ["number", "null"], "minimum": 0},
+        "p95": {"type": ["number", "null"], "minimum": 0},
+        "maximum": {"type": ["number", "null"], "minimum": 0}
+      }
+    }
+  }
+}

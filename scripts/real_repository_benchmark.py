@@ -62,6 +62,7 @@ from real_repository_contracts import (
     adjudication_subjects,
     blind_suite,
     build_adjudication_resolutions,
+    build_oracle_assessment_template,
     build_stability_report,
     derived_component_label,
     materialization_suite_sha256,
@@ -74,6 +75,7 @@ from real_repository_contracts import (
     validate_campaign,
     validate_host_output,
     validate_materialization_receipt,
+    validate_oracle_assessment,
     validate_stability_report,
     validate_suite,
 )
@@ -1614,6 +1616,112 @@ def command_validate_adjudication(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_oracle_assessment_context(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    campaign = read_json(Path(args.campaign).expanduser().resolve(strict=True))
+    adjudication = read_json(
+        Path(args.adjudication).expanduser().resolve(strict=True)
+    )
+    return suite, campaign, adjudication
+
+
+def command_prepare_oracle_assessment(args: argparse.Namespace) -> int:
+    suite, campaign, adjudication = _load_oracle_assessment_context(args)
+    assessment = build_oracle_assessment_template(
+        suite,
+        campaign,
+        adjudication,
+        verifier_id=args.verifier_id,
+        verifier_kind=args.kind,
+    )
+    output = Path(args.output).expanduser().resolve()
+    if output.exists():
+        raise RealRepositoryError(
+            f"oracle assessment output already exists: {output}"
+        )
+    write_json(output, assessment)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "assessments": len(assessment["assessments"]),
+                "contentSha256": assessment["contentSha256"],
+                "complete": False,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_finalize_oracle_assessment(args: argparse.Namespace) -> int:
+    suite, campaign, adjudication = _load_oracle_assessment_context(args)
+    assessment_path = Path(args.assessment).expanduser().resolve(strict=True)
+    assessment = read_json(assessment_path)
+    assessment["status"] = "FINAL"
+    _bind_content_hash(assessment)
+    errors = validate_oracle_assessment(
+        assessment,
+        suite,
+        campaign,
+        adjudication,
+    )
+    if errors:
+        raise RealRepositoryError(
+            "invalid oracle assessment: " + "; ".join(errors)
+        )
+    write_json(assessment_path, assessment)
+    classifications: dict[str, int] = {}
+    for row in assessment["assessments"]:
+        classification = row["classification"]
+        classifications[classification] = classifications.get(classification, 0) + 1
+    print(
+        json.dumps(
+            {
+                "assessment": str(assessment_path),
+                "assessments": len(assessment["assessments"]),
+                "classifications": classifications,
+                "contentSha256": assessment["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_validate_oracle_assessment(args: argparse.Namespace) -> int:
+    suite, campaign, adjudication = _load_oracle_assessment_context(args)
+    assessment = read_json(
+        Path(args.assessment).expanduser().resolve(strict=True)
+    )
+    errors = validate_oracle_assessment(
+        assessment,
+        suite,
+        campaign,
+        adjudication,
+    )
+    if errors:
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "assessments": len(assessment["assessments"]),
+                "contentSha256": assessment["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def command_analyze_stability(args: argparse.Namespace) -> int:
     suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
     blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
@@ -1627,7 +1735,18 @@ def command_analyze_stability(args: argparse.Namespace) -> int:
         adjudication_errors = validate_adjudication(adjudication, campaign)
         if adjudication_errors:
             raise RealRepositoryError("invalid adjudication: " + "; ".join(adjudication_errors))
-    report = build_stability_report(suite, campaign, adjudication)
+    oracle_assessment = None
+    if args.oracle_assessment is not None:
+        if adjudication is None:
+            raise RealRepositoryError(
+                "--oracle-assessment requires --adjudication"
+            )
+        oracle_assessment = read_json(
+            Path(args.oracle_assessment).expanduser().resolve(strict=True)
+        )
+    report = build_stability_report(
+        suite, campaign, adjudication, oracle_assessment
+    )
     output = Path(args.output).expanduser().resolve()
     write_json(output, report)
     print(
@@ -1653,8 +1772,17 @@ def command_validate_stability(args: argparse.Namespace) -> int:
         if args.adjudication is not None
         else None
     )
+    oracle_assessment = (
+        read_json(Path(args.oracle_assessment).expanduser().resolve(strict=True))
+        if args.oracle_assessment is not None
+        else None
+    )
+    if oracle_assessment is not None and adjudication is None:
+        raise RealRepositoryError("--oracle-assessment requires --adjudication")
     report = read_json(Path(args.report).expanduser().resolve(strict=True))
-    errors = validate_stability_report(report, suite, campaign, adjudication)
+    errors = validate_stability_report(
+        report, suite, campaign, adjudication, oracle_assessment
+    )
     if errors:
         for error in errors:
             print(f"- {error}", file=sys.stderr)
@@ -2922,11 +3050,53 @@ def build_parser() -> argparse.ArgumentParser:
     validate_adjudication_parser.add_argument("--adjudication", required=True)
     validate_adjudication_parser.set_defaults(handler=command_validate_adjudication)
 
+    prepare_oracle_assessment = subparsers.add_parser(
+        "prepare-oracle-assessment"
+    )
+    prepare_oracle_assessment.add_argument("--suite", default=str(DEFAULT_SUITE))
+    prepare_oracle_assessment.add_argument("--campaign", required=True)
+    prepare_oracle_assessment.add_argument("--adjudication", required=True)
+    prepare_oracle_assessment.add_argument("--verifier-id", required=True)
+    prepare_oracle_assessment.add_argument(
+        "--kind", choices=("HUMAN", "AGENT_ASSISTED"), required=True
+    )
+    prepare_oracle_assessment.add_argument("--output", required=True)
+    prepare_oracle_assessment.set_defaults(
+        handler=command_prepare_oracle_assessment
+    )
+
+    finalize_oracle_assessment = subparsers.add_parser(
+        "finalize-oracle-assessment"
+    )
+    finalize_oracle_assessment.add_argument("--suite", default=str(DEFAULT_SUITE))
+    finalize_oracle_assessment.add_argument("--campaign", required=True)
+    finalize_oracle_assessment.add_argument("--adjudication", required=True)
+    finalize_oracle_assessment.add_argument("--assessment", required=True)
+    finalize_oracle_assessment.set_defaults(
+        handler=command_finalize_oracle_assessment
+    )
+
+    validate_oracle_assessment_parser = subparsers.add_parser(
+        "validate-oracle-assessment"
+    )
+    validate_oracle_assessment_parser.add_argument(
+        "--suite", default=str(DEFAULT_SUITE)
+    )
+    validate_oracle_assessment_parser.add_argument("--campaign", required=True)
+    validate_oracle_assessment_parser.add_argument(
+        "--adjudication", required=True
+    )
+    validate_oracle_assessment_parser.add_argument("--assessment", required=True)
+    validate_oracle_assessment_parser.set_defaults(
+        handler=command_validate_oracle_assessment
+    )
+
     analyze_stability = subparsers.add_parser("analyze-stability")
     analyze_stability.add_argument("--suite", default=str(DEFAULT_SUITE))
     analyze_stability.add_argument("--blind-suite", required=True)
     analyze_stability.add_argument("--campaign", required=True)
     analyze_stability.add_argument("--adjudication")
+    analyze_stability.add_argument("--oracle-assessment")
     analyze_stability.add_argument("--output", required=True)
     analyze_stability.set_defaults(handler=command_analyze_stability)
 
@@ -2934,6 +3104,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_stability.add_argument("--suite", default=str(DEFAULT_SUITE))
     validate_stability.add_argument("--campaign", required=True)
     validate_stability.add_argument("--adjudication")
+    validate_stability.add_argument("--oracle-assessment")
     validate_stability.add_argument("--report", required=True)
     validate_stability.set_defaults(handler=command_validate_stability)
 

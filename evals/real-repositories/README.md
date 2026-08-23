@@ -133,9 +133,28 @@ uv run --locked python scripts/real_repository_benchmark.py assemble-adjudicatio
 uv run --locked python scripts/real_repository_benchmark.py validate-adjudication \
   --campaign <campaign.json> --adjudication <independent-adjudication.json>
 
+# Only after the blind submissions are finalized, generate the coordinator-side
+# oracle template. Fill classification and rationale, then seal and validate it.
+uv run --locked python scripts/real_repository_benchmark.py prepare-oracle-assessment \
+  --suite evals/specs/real-repositories.json \
+  --campaign <campaign.json> --adjudication <independent-adjudication.json> \
+  --verifier-id <verifier-id> --kind HUMAN \
+  --output <oracle-assessment.json>
+
+uv run --locked python scripts/real_repository_benchmark.py finalize-oracle-assessment \
+  --suite evals/specs/real-repositories.json \
+  --campaign <campaign.json> --adjudication <independent-adjudication.json> \
+  --assessment <oracle-assessment.json>
+
+uv run --locked python scripts/real_repository_benchmark.py validate-oracle-assessment \
+  --suite evals/specs/real-repositories.json \
+  --campaign <campaign.json> --adjudication <independent-adjudication.json> \
+  --assessment <oracle-assessment.json>
+
 uv run --locked python scripts/real_repository_benchmark.py analyze-stability \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --campaign <campaign.json> --adjudication <independent-adjudication.json> \
+  --oracle-assessment <oracle-assessment.json> \
   --output <stability.json>
 ```
 
@@ -269,3 +288,17 @@ normalizer does not infer unrecorded semantics. Conversely, two additional findi
 same location set can over-match, so this metric remains a location-backed proxy rather than
 human root-cause equivalence. Historical stability reports without the additive identity metric
 remain validation-compatible.
+
+Oracle assessment is deliberately post-blind and coordinator-side. It binds every completed
+`REAL_FINDING` response to the exact hidden suite oracle and its adjudicated response validity,
+then classifies the root cause as `EXACT_ORACLE_MATCH`, `ALTERNATIVE_VALID_FINDING`, `MISSED`, or
+`UNRESOLVED`. These are separate claims: a response can be adjudicated correct while missing the
+bound upstream root cause, or identify the bound root cause while other response components are
+incorrect. Oracle-aware stability uses the v2 report schema and publishes distinct
+`responseValidityRate`, `exactOracleRecall`, `alternativeValidFindingRate`, `oracleMissRate`,
+`oracleResolutionRate`, and `oracleRootCauseOverlap` metrics. The legacy probe-ID-backed
+`rootCauseIdentityOverlap` remains a response-stability proxy and must not be reported as exact
+oracle recovery. Agent-assisted oracle verification remains an explicit completion limitation and
+does not count as human verification. The suite v1 `protocol.metrics` list remains the historical
+base set so existing campaign suite hashes stay valid; the oracle metrics are additive only in an
+assessment-bound stability v2 report.

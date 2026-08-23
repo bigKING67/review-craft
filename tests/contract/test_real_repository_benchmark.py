@@ -163,6 +163,83 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         )
         return campaign, blind
 
+    def _component_adjudication(
+        self,
+        campaign: dict,
+        *,
+        incorrect_subjects: set[tuple[str, str]] | None = None,
+    ) -> dict:
+        incorrect_subjects = incorrect_subjects or set()
+        adjudicators = ("human-a", "human-b")
+        subject_hashes = contracts.adjudication_subject_content_hashes(campaign)
+        labels = []
+        for adjudicator_id in adjudicators:
+            for sample_id, subject_type, subject_key in sorted(
+                contracts.adjudication_subjects(campaign)
+            ):
+                incorrect = (sample_id, subject_key) in incorrect_subjects
+                components = [
+                    {
+                        "key": key,
+                        "label": (
+                            "INCORRECT" if incorrect and index == 0 else "CORRECT"
+                        ),
+                        "rationale": "Synthetic component oracle fixture.",
+                    }
+                    for index, key in enumerate(
+                        contracts.ADJUDICATION_COMPONENT_KEYS[subject_type]
+                    )
+                ]
+                labels.append(
+                    {
+                        "adjudicatorId": adjudicator_id,
+                        "itemId": "item-"
+                        + contracts.sha256_json(
+                            [adjudicator_id, sample_id, subject_type, subject_key]
+                        )[:20],
+                        "sampleId": sample_id,
+                        "subjectType": subject_type,
+                        "subjectKey": subject_key,
+                        "subjectContentSha256": subject_hashes[
+                            (sample_id, subject_type, subject_key)
+                        ],
+                        "label": "INCORRECT" if incorrect else "CORRECT",
+                        "rationale": "Synthetic response-validity fixture.",
+                        "components": components,
+                    }
+                )
+        adjudication = {
+            "schema": "review-craft.eval-real-repository-adjudication.v3",
+            "campaignContentSha256": campaign["contentSha256"],
+            "mappingContentSha256": "6" * 64,
+            "rubricVersion": "review-craft.real-repository-component-rubric.v1",
+            "adjudicators": [
+                {
+                    "id": adjudicator_id,
+                    "kind": "HUMAN",
+                    "independent": True,
+                    "packetContentSha256": contracts.sha256_json(
+                        [adjudicator_id, "packet"]
+                    ),
+                    "submissionContentSha256": contracts.sha256_json(
+                        [adjudicator_id, "submission"]
+                    ),
+                }
+                for adjudicator_id in adjudicators
+            ],
+            "labels": labels,
+            "subjectResolutions": contracts.build_adjudication_resolutions(labels),
+            "contentSha256": "0" * 64,
+        }
+        adjudication["contentSha256"] = contracts.sha256_json(
+            {
+                key: value
+                for key, value in adjudication.items()
+                if key != "contentSha256"
+            }
+        )
+        return adjudication
+
     def test_public_suite_is_valid_and_has_required_real_repository_mix(self) -> None:
         self.assertEqual(contracts.validate_suite(self.suite), [])
         repositories = self.suite["repositories"]
@@ -1442,6 +1519,243 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             contracts.validate_stability_report(report, self.suite, campaign, None),
             [],
         )
+
+    def test_oracle_assessment_separates_response_validity_from_exact_recall(self) -> None:
+        campaign, _blind = self._campaign()
+        campaign["samples"] = campaign["samples"][:3]
+        real_probe_id = self.suite["repositories"][0]["probes"][0]["id"]
+        for index, sample in enumerate(campaign["samples"]):
+            response = next(
+                row
+                for row in sample["output"]["probes"]
+                if row["probeId"] == real_probe_id
+            )
+            if index == 0:
+                response.update(
+                    {
+                        "disposition": "NOT_RAISED",
+                        "decision": None,
+                        "severity": None,
+                        "rootCauseKey": None,
+                    }
+                )
+            else:
+                response["rootCauseKey"] = f"alternative-root-{index}"
+            sample["artifacts"]["outputSha256"] = contracts.sha256_json(
+                sample["output"]
+            )
+        campaign["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in campaign.items() if key != "contentSha256"}
+        )
+        first_sample_id = campaign["samples"][0]["sampleId"]
+        adjudication = self._component_adjudication(
+            campaign,
+            incorrect_subjects={(first_sample_id, real_probe_id)},
+        )
+        self.assertEqual(contracts.validate_adjudication(adjudication, campaign), [])
+
+        assessment = contracts.build_oracle_assessment_template(
+            self.suite,
+            campaign,
+            adjudication,
+            verifier_id="oracle-verifier",
+            verifier_kind="HUMAN",
+        )
+        self.assertEqual(
+            contracts.validate_oracle_assessment(
+                assessment,
+                self.suite,
+                campaign,
+                adjudication,
+                require_complete=False,
+            ),
+            [],
+        )
+        incomplete_errors = contracts.validate_oracle_assessment(
+            assessment, self.suite, campaign, adjudication
+        )
+        self.assertTrue(
+            any("classification is incomplete" in row for row in incomplete_errors)
+        )
+
+        invalid_exact = copy.deepcopy(assessment)
+        invalid_exact["status"] = "FINAL"
+        for index, row in enumerate(invalid_exact["assessments"]):
+            row["classification"] = (
+                "EXACT_ORACLE_MATCH"
+                if index == 0
+                else "ALTERNATIVE_VALID_FINDING"
+            )
+            row["rationale"] = "Synthetic post-blind oracle comparison."
+        invalid_exact["contentSha256"] = contracts.sha256_json(
+            {
+                key: value
+                for key, value in invalid_exact.items()
+                if key != "contentSha256"
+            }
+        )
+        invalid_errors = contracts.validate_oracle_assessment(
+            invalid_exact, self.suite, campaign, adjudication
+        )
+        self.assertTrue(
+            any("cannot classify an unraised response" in row for row in invalid_errors)
+        )
+
+        for index, row in enumerate(assessment["assessments"]):
+            row["classification"] = (
+                "MISSED" if index == 0 else "ALTERNATIVE_VALID_FINDING"
+            )
+            row["rationale"] = "Synthetic post-blind oracle comparison."
+        assessment["status"] = "FINAL"
+        assessment["contentSha256"] = contracts.sha256_json(
+            {
+                key: value
+                for key, value in assessment.items()
+                if key != "contentSha256"
+            }
+        )
+        self.assertEqual(
+            contracts.validate_oracle_assessment(
+                assessment, self.suite, campaign, adjudication
+            ),
+            [],
+        )
+
+        drifted = copy.deepcopy(assessment)
+        drifted["assessments"][0]["responseValidity"] = "CORRECT"
+        drifted["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in drifted.items() if key != "contentSha256"}
+        )
+        drift_errors = contracts.validate_oracle_assessment(
+            drifted, self.suite, campaign, adjudication
+        )
+        self.assertTrue(any("responseValidity mismatch" in row for row in drift_errors))
+
+        report = contracts.build_stability_report(
+            self.suite, campaign, adjudication, assessment
+        )
+        self.assertEqual(
+            report["schema"], "review-craft.eval-real-repository-stability.v2"
+        )
+        self.assertEqual(report["coverage"]["oracleSubjects"], 3)
+        self.assertEqual(report["coverage"]["resolvedOracleSubjects"], 3)
+        self.assertEqual(report["metrics"]["responseValidityRate"]["value"], 2 / 3)
+        self.assertEqual(report["metrics"]["responseResolutionRate"]["value"], 1)
+        self.assertEqual(report["metrics"]["exactOracleRecall"]["value"], 0)
+        self.assertEqual(
+            report["metrics"]["alternativeValidFindingRate"]["value"], 2 / 3
+        )
+        self.assertEqual(report["metrics"]["oracleMissRate"]["value"], 1 / 3)
+        self.assertEqual(report["metrics"]["oracleResolutionRate"]["value"], 1)
+        self.assertIsNone(report["metrics"]["oracleRootCauseOverlap"]["value"])
+        self.assertEqual(
+            contracts.validate_stability_report(
+                report,
+                self.suite,
+                campaign,
+                adjudication,
+                assessment,
+            ),
+            [],
+        )
+        agent_verified = copy.deepcopy(assessment)
+        agent_verified["verifier"]["kind"] = "AGENT_ASSISTED"
+        agent_verified["contentSha256"] = contracts.sha256_json(
+            {
+                key: value
+                for key, value in agent_verified.items()
+                if key != "contentSha256"
+            }
+        )
+        agent_report = contracts.build_stability_report(
+            self.suite, campaign, adjudication, agent_verified
+        )
+        self.assertIn(
+            "oracle assessment is agent-assisted, not human-verified",
+            agent_report["limitations"],
+        )
+
+    def test_oracle_assessment_rejects_semantically_invalid_campaign(self) -> None:
+        campaign, _blind = self._campaign()
+        campaign["samples"] = campaign["samples"][:3]
+        campaign["samples"][0]["sourceMutationDetected"] = True
+        campaign["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in campaign.items() if key != "contentSha256"}
+        )
+        adjudication = self._component_adjudication(campaign)
+
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError, "completed after source mutation"
+        ):
+            contracts.build_oracle_assessment_template(
+                self.suite,
+                campaign,
+                adjudication,
+                verifier_id="oracle-verifier",
+                verifier_kind="HUMAN",
+            )
+
+    def test_oracle_assessment_cli_round_trip(self) -> None:
+        campaign, _blind = self._campaign()
+        campaign["samples"] = campaign["samples"][:3]
+        campaign["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in campaign.items() if key != "contentSha256"}
+        )
+        adjudication = self._component_adjudication(campaign)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            suite_path = root / "suite.json"
+            campaign_path = root / "campaign.json"
+            adjudication_path = root / "adjudication.json"
+            assessment_path = root / "oracle-assessment.json"
+            runner.write_json(suite_path, self.suite)
+            runner.write_json(campaign_path, campaign)
+            runner.write_json(adjudication_path, adjudication)
+            with patch("builtins.print"):
+                status = runner.command_prepare_oracle_assessment(
+                    SimpleNamespace(
+                        suite=str(suite_path),
+                        campaign=str(campaign_path),
+                        adjudication=str(adjudication_path),
+                        verifier_id="oracle-verifier",
+                        kind="HUMAN",
+                        output=str(assessment_path),
+                    )
+                )
+            self.assertEqual(status, 0)
+            assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
+            for row in assessment["assessments"]:
+                row["classification"] = "EXACT_ORACLE_MATCH"
+                row["rationale"] = "Synthetic exact-match verification."
+            runner.write_json(assessment_path, assessment)
+            with patch("builtins.print"):
+                status = runner.command_finalize_oracle_assessment(
+                    SimpleNamespace(
+                        suite=str(suite_path),
+                        campaign=str(campaign_path),
+                        adjudication=str(adjudication_path),
+                        assessment=str(assessment_path),
+                    )
+                )
+            self.assertEqual(status, 0)
+            with patch("builtins.print"):
+                status = runner.command_validate_oracle_assessment(
+                    SimpleNamespace(
+                        suite=str(suite_path),
+                        campaign=str(campaign_path),
+                        adjudication=str(adjudication_path),
+                        assessment=str(assessment_path),
+                    )
+                )
+            self.assertEqual(status, 0)
+            finalized = json.loads(assessment_path.read_text(encoding="utf-8"))
+            report = contracts.build_stability_report(
+                self.suite, campaign, adjudication, finalized
+            )
+            self.assertEqual(report["metrics"]["exactOracleRecall"]["value"], 1)
+            self.assertEqual(
+                report["metrics"]["oracleRootCauseOverlap"]["value"], 1
+            )
 
     def test_normalized_root_cause_identity_ignores_free_text_key_drift(self) -> None:
         campaign, _blind = self._campaign()
