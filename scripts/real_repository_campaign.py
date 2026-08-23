@@ -123,6 +123,108 @@ def benchmark_prompt_sha256(treatment: str, repository: dict[str, Any]) -> str:
     return hashlib.sha256(render_benchmark_prompt(treatment, repository)).hexdigest()
 
 
+def _canonical_timeout_overrides(
+    overrides: list[dict[str, Any]] | None,
+    *,
+    model_ids: list[str],
+    treatments: list[str],
+) -> list[dict[str, Any]]:
+    model_order = {model_id: index for index, model_id in enumerate(model_ids)}
+    treatment_order = {
+        treatment: index for index, treatment in enumerate(treatments)
+    }
+    normalized: list[dict[str, Any]] = []
+    selectors: set[tuple[str, str | None]] = set()
+    for override in overrides or []:
+        if not isinstance(override, dict):
+            raise RealRepositoryError("campaign timeout override must be an object")
+        unexpected = set(override).difference(
+            {"modelConfigurationId", "treatment", "timeoutSeconds"}
+        )
+        if unexpected:
+            raise RealRepositoryError(
+                "campaign timeout override has unexpected fields: "
+                + ", ".join(sorted(unexpected))
+            )
+        model_id = override.get("modelConfigurationId")
+        treatment = override.get("treatment")
+        timeout_seconds = override.get("timeoutSeconds")
+        if model_id not in model_order:
+            raise RealRepositoryError(
+                f"campaign timeout override references unknown model configuration: {model_id}"
+            )
+        if treatment is not None and treatment not in treatment_order:
+            raise RealRepositoryError(
+                f"campaign timeout override references unselected treatment: {treatment}"
+            )
+        if type(timeout_seconds) is not int or timeout_seconds < 1:
+            raise RealRepositoryError(
+                "campaign timeout override timeoutSeconds must be a positive integer"
+            )
+        selector = (model_id, treatment)
+        if selector in selectors:
+            label = model_id if treatment is None else f"{model_id}/{treatment}"
+            raise RealRepositoryError(
+                f"campaign timeout override selector is duplicated: {label}"
+            )
+        selectors.add(selector)
+        normalized_override = {
+            "modelConfigurationId": model_id,
+            "timeoutSeconds": timeout_seconds,
+        }
+        if treatment is not None:
+            normalized_override["treatment"] = treatment
+        normalized.append(normalized_override)
+    return sorted(
+        normalized,
+        key=lambda row: (
+            model_order[row["modelConfigurationId"]],
+            0 if "treatment" not in row else 1,
+            treatment_order.get(row.get("treatment"), -1),
+        ),
+    )
+
+
+def _timeout_seconds_for_cell(
+    default_seconds: int,
+    overrides: list[dict[str, Any]],
+    *,
+    model_configuration_id: str,
+    treatment: str,
+) -> int:
+    profile_timeout: int | None = None
+    treatment_timeout: int | None = None
+    for override in overrides:
+        if override["modelConfigurationId"] != model_configuration_id:
+            continue
+        if override.get("treatment") == treatment:
+            treatment_timeout = override["timeoutSeconds"]
+        elif "treatment" not in override:
+            profile_timeout = override["timeoutSeconds"]
+    if treatment_timeout is not None:
+        return treatment_timeout
+    if profile_timeout is not None:
+        return profile_timeout
+    return default_seconds
+
+
+def _sample_timeout_seconds(
+    payload: dict[str, Any],
+    *,
+    model_configuration_id: str,
+    treatment: str,
+) -> int:
+    policy = payload.get("timeoutPolicy")
+    if policy is None:
+        return payload["budgets"]["sampleTimeoutSeconds"]
+    return _timeout_seconds_for_cell(
+        policy["defaultSeconds"],
+        policy["overrides"],
+        model_configuration_id=model_configuration_id,
+        treatment=treatment,
+    )
+
+
 def build_campaign_plan(
     *,
     source_suite: dict[str, Any],
@@ -149,8 +251,14 @@ def build_campaign_plan(
     inactivity_warning_seconds: int = 300,
     inactivity_diagnostic_seconds: int = 600,
     max_recovered_inactivity_samples_per_model_profile: int = 2,
+    timeout_overrides: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     model_ids = [row["id"] for row in model_configurations]
+    canonical_timeout_overrides = _canonical_timeout_overrides(
+        timeout_overrides,
+        model_ids=model_ids,
+        treatments=treatments,
+    )
     all_repository_ids = [row["id"] for row in source_suite["repositories"]]
     blind_repositories = {row["id"]: row for row in blind_suite["repositories"]}
     full_matrix = (
@@ -181,7 +289,12 @@ def build_campaign_plan(
                             "modelConfigurationId": model_id,
                             "repetition": repetition,
                             "shardId": repository_id,
-                            "timeoutSeconds": sample_timeout_seconds,
+                            "timeoutSeconds": _timeout_seconds_for_cell(
+                                sample_timeout_seconds,
+                                canonical_timeout_overrides,
+                                model_configuration_id=model_id,
+                                treatment=treatment,
+                            ),
                             "promptSha256": benchmark_prompt_sha256(
                                 treatment, blind_repositories[repository_id]
                             ),
@@ -236,6 +349,11 @@ def build_campaign_plan(
         "samples": samples,
         "contentSha256": "0" * 64,
     }
+    if canonical_timeout_overrides:
+        payload["timeoutPolicy"] = {
+            "defaultSeconds": sample_timeout_seconds,
+            "overrides": canonical_timeout_overrides,
+        }
     seal(payload)
     errors = validate_campaign_plan(payload, source_suite, blind_suite)
     if errors:
@@ -318,6 +436,52 @@ def _plan_selection_errors(
     if selection["modelConfigurations"] != model_ids:
         errors.append("campaign plan selection model configuration order mismatch")
     budgets = payload["budgets"]
+    timeout_policy = payload.get("timeoutPolicy")
+    if timeout_policy is not None:
+        if timeout_policy["defaultSeconds"] != budgets["sampleTimeoutSeconds"]:
+            errors.append(
+                "campaign timeout policy default must match the sample timeout budget"
+            )
+        override_model_ids = {
+            row["modelConfigurationId"] for row in timeout_policy["overrides"]
+        }
+        unknown_model_ids = override_model_ids.difference(model_ids)
+        if unknown_model_ids:
+            errors.append(
+                "campaign timeout policy references unknown model configurations: "
+                + ", ".join(sorted(unknown_model_ids))
+            )
+        override_treatments = {
+            row["treatment"]
+            for row in timeout_policy["overrides"]
+            if "treatment" in row
+        }
+        unknown_treatments = override_treatments.difference(treatments)
+        if unknown_treatments:
+            errors.append(
+                "campaign timeout policy references unselected treatments: "
+                + ", ".join(sorted(unknown_treatments))
+            )
+        selectors = [
+            (row["modelConfigurationId"], row.get("treatment"))
+            for row in timeout_policy["overrides"]
+        ]
+        if len(selectors) != len(set(selectors)):
+            errors.append("campaign timeout policy contains duplicate selectors")
+        if (
+            not unknown_model_ids
+            and not unknown_treatments
+            and len(selectors) == len(set(selectors))
+        ):
+            canonical_overrides = _canonical_timeout_overrides(
+                timeout_policy["overrides"],
+                model_ids=model_ids,
+                treatments=treatments,
+            )
+            if timeout_policy["overrides"] != canonical_overrides:
+                errors.append(
+                    "campaign timeout policy overrides must use canonical order"
+                )
     if budgets["hardWallTimeSeconds"] < budgets["softWallTimeSeconds"]:
         errors.append("campaign plan hard wall time must not be below soft wall time")
     previous_failure_budgets = {
@@ -402,7 +566,6 @@ def _expected_plan_samples(
     repository_ids = selection["repositories"]
     treatments = selection["treatments"]
     model_ids = selection["modelConfigurations"]
-    budgets = payload["budgets"]
     blind_repositories = {row["id"]: row for row in blind_suite["repositories"]}
     expected: list[dict[str, Any]] = []
     ordinal = 0
@@ -412,19 +575,23 @@ def _expected_plan_samples(
                 for repetition in range(1, selection["repetitions"] + 1):
                     ordinal += 1
                     sample = {
-                            "ordinal": ordinal,
-                            "sampleId": sample_id(
-                                repository_id,
-                                treatment,
-                                model_id,
-                                repetition,
-                            ),
-                            "repositoryId": repository_id,
-                            "treatment": treatment,
-                            "modelConfigurationId": model_id,
-                            "repetition": repetition,
-                            "shardId": repository_id,
-                            "timeoutSeconds": budgets["sampleTimeoutSeconds"],
+                        "ordinal": ordinal,
+                        "sampleId": sample_id(
+                            repository_id,
+                            treatment,
+                            model_id,
+                            repetition,
+                        ),
+                        "repositoryId": repository_id,
+                        "treatment": treatment,
+                        "modelConfigurationId": model_id,
+                        "repetition": repetition,
+                        "shardId": repository_id,
+                        "timeoutSeconds": _sample_timeout_seconds(
+                            payload,
+                            model_configuration_id=model_id,
+                            treatment=treatment,
+                        ),
                     }
                     if include_prompt_sha256:
                         sample["promptSha256"] = benchmark_prompt_sha256(

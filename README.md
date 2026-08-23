@@ -826,6 +826,13 @@ only after the full 8 x 3 treatments x 2+ model configurations x 3 repetitions
 matrix completes and independent adjudication validates; the checked-in materialization
 receipt alone makes no model-quality claim.
 
+When observed latency differs materially by model profile or treatment, `plan-campaign` can seal
+profile-wide `--timeout-override MODEL_CONFIGURATION_ID SECONDS` entries and more-specific
+`--treatment-timeout-override MODEL_CONFIGURATION_ID TREATMENT SECONDS` entries. A treatment
+override takes precedence over its profile override, and both take precedence over the default
+`--timeout-seconds`. The expanded timeout remains bound into every sample; `run-plan` does not
+infer or mutate this policy at execution time.
+
 Runtime scale measurements are also explicit and external by default. The normal command
 runs the 1k-file tier; `--full` additionally runs 10k and 100k tiers and can take materially
 longer:

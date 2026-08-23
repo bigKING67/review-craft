@@ -58,6 +58,8 @@ uv run --locked python scripts/real_repository_benchmark.py plan-campaign \
   --adapter-config <outside-adapters.json> \
   --campaign-id <immutable-campaign-id> \
   --repetitions 3 --timeout-seconds 1800 \
+  --timeout-override <model-configuration-id> 1200 \
+  --treatment-timeout-override <model-configuration-id> REVIEW_CRAFT_EVIDENCE_LOOP 1800 \
   --soft-wall-seconds 64800 --hard-wall-seconds 86400 \
   --hard-reported-token-ceiling 60000000 \
   --hard-reported-input-token-ceiling-per-sample 1250000 \
@@ -141,8 +143,13 @@ New plans stop before scheduling another sample after the cumulative unknown-usa
 artifact-invalid, or any single model-profile timeout budget is reached. They also capture a
 live progress diagnostic after 600 seconds without a first semantic item. A recovered diagnostic
 stall is counted by model profile: the first continues, while the second stops subsequent
-scheduling. These fail-closed limits apply across repository shards through the shared budget
-ledger; they do not shorten or increase the per-sample timeout. Prompted output invariants are
+scheduling. These cumulative failure and inactivity limits apply across repository shards through
+the shared budget ledger; they do not dynamically shorten or increase the sealed per-sample
+timeout. Configured timeout variation uses an explicit plan override: `--timeout-override` applies
+to a model profile, while `--treatment-timeout-override` applies more specifically to one
+profile/treatment pair. The treatment override wins, and every expanded
+`samples[].timeoutSeconds` value is validated against the content-bound policy. The remaining hard
+wall-time can still cap an invocation below that sealed maximum. Prompted output invariants are
 not hidden post-processing rules:
 `BLOCKED` probes must use null severity, and every reported location must stay inside the
 declared benchmark scope.
@@ -185,6 +192,11 @@ recovered-inactivity ceiling. They additionally bind reported input/total-token 
 sample and per natural repository shard. The defaults are 1.25M input and 1.5M total tokens per
 sample, plus 7M input and 8M total tokens per repository shard; these are safety stops, not target
 budgets or quality claims.
+
+Optional timeout overrides are canonicalized by selected model-profile and treatment order, reject
+unknown or duplicate selectors, and are expanded into the sealed sample matrix. Older uniform
+plans remain valid because the policy object is optional; execution always consumes the already
+expanded sample timeout rather than recalculating it from live host behavior.
 
 An operational Canary and a quality Campaign need separate sealed plans. A Canary should use a
 bounded responsiveness timeout chosen from observed lifecycle data instead of automatically

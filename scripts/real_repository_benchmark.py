@@ -1847,7 +1847,55 @@ def command_validate_campaign_isolation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _campaign_timeout_overrides(args: argparse.Namespace) -> list[dict[str, Any]]:
+    overrides: list[dict[str, Any]] = []
+    for model_id, raw_seconds in getattr(args, "timeout_override", None) or []:
+        try:
+            timeout_seconds = int(raw_seconds)
+        except ValueError as error:
+            raise RealRepositoryError(
+                "--timeout-override SECONDS must be a positive integer"
+            ) from error
+        if timeout_seconds < 1:
+            raise RealRepositoryError(
+                "--timeout-override SECONDS must be a positive integer"
+            )
+        overrides.append(
+            {
+                "modelConfigurationId": model_id,
+                "timeoutSeconds": timeout_seconds,
+            }
+        )
+    for model_id, treatment, raw_seconds in (
+        getattr(args, "treatment_timeout_override", None) or []
+    ):
+        if treatment not in TREATMENTS:
+            raise RealRepositoryError(
+                "--treatment-timeout-override TREATMENT must be one of: "
+                + ", ".join(TREATMENTS)
+            )
+        try:
+            timeout_seconds = int(raw_seconds)
+        except ValueError as error:
+            raise RealRepositoryError(
+                "--treatment-timeout-override SECONDS must be a positive integer"
+            ) from error
+        if timeout_seconds < 1:
+            raise RealRepositoryError(
+                "--treatment-timeout-override SECONDS must be a positive integer"
+            )
+        overrides.append(
+            {
+                "modelConfigurationId": model_id,
+                "treatment": treatment,
+                "timeoutSeconds": timeout_seconds,
+            }
+        )
+    return overrides
+
+
 def command_plan_campaign(args: argparse.Namespace) -> int:
+    timeout_overrides = _campaign_timeout_overrides(args)
     (
         suite,
         blind,
@@ -1899,6 +1947,7 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         max_recovered_inactivity_samples_per_model_profile=(
             args.max_recovered_inactivity_samples_per_model_profile
         ),
+        timeout_overrides=timeout_overrides,
     )
     output = Path(args.output).expanduser().resolve()
     if output.exists():
@@ -2126,6 +2175,15 @@ def _terminal_run_state(
         return "FAILED", "SOURCE_MUTATION"
     if failure_class == "CREDENTIAL_EXPOSURE":
         return "FAILED", "CREDENTIAL_EXPOSURE"
+    # Failure budgets explain a partial final sample; pure ceilings still allow a
+    # completed shard to close before the shared ledger blocks later admission.
+    if budget_reason in {
+        "INFRASTRUCTURE_CIRCUIT_BREAKER",
+        "UNKNOWN_USAGE_BUDGET_EXCEEDED",
+        "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
+        "ARTIFACT_INVALID_BUDGET_EXCEEDED",
+    }:
+        return "STOPPED", budget_reason
     if schedule_complete:
         return "COMPLETED", "SCHEDULE_COMPLETE"
     if budget_reason is not None:
@@ -2890,6 +2948,20 @@ def build_parser() -> argparse.ArgumentParser:
     plan_campaign.add_argument("--treatment", action="append", choices=TREATMENTS)
     plan_campaign.add_argument("--repetitions", type=int)
     plan_campaign.add_argument("--timeout-seconds", type=int, default=1800)
+    plan_campaign.add_argument(
+        "--timeout-override",
+        action="append",
+        nargs=2,
+        metavar=("MODEL_CONFIGURATION_ID", "SECONDS"),
+        help="override the default timeout for every selected cell of a model profile",
+    )
+    plan_campaign.add_argument(
+        "--treatment-timeout-override",
+        action="append",
+        nargs=3,
+        metavar=("MODEL_CONFIGURATION_ID", "TREATMENT", "SECONDS"),
+        help="override a model profile timeout for one selected treatment",
+    )
     plan_campaign.add_argument("--soft-wall-seconds", type=int, default=64800)
     plan_campaign.add_argument("--hard-wall-seconds", type=int, default=86400)
     plan_campaign.add_argument(

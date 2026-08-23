@@ -74,6 +74,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         sample_token_ceiling: int = 1_500_000,
         shard_input_token_ceiling: int = 7_000_000,
         shard_token_ceiling: int = 8_000_000,
+        timeout_overrides: list[dict] | None = None,
     ) -> dict:
         repository_ids = repositories or [row["id"] for row in self.suite["repositories"]]
         return campaign_runtime.build_campaign_plan(
@@ -107,6 +108,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             max_recovered_inactivity_samples_per_model_profile=(
                 max_recovered_inactivity_samples_per_model_profile
             ),
+            timeout_overrides=timeout_overrides,
         )
 
     def _output(self, repository: dict) -> dict:
@@ -332,6 +334,233 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "campaign plan samples do not match the deterministic matrix",
             campaign_runtime.validate_campaign_plan(reordered, self.suite, self.blind),
         )
+
+    def test_timeout_policy_is_content_bound_and_uses_specific_precedence(
+        self,
+    ) -> None:
+        plan = self._plan(
+            timeout_overrides=[
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
+                    "timeoutSeconds": 2400,
+                },
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "timeoutSeconds": 1200,
+                },
+            ]
+        )
+        self.assertEqual(
+            plan["timeoutPolicy"],
+            {
+                "defaultSeconds": 1800,
+                "overrides": [
+                    {
+                        "modelConfigurationId": "fixture-standard",
+                        "timeoutSeconds": 1200,
+                    },
+                    {
+                        "modelConfigurationId": "fixture-standard",
+                        "timeoutSeconds": 2400,
+                        "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
+                    },
+                ],
+            },
+        )
+        timeouts = {
+            (row["modelConfigurationId"], row["treatment"]): row["timeoutSeconds"]
+            for row in plan["samples"]
+        }
+        self.assertEqual(timeouts[("fixture-standard", "RISK_LENS_REVIEW")], 1200)
+        self.assertEqual(
+            timeouts[("fixture-standard", "REVIEW_CRAFT_EVIDENCE_LOOP")],
+            2400,
+        )
+        self.assertEqual(timeouts[("fixture-assured", "RISK_LENS_REVIEW")], 1800)
+        self.assertEqual(
+            campaign_runtime.validate_campaign_plan(plan, self.suite, self.blind),
+            [],
+        )
+
+        tampered = copy.deepcopy(plan)
+        tampered["samples"][0]["timeoutSeconds"] = 1
+        campaign_runtime.seal(tampered)
+        self.assertIn(
+            "campaign plan samples do not match the deterministic matrix",
+            campaign_runtime.validate_campaign_plan(tampered, self.suite, self.blind),
+        )
+
+    def test_timeout_policy_rejects_unknown_duplicate_and_noncanonical_overrides(
+        self,
+    ) -> None:
+        plan = self._plan(
+            timeout_overrides=[
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "timeoutSeconds": 1200,
+                },
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "treatment": "RISK_LENS_REVIEW",
+                    "timeoutSeconds": 1500,
+                },
+            ]
+        )
+
+        unknown = copy.deepcopy(plan)
+        unknown["timeoutPolicy"]["overrides"][0]["modelConfigurationId"] = (
+            "missing-profile"
+        )
+        campaign_runtime.seal(unknown)
+        self.assertTrue(
+            any(
+                "unknown model configurations" in error
+                for error in campaign_runtime.validate_campaign_plan(
+                    unknown, self.suite, self.blind
+                )
+            )
+        )
+
+        duplicate = copy.deepcopy(plan)
+        duplicate["timeoutPolicy"]["overrides"].append(
+            {
+                "modelConfigurationId": "fixture-standard",
+                "timeoutSeconds": 1300,
+            }
+        )
+        campaign_runtime.seal(duplicate)
+        self.assertIn(
+            "campaign timeout policy contains duplicate selectors",
+            campaign_runtime.validate_campaign_plan(
+                duplicate, self.suite, self.blind
+            ),
+        )
+
+        noncanonical = copy.deepcopy(plan)
+        noncanonical["timeoutPolicy"]["overrides"].reverse()
+        campaign_runtime.seal(noncanonical)
+        self.assertIn(
+            "campaign timeout policy overrides must use canonical order",
+            campaign_runtime.validate_campaign_plan(
+                noncanonical, self.suite, self.blind
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "selector is duplicated",
+        ):
+            self._plan(
+                timeout_overrides=[
+                    {
+                        "modelConfigurationId": "fixture-standard",
+                        "timeoutSeconds": 1200,
+                    },
+                    {
+                        "modelConfigurationId": "fixture-standard",
+                        "timeoutSeconds": 1300,
+                    },
+                ]
+            )
+
+    def test_timeout_override_cli_contract_is_unambiguous(self) -> None:
+        args = runner.build_parser().parse_args(
+            [
+                "plan-campaign",
+                "--blind-suite",
+                "blind.json",
+                "--materialization",
+                "materialization.json",
+                "--adapter-config",
+                "adapters.json",
+                "--output",
+                "plan.json",
+                "--campaign-id",
+                "fixture-campaign",
+                "--timeout-override",
+                "fixture-standard",
+                "1200",
+                "--treatment-timeout-override",
+                "fixture-standard",
+                "REVIEW_CRAFT_EVIDENCE_LOOP",
+                "2400",
+            ]
+        )
+        self.assertEqual(
+            runner._campaign_timeout_overrides(args),
+            [
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "timeoutSeconds": 1200,
+                },
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
+                    "timeoutSeconds": 2400,
+                },
+            ],
+        )
+        args.timeout_override[0][1] = "0"
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "positive integer",
+        ):
+            runner._campaign_timeout_overrides(args)
+
+    def test_runner_consumes_expanded_sample_timeouts_without_inference(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(
+            repositories=[repository_id],
+            repetitions=1,
+            timeout_overrides=[
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "timeoutSeconds": 1200,
+                },
+                {
+                    "modelConfigurationId": "fixture-standard",
+                    "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
+                    "timeoutSeconds": 2400,
+                },
+            ],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            with (
+                patch.object(
+                    runner,
+                    "_describe_adapter",
+                    side_effect=lambda _command, adapter_id: self.descriptions[
+                        adapter_id
+                    ],
+                ),
+                patch.object(
+                    runner,
+                    "_repository_state",
+                    side_effect=self._repository_state,
+                ),
+                patch.object(
+                    runner,
+                    "_run_sample",
+                    side_effect=self._sample,
+                ) as run_sample,
+            ):
+                self.assertEqual(runner.command_run_campaign_plan(args), 0)
+        observed = {
+            (
+                call.kwargs["adapter"]["id"],
+                call.kwargs["treatment"],
+            ): call.kwargs["timeout_seconds"]
+            for call in run_sample.call_args_list
+        }
+        self.assertEqual(observed[("fixture-standard", "RISK_LENS_REVIEW")], 1200)
+        self.assertEqual(
+            observed[("fixture-standard", "REVIEW_CRAFT_EVIDENCE_LOOP")],
+            2400,
+        )
+        self.assertEqual(observed[("fixture-assured", "RISK_LENS_REVIEW")], 1800)
 
     def test_legacy_plan_and_empty_state_remain_readable(self) -> None:
         plan = self._plan()
@@ -1224,7 +1453,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(state["reportedTokens"], 240)
             self.assertEqual(state["stopReason"], "TOKEN_CEILING")
 
-    def test_final_sample_budget_signal_completes_exhausted_schedule(self) -> None:
+    def test_final_sample_cost_ceiling_completes_exhausted_schedule(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]
         plan = self._plan(repositories=[repository_id], token_ceiling=2_160)
         with tempfile.TemporaryDirectory() as directory:
@@ -1260,7 +1489,75 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(state["reportedTokens"], 2_160)
             self.assertEqual(campaign_runtime.budget_ledger_totals(ledger)[0], 2_160)
 
-    def test_safety_failure_precedes_final_schedule_completion(self) -> None:
+    def test_final_sample_failure_budgets_precede_schedule_completion(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id], repetitions=1)
+
+        def unknown_usage_sample(**kwargs: object) -> dict:
+            return self._failed_sample("REVIEW_FAILURE", **kwargs)
+
+        outcomes = (
+            (
+                "timeout",
+                self._timed_out_sample,
+                "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
+            ),
+            (
+                "unknown-usage",
+                unknown_usage_sample,
+                "UNKNOWN_USAGE_BUDGET_EXCEEDED",
+            ),
+        )
+        for label, final_sample, expected_reason in outcomes:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args = self._write_inputs(root, plan)
+                position = {"value": 0}
+
+                def sample_for_position(
+                    *,
+                    _position: dict[str, int] = position,
+                    _final_sample: object = final_sample,
+                    **kwargs: object,
+                ) -> dict:
+                    _position["value"] += 1
+                    if _position["value"] == len(plan["samples"]):
+                        assert callable(_final_sample)
+                        return _final_sample(**kwargs)
+                    return self._sample(**kwargs)
+
+                with (
+                    patch.object(
+                        runner,
+                        "_describe_adapter",
+                        side_effect=lambda _command, adapter_id: self.descriptions[
+                            adapter_id
+                        ],
+                    ),
+                    patch.object(
+                        runner,
+                        "_repository_state",
+                        side_effect=self._repository_state,
+                    ),
+                    patch.object(
+                        runner,
+                        "_run_sample",
+                        side_effect=sample_for_position,
+                    ) as run_sample,
+                ):
+                    self.assertEqual(runner.command_run_campaign_plan(args), 0)
+                state = json.loads(
+                    (Path(args.run_dir) / "run-state.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(run_sample.call_count, len(plan["samples"]))
+                self.assertEqual(state["status"], "STOPPED")
+                self.assertEqual(state["stopReason"], expected_reason)
+
+    def test_terminal_state_priority_preserves_safety_and_clean_completion(
+        self,
+    ) -> None:
         self.assertEqual(
             runner._terminal_run_state(
                 "SOURCE_MUTATION",
@@ -1276,6 +1573,34 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 schedule_complete=True,
             ),
             ("FAILED", "CREDENTIAL_EXPOSURE"),
+        )
+        self.assertEqual(
+            runner._terminal_run_state(
+                "TIMEOUT",
+                "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
+                schedule_complete=True,
+            ),
+            ("STOPPED", "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED"),
+        )
+        self.assertEqual(
+            runner._terminal_run_state(
+                None,
+                "UNKNOWN_USAGE_BUDGET_EXCEEDED",
+                schedule_complete=True,
+            ),
+            ("STOPPED", "UNKNOWN_USAGE_BUDGET_EXCEEDED"),
+        )
+        self.assertEqual(
+            runner._terminal_run_state(None, None, schedule_complete=True),
+            ("COMPLETED", "SCHEDULE_COMPLETE"),
+        )
+        self.assertEqual(
+            runner._terminal_run_state(
+                None,
+                "TOKEN_CEILING",
+                schedule_complete=True,
+            ),
+            ("COMPLETED", "SCHEDULE_COMPLETE"),
         )
 
     def test_runner_stops_after_sample_input_token_ceiling(self) -> None:
