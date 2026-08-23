@@ -45,8 +45,19 @@ recovering the hidden oracle through unreachable Git objects.
 
 New receipts record `fixObjectExcluded: true`. Earlier receipts remain schema-readable historical
 source evidence, but execution rejects them because they do not attest oracle-object exclusion.
-Re-materialize the selected repositories before starting any new campaign; campaign execution also
-rechecks the live Git object database so post-receipt leakage fails before provider work begins.
+They also record `evaluatorBoundary.kind: DISJOINT_COORDINATOR_ROOT_V1`. The evaluator workspace
+contains only `repositories/`; oracle-bearing `suite.json` and `materialization.json` are written
+to a separate, non-nested coordinator root. Planning and execution reject receipts without this
+attestation, while execution and the standalone live validator reject extra evaluator-root files,
+symlinked repository roots, nested coordinator roots, and post-receipt Git-object leakage before
+adapter description or provider work begins. Re-materialize the selected repositories before
+starting any new campaign.
+
+This is a path and artifact-delivery boundary, not an operating-system read sandbox. It prevents
+coordinator artifacts from being placed in or above the evaluator workspace and makes that
+condition contract-verifiable without a model call. Host enforcement must still be reported
+separately; `--cd` and a read-only mutation policy alone do not prove that the process cannot read
+arbitrary unrelated host paths.
 
 The benchmark is not Golden until all declared treatments, repetitions, and model
 configurations complete, the outputs are independently adjudicated, and the stability
@@ -57,13 +68,19 @@ cross-model stability, or human agreement.
 uv run --locked python scripts/real_repository_benchmark.py validate-suite
 
 uv run --locked python scripts/real_repository_benchmark.py materialize \
-  --workspace-root <external-empty-directory>
+  --workspace-root <external-empty-evaluator-directory> \
+  --coordinator-root <separate-empty-coordinator-directory>
+
+uv run --locked python scripts/real_repository_benchmark.py \
+  validate-evaluator-workspace \
+  --materialization <coordinator-directory>/materialization.json \
+  --workspace-root <external-evaluator-directory>
 
 uv run --locked python scripts/real_repository_benchmark.py blind-suite \
   --output <external-path>/blind-suite.json
 
 uv run --locked python scripts/real_repository_benchmark.py plan-campaign \
-  --materialization evals/real-repositories/current/materialization.json \
+  --materialization <coordinator-directory>/materialization.json \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --adapter-config <outside-adapters.json> \
   --campaign-id <immutable-campaign-id> \
@@ -93,7 +110,7 @@ uv run --locked python scripts/real_repository_benchmark.py \
 # Execute one natural repository shard at a time. Add --resume only to an
 # interrupted RUNNING state; terminal budget/circuit stops require a new plan.
 uv run --locked python scripts/real_repository_benchmark.py run-plan \
-  --materialization evals/real-repositories/current/materialization.json \
+  --materialization <coordinator-directory>/materialization.json \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --workspace-root <materialized-workspace-root> \
   --adapter-config <outside-adapters.json> \

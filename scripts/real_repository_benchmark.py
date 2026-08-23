@@ -56,6 +56,7 @@ from real_repository_contracts import (
     ADJUDICATION_PACKET_V2_SCHEMA,
     ADJUDICATION_SUBMISSION_SCHEMA,
     ADJUDICATION_SUBMISSION_V2_SCHEMA,
+    EVALUATOR_BOUNDARY_KIND,
     MATERIALIZATION_BINDING_KIND,
     TREATMENTS,
     RealRepositoryError,
@@ -106,6 +107,7 @@ INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 SAMPLE_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
 TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v1"
 TIMEOUT_EXIT_CODE = 124
+EVALUATOR_WORKSPACE_TOP_LEVEL = ("repositories",)
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.locking import exclusive_file_lock  # noqa: E402
@@ -1036,6 +1038,65 @@ def _selected_repositories(
     return [repository for repository in repositories if repository["id"] in requested_set]
 
 
+def _assert_disjoint_paths(
+    first: Path,
+    second: Path,
+    *,
+    first_label: str,
+    second_label: str,
+) -> None:
+    if first == second or first in second.parents or second in first.parents:
+        raise RealRepositoryError(
+            f"{first_label} and {second_label} must be disjoint: {first} ; {second}"
+        )
+
+
+def _prepare_empty_directory(path: Path, *, label: str) -> None:
+    if path.exists() and not path.is_dir():
+        raise RealRepositoryError(f"{label} must be a directory: {path}")
+    if path.exists() and any(path.iterdir()):
+        raise RealRepositoryError(f"{label} must not exist or must be empty: {path}")
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+
+
+def _require_execution_materialization(receipt: dict[str, Any]) -> None:
+    for repository in receipt["repositories"]:
+        if repository.get("fixObjectExcluded") is not True:
+            raise RealRepositoryError(
+                f"{repository['id']}: materialization receipt does not attest fix object exclusion"
+            )
+    expected_boundary = {
+        "kind": EVALUATOR_BOUNDARY_KIND,
+        "coordinatorArtifactsExcluded": True,
+        "workspaceTopLevel": list(EVALUATOR_WORKSPACE_TOP_LEVEL),
+    }
+    if receipt.get("evaluatorBoundary") != expected_boundary:
+        raise RealRepositoryError(
+            "materialization receipt does not attest a disjoint coordinator/evaluator boundary"
+        )
+
+
+def _assert_evaluator_workspace_boundary(workspace_root: Path) -> Path:
+    resolved_root = workspace_root.resolve(strict=True)
+    if not resolved_root.is_dir():
+        raise RealRepositoryError(
+            f"evaluator workspace root must be a directory: {resolved_root}"
+        )
+    actual_entries = sorted(path.name for path in resolved_root.iterdir())
+    if actual_entries != list(EVALUATOR_WORKSPACE_TOP_LEVEL):
+        rendered = ", ".join(actual_entries) if actual_entries else "<empty>"
+        raise RealRepositoryError(
+            "evaluator workspace must contain only the repositories directory; "
+            f"found: {rendered}"
+        )
+    repositories_root = resolved_root / "repositories"
+    if repositories_root.is_symlink() or not repositories_root.is_dir():
+        raise RealRepositoryError(
+            f"evaluator repositories root must be a real directory: {repositories_root}"
+        )
+    return repositories_root.resolve(strict=True)
+
+
 def _initialize_materialization_repository(destination: Path, remote: str) -> None:
     run_git("init", "--quiet", str(destination))
     run_git("remote", "add", "origin", remote, cwd=destination)
@@ -1265,6 +1326,55 @@ def command_validate_materialization(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_validate_evaluator_workspace(args: argparse.Namespace) -> int:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    suite_errors = validate_suite(suite)
+    if suite_errors:
+        raise RealRepositoryError("invalid suite: " + "; ".join(suite_errors))
+    receipt_path = Path(args.materialization).expanduser().resolve(strict=True)
+    receipt = read_json(receipt_path)
+    receipt_errors = validate_materialization_receipt(receipt, suite)
+    if receipt_errors:
+        raise RealRepositoryError(
+            "invalid materialization: " + "; ".join(receipt_errors)
+        )
+    _require_execution_materialization(receipt)
+    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
+    _assert_disjoint_paths(
+        workspace_root,
+        receipt_path.parent,
+        first_label="evaluator workspace root",
+        second_label="materialization coordinator root",
+    )
+    selected = _selected_repositories(suite, args.repository)
+    selected_ids = [repository["id"] for repository in selected]
+    materialized_ids = {repository["id"] for repository in receipt["repositories"]}
+    missing = sorted(set(selected_ids) - materialized_ids)
+    if missing:
+        raise RealRepositoryError(
+            "selected repositories are not materialized: " + ", ".join(missing)
+        )
+    _verify_plan_workspaces(
+        plan={"selection": {"repositories": selected_ids}},
+        suite=suite,
+        receipt=receipt,
+        workspace_root=workspace_root,
+    )
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "repositories": len(selected_ids),
+                "evaluatorBoundary": EVALUATOR_BOUNDARY_KIND,
+                "contentSha256": receipt["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def command_materialize(args: argparse.Namespace) -> int:
     suite_path = Path(args.suite).expanduser().resolve(strict=True)
     suite = read_json(suite_path)
@@ -1272,11 +1382,21 @@ def command_materialize(args: argparse.Namespace) -> int:
     if errors:
         raise RealRepositoryError("invalid suite: " + "; ".join(errors))
     workspace_root = Path(args.workspace_root).expanduser().resolve()
-    if workspace_root.exists() and any(workspace_root.iterdir()):
-        raise RealRepositoryError(
-            f"workspace root must not exist or must be empty: {workspace_root}"
-        )
-    workspace_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    coordinator_root = Path(args.coordinator_root).expanduser().resolve()
+    _assert_disjoint_paths(
+        workspace_root,
+        coordinator_root,
+        first_label="evaluator workspace root",
+        second_label="coordinator root",
+    )
+    _assert_disjoint_paths(
+        workspace_root,
+        ROOT,
+        first_label="evaluator workspace root",
+        second_label="Review Craft source root",
+    )
+    _prepare_empty_directory(workspace_root, label="evaluator workspace root")
+    _prepare_empty_directory(coordinator_root, label="coordinator root")
     selected = _selected_repositories(suite, args.repository)
     repositories = [_materialize_repository(repository, workspace_root) for repository in selected]
     payload = {
@@ -1289,6 +1409,11 @@ def command_materialize(args: argparse.Namespace) -> int:
             "fullSuite": len(selected) == len(suite["repositories"]),
             "selectedRepositoryIds": [repository["id"] for repository in selected],
         },
+        "evaluatorBoundary": {
+            "kind": EVALUATOR_BOUNDARY_KIND,
+            "coordinatorArtifactsExcluded": True,
+            "workspaceTopLevel": list(EVALUATOR_WORKSPACE_TOP_LEVEL),
+        },
         "repositories": repositories,
         "contentSha256": "0" * 64,
     }
@@ -1300,12 +1425,15 @@ def command_materialize(args: argparse.Namespace) -> int:
         raise RealRepositoryError(
             "generated materialization receipt is invalid: " + "; ".join(receipt_errors)
         )
-    write_json(workspace_root / "suite.json", suite)
-    write_json(workspace_root / "materialization.json", payload)
+    write_json(coordinator_root / "suite.json", suite)
+    write_json(coordinator_root / "materialization.json", payload)
+    _assert_evaluator_workspace_boundary(workspace_root)
     print(
         json.dumps(
             {
                 "workspaceRoot": str(workspace_root),
+                "coordinatorRoot": str(coordinator_root),
+                "receipt": str(coordinator_root / "materialization.json"),
                 "repositories": len(repositories),
                 "contentSha256": payload["contentSha256"],
             },
@@ -1924,14 +2052,29 @@ def _load_campaign_plan_context(
 ]:
     if suite is None or blind is None:
         suite, blind = _load_campaign_suite_and_blind(args)
+    receipt, adapter_config = _load_materialization_and_adapter_config(args, suite)
+    descriptions, model_configurations = _describe_campaign_adapters(adapter_config)
+    return suite, blind, receipt, adapter_config, descriptions, model_configurations
+
+
+def _load_materialization_and_adapter_config(
+    args: argparse.Namespace, suite: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     receipt = read_json(Path(args.materialization).expanduser().resolve(strict=True))
     receipt_errors = validate_materialization_receipt(receipt, suite)
     if receipt_errors:
         raise RealRepositoryError("invalid materialization: " + "; ".join(receipt_errors))
+    _require_execution_materialization(receipt)
     adapter_config = read_json(Path(args.adapter_config).expanduser().resolve(strict=True))
     adapter_errors = validate_adapter_config(adapter_config)
     if adapter_errors:
         raise RealRepositoryError("invalid adapter configuration: " + "; ".join(adapter_errors))
+    return receipt, adapter_config
+
+
+def _describe_campaign_adapters(
+    adapter_config: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     descriptions = {
         adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
         for adapter in adapter_config["adapters"]
@@ -1941,7 +2084,7 @@ def _load_campaign_plan_context(
         _model_configuration(adapter["id"], descriptions[adapter["id"]])
         for adapter in adapter_config["adapters"]
     ]
-    return suite, blind, receipt, adapter_config, descriptions, model_configurations
+    return descriptions, model_configurations
 
 
 def command_prepare_campaign_isolation(args: argparse.Namespace) -> int:
@@ -2292,22 +2435,38 @@ def _verify_plan_workspaces(
     receipt: dict[str, Any],
     workspace_root: Path,
 ) -> dict[str, Path]:
+    _require_execution_materialization(receipt)
+    workspace_root = workspace_root.resolve(strict=True)
+    repositories_root = _assert_evaluator_workspace_boundary(workspace_root)
     repositories = {row["id"]: row for row in suite["repositories"]}
     materialized = {row["id"]: row for row in receipt["repositories"]}
+    expected_entries = sorted(materialized)
+    actual_entries = sorted(path.name for path in repositories_root.iterdir())
+    if actual_entries != expected_entries:
+        rendered = ", ".join(actual_entries) if actual_entries else "<empty>"
+        raise RealRepositoryError(
+            "evaluator repositories directory must contain only materialized checkouts; "
+            f"found: {rendered}"
+        )
     roots: dict[str, Path] = {}
     for repository_id in plan["selection"]["repositories"]:
+        if repository_id not in materialized:
+            raise RealRepositoryError(
+                f"selected repository is not materialized: {repository_id}"
+            )
         repository = repositories[repository_id]
         receipt_row = materialized[repository_id]
-        if receipt_row.get("fixObjectExcluded") is not True:
+        checkout = workspace_root / receipt_row["checkout"]
+        if checkout.is_symlink():
             raise RealRepositoryError(
-                f"{repository_id}: materialization receipt does not attest fix object exclusion"
+                f"materialized checkout must not be a symlink: {checkout}"
             )
-        repository_root = (workspace_root / receipt_row["checkout"]).resolve(strict=True)
+        repository_root = checkout.resolve(strict=True)
         try:
-            repository_root.relative_to(workspace_root)
+            repository_root.relative_to(repositories_root)
         except ValueError as error:
             raise RealRepositoryError(
-                f"materialized checkout escapes workspace: {repository_root}"
+                f"materialized checkout escapes evaluator repositories root: {repository_root}"
             ) from error
         _assert_live_materialization(repository, receipt_row, repository_root)
         roots[repository_id] = repository_root
@@ -2509,14 +2668,22 @@ def _command_run_campaign_plan_locked(
         raise RealRepositoryError(
             "campaign plan is not execution-ready: " + "; ".join(execution_errors)
         )
-    (
-        suite,
-        blind,
-        receipt,
-        adapter_config,
-        descriptions,
-        model_configurations,
-    ) = _load_campaign_plan_context(args, suite=suite, blind=blind)
+    receipt, adapter_config = _load_materialization_and_adapter_config(args, suite)
+    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
+    materialization_path = Path(args.materialization).expanduser().resolve(strict=True)
+    _assert_disjoint_paths(
+        workspace_root,
+        materialization_path.parent,
+        first_label="evaluator workspace root",
+        second_label="materialization coordinator root",
+    )
+    repository_roots = _verify_plan_workspaces(
+        plan=plan,
+        suite=suite,
+        receipt=receipt,
+        workspace_root=workspace_root,
+    )
+    descriptions, model_configurations = _describe_campaign_adapters(adapter_config)
     binding_errors = validate_plan_inputs(
         plan,
         materialization=receipt,
@@ -2534,13 +2701,6 @@ def _command_run_campaign_plan_locked(
         ledger_path=ledger_path,
         plan=plan,
         resume=args.resume,
-    )
-    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
-    repository_roots = _verify_plan_workspaces(
-        plan=plan,
-        suite=suite,
-        receipt=receipt,
-        workspace_root=workspace_root,
     )
     run_dir = Path(args.run_dir).expanduser().resolve()
     _reserve_campaign_budget_shard(
@@ -2930,26 +3090,15 @@ def command_run_campaign(args: argparse.Namespace) -> int:
     blind_errors = validate_blind_suite(blind, suite)
     if blind_errors:
         raise RealRepositoryError("invalid blind suite: " + "; ".join(blind_errors))
-    receipt = read_json(Path(args.materialization).expanduser().resolve(strict=True))
-    receipt_errors = validate_materialization_receipt(receipt, suite)
-    if receipt_errors:
-        raise RealRepositoryError("invalid materialization: " + "; ".join(receipt_errors))
-    adapter_config = read_json(Path(args.adapter_config).expanduser().resolve(strict=True))
-    adapter_errors = validate_adapter_config(adapter_config)
-    if adapter_errors:
-        raise RealRepositoryError("invalid adapter configuration: " + "; ".join(adapter_errors))
-    descriptions = {
-        adapter["id"]: _describe_adapter(adapter["command"], adapter["id"])
-        for adapter in adapter_config["adapters"]
-    }
-    _require_prepared_adapter_isolation(descriptions)
+    receipt, adapter_config = _load_materialization_and_adapter_config(args, suite)
     workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
-    run_dir = Path(args.run_dir).expanduser().resolve()
-    if run_dir.exists() and any(run_dir.iterdir()):
-        raise RealRepositoryError(f"run directory must be empty: {run_dir}")
-    run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-    skill_root = Path(args.skill_root).expanduser().resolve(strict=True)
-    evidence_root = Path(args.evidence_root).expanduser().resolve(strict=True)
+    materialization_path = Path(args.materialization).expanduser().resolve(strict=True)
+    _assert_disjoint_paths(
+        workspace_root,
+        materialization_path.parent,
+        first_label="evaluator workspace root",
+        second_label="materialization coordinator root",
+    )
     selected = _selected_repositories(suite, args.repository)
     selected_ids = {repository["id"] for repository in selected}
     materialized = {repository["id"]: repository for repository in receipt["repositories"]}
@@ -2958,6 +3107,19 @@ def command_run_campaign(args: argparse.Namespace) -> int:
         raise RealRepositoryError(
             "selected repositories are not materialized: " + ", ".join(sorted(missing))
         )
+    repository_roots = _verify_plan_workspaces(
+        plan={"selection": {"repositories": [row["id"] for row in selected]}},
+        suite=suite,
+        receipt=receipt,
+        workspace_root=workspace_root,
+    )
+    descriptions, _model_configurations = _describe_campaign_adapters(adapter_config)
+    run_dir = Path(args.run_dir).expanduser().resolve()
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise RealRepositoryError(f"run directory must be empty: {run_dir}")
+    run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    skill_root = Path(args.skill_root).expanduser().resolve(strict=True)
+    evidence_root = Path(args.evidence_root).expanduser().resolve(strict=True)
     treatments = args.treatment or list(TREATMENTS)
     repetitions = args.repetitions or suite["protocol"]["repetitions"]
     if repetitions < 1:
@@ -2976,19 +3138,7 @@ def command_run_campaign(args: argparse.Namespace) -> int:
     ordinal = 0
     mutation_detected = False
     for repository in selected:
-        receipt_row = materialized[repository["id"]]
-        if receipt_row.get("fixObjectExcluded") is not True:
-            raise RealRepositoryError(
-                f"{repository['id']}: materialization receipt does not attest fix object exclusion"
-            )
-        repository_root = (workspace_root / receipt_row["checkout"]).resolve(strict=True)
-        try:
-            repository_root.relative_to(workspace_root)
-        except ValueError as error:
-            raise RealRepositoryError(
-                f"materialized checkout escapes workspace: {repository_root}"
-            ) from error
-        _assert_live_materialization(repository, receipt_row, repository_root)
+        repository_root = repository_roots[repository["id"]]
         for treatment in treatments:
             for adapter in adapter_config["adapters"]:
                 for repetition in range(1, repetitions + 1):
@@ -3096,8 +3246,22 @@ def build_parser() -> argparse.ArgumentParser:
     materialize = subparsers.add_parser("materialize")
     materialize.add_argument("--suite", default=str(DEFAULT_SUITE))
     materialize.add_argument("--workspace-root", required=True)
+    materialize.add_argument("--coordinator-root", required=True)
     materialize.add_argument("--repository", action="append")
     materialize.set_defaults(handler=command_materialize)
+
+    validate_evaluator_workspace = subparsers.add_parser(
+        "validate-evaluator-workspace"
+    )
+    validate_evaluator_workspace.add_argument(
+        "--suite", default=str(DEFAULT_SUITE)
+    )
+    validate_evaluator_workspace.add_argument("--materialization", required=True)
+    validate_evaluator_workspace.add_argument("--workspace-root", required=True)
+    validate_evaluator_workspace.add_argument("--repository", action="append")
+    validate_evaluator_workspace.set_defaults(
+        handler=command_validate_evaluator_workspace
+    )
 
     validate_campaign_parser = subparsers.add_parser("validate-campaign")
     validate_campaign_parser.add_argument("--suite", default=str(DEFAULT_SUITE))

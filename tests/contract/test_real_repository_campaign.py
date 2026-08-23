@@ -33,6 +33,11 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         )
         for repository in self.receipt["repositories"]:
             repository["fixObjectExcluded"] = True
+        self.receipt["evaluatorBoundary"] = {
+            "kind": contracts.EVALUATOR_BOUNDARY_KIND,
+            "coordinatorArtifactsExcluded": True,
+            "workspaceTopLevel": ["repositories"],
+        }
         self.receipt["contentSha256"] = contracts.sha256_json(
             {
                 key: value
@@ -275,7 +280,9 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         adapter_config: dict | None = None,
     ) -> SimpleNamespace:
         adapter_path = root / "adapters.json"
-        materialization_path = root / "materialization.json"
+        coordinator = root / "coordinator"
+        coordinator.mkdir()
+        materialization_path = coordinator / "materialization.json"
         plan_path = root / "plan-input.json"
         runner.write_json(adapter_path, adapter_config or self.adapter_config)
         runner.write_json(materialization_path, self.receipt)
@@ -329,6 +336,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.assertEqual(
             first["budgets"]["maxRecoveredInactivitySamplesPerModelProfile"], 2
         )
+
         self.assertEqual(
             first["budgets"]["hardReportedInputTokenCeilingPerSample"],
             1_250_000,
@@ -348,6 +356,26 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "campaign plan samples do not match the deterministic matrix",
             campaign_runtime.validate_campaign_plan(reordered, self.suite, self.blind),
         )
+
+    def test_run_plan_rejects_coordinator_artifact_before_adapter_description(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id], repetitions=1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            workspace = Path(args.workspace_root)
+            runner.write_json(workspace / "suite.json", self.suite)
+
+            with (
+                patch.object(runner, "_describe_adapter") as describe,
+                self.assertRaisesRegex(
+                    contracts.RealRepositoryError,
+                    "evaluator workspace must contain only the repositories directory",
+                ),
+            ):
+                runner.command_run_campaign_plan(args)
+
+            describe.assert_not_called()
 
     def test_timeout_policy_is_content_bound_and_uses_specific_precedence(
         self,

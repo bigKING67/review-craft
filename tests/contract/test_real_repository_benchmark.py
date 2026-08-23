@@ -418,7 +418,14 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
 
             plan = {"selection": {"repositories": [repository["id"]]}}
             suite = {"repositories": [repository]}
-            materialization = {"repositories": [receipt]}
+            materialization = {
+                "evaluatorBoundary": {
+                    "kind": contracts.EVALUATOR_BOUNDARY_KIND,
+                    "coordinatorArtifactsExcluded": True,
+                    "workspaceTopLevel": ["repositories"],
+                },
+                "repositories": [receipt],
+            }
             self.assertEqual(
                 runner._verify_plan_workspaces(
                     plan=plan,
@@ -428,6 +435,20 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 ),
                 {repository["id"]: evaluation},
             )
+
+            coordinator_leak = workspace / "repositories" / "materialization.json"
+            coordinator_leak.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                contracts.RealRepositoryError,
+                "must contain only materialized checkouts",
+            ):
+                runner._verify_plan_workspaces(
+                    plan=plan,
+                    suite=suite,
+                    receipt=materialization,
+                    workspace_root=workspace,
+                )
+            coordinator_leak.unlink()
 
             runner.run_git("fetch", "--quiet", "origin", fix_revision, cwd=evaluation)
             with self.assertRaisesRegex(
@@ -455,6 +476,114 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 receipt=receipt,
                 workspace_root=Path(directory).resolve(),
             )
+
+    def test_materialize_command_separates_and_validates_evaluator_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / "evaluator"
+            coordinator = root / "coordinator"
+            repository = self.suite["repositories"][0]
+            repository_id = repository["id"]
+            real_probe = next(
+                probe
+                for probe in repository["probes"]
+                if probe["kind"] == "REAL_FINDING"
+            )
+            published = json.loads(
+                (CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8")
+            )["repositories"][0]
+
+            def materialize_fixture(source: dict, root_path: Path) -> dict:
+                checkout = root_path / "repositories" / source["id"]
+                checkout.mkdir(parents=True)
+                return {
+                    "id": source["id"],
+                    "remote": source["remote"],
+                    "revision": source["revision"],
+                    "tree": published["tree"],
+                    "fixRevision": real_probe["upstreamFix"]["revision"],
+                    "fixParentVerified": True,
+                    "fixObjectExcluded": True,
+                    "scope": source["scope"],
+                    "checkout": f"repositories/{source['id']}",
+                }
+
+            args = SimpleNamespace(
+                suite=str(SUITE_PATH),
+                workspace_root=str(workspace),
+                coordinator_root=str(coordinator),
+                repository=[repository_id],
+            )
+
+            with patch.object(
+                runner, "_materialize_repository", side_effect=materialize_fixture
+            ):
+                self.assertEqual(runner.command_materialize(args), 0)
+            self.assertEqual(
+                {path.name for path in workspace.iterdir()}, {"repositories"}
+            )
+            self.assertEqual(
+                {path.name for path in coordinator.iterdir()},
+                {"materialization.json", "suite.json"},
+            )
+            receipt_path = coordinator / "materialization.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                receipt["evaluatorBoundary"],
+                {
+                    "kind": contracts.EVALUATOR_BOUNDARY_KIND,
+                    "coordinatorArtifactsExcluded": True,
+                    "workspaceTopLevel": ["repositories"],
+                },
+            )
+            self.assertEqual(receipt["repositories"][0]["revision"], repository["revision"])
+            self.assertEqual(
+                receipt["repositories"][0]["fixRevision"],
+                real_probe["upstreamFix"]["revision"],
+            )
+
+            validate_args = SimpleNamespace(
+                suite=str(SUITE_PATH),
+                materialization=str(receipt_path),
+                workspace_root=str(workspace),
+                repository=[repository_id],
+            )
+            with patch.object(runner, "_assert_live_materialization"):
+                self.assertEqual(
+                    runner.command_validate_evaluator_workspace(validate_args), 0
+                )
+
+    def test_materialize_command_rejects_nested_coordinator_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / "evaluator"
+            args = SimpleNamespace(
+                suite=str(SUITE_PATH),
+                workspace_root=str(workspace),
+                coordinator_root=str(workspace / "coordinator"),
+                repository=[self.suite["repositories"][0]["id"]],
+            )
+            with self.assertRaisesRegex(
+                contracts.RealRepositoryError,
+                "evaluator workspace root and coordinator root must be disjoint",
+            ):
+                runner.command_materialize(args)
+            self.assertFalse(workspace.exists())
+
+    def test_execution_rejects_receipt_without_evaluator_boundary_attestation(self) -> None:
+        receipt = json.loads(
+            (CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8")
+        )
+        for repository in receipt["repositories"]:
+            repository["fixObjectExcluded"] = True
+        receipt["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in receipt.items() if key != "contentSha256"}
+        )
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "does not attest a disjoint coordinator/evaluator boundary",
+        ):
+            runner._require_execution_materialization(receipt)
 
     def test_materialization_source_binding_ignores_prompt_only_changes(self) -> None:
         receipt = json.loads((CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8"))
