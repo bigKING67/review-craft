@@ -31,6 +31,18 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         self.receipt = json.loads(
             (CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8")
         )
+        for repository in self.receipt["repositories"]:
+            repository["fixObjectExcluded"] = True
+        self.receipt["contentSha256"] = contracts.sha256_json(
+            {
+                key: value
+                for key, value in self.receipt.items()
+                if key != "contentSha256"
+            }
+        )
+        isolation_patcher = patch.object(runner, "_assert_fix_object_excluded")
+        isolation_patcher.start()
+        self.addCleanup(isolation_patcher.stop)
         self.adapter_config = {
             "schema": "review-craft.eval-real-repository-adapters.v1",
             "adapters": [
@@ -263,8 +275,10 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         adapter_config: dict | None = None,
     ) -> SimpleNamespace:
         adapter_path = root / "adapters.json"
+        materialization_path = root / "materialization.json"
         plan_path = root / "plan-input.json"
         runner.write_json(adapter_path, adapter_config or self.adapter_config)
+        runner.write_json(materialization_path, self.receipt)
         runner.write_json(plan_path, plan)
         workspace = root / "workspace"
         for row in self.receipt["repositories"]:
@@ -272,7 +286,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         return SimpleNamespace(
             suite=str(SUITE_PATH),
             blind_suite=str(CURRENT_ROOT / "blind-suite.json"),
-            materialization=str(CURRENT_ROOT / "materialization.json"),
+            materialization=str(materialization_path),
             workspace_root=str(workspace),
             adapter_config=str(adapter_path),
             plan=str(plan_path),

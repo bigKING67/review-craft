@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1035,37 +1036,129 @@ def _selected_repositories(
     return [repository for repository in repositories if repository["id"] in requested_set]
 
 
+def _initialize_materialization_repository(destination: Path, remote: str) -> None:
+    run_git("init", "--quiet", str(destination))
+    run_git("remote", "add", "origin", remote, cwd=destination)
+
+
+def _verify_fix_parent(
+    repository: dict[str, Any], workspace_root: Path, fix_revision: str
+) -> None:
+    # Keep the oracle-bearing fix in a disposable object database.
+    with tempfile.TemporaryDirectory(
+        prefix=".review-craft-fix-verifier-", dir=workspace_root
+    ) as temporary:
+        verifier = Path(temporary)
+        _initialize_materialization_repository(verifier, repository["remote"])
+        run_git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--depth",
+            "2",
+            "origin",
+            fix_revision,
+            cwd=verifier,
+            timeout=900,
+        )
+        fetched_fix = run_git("rev-parse", "FETCH_HEAD", cwd=verifier)
+        if fetched_fix != fix_revision:
+            raise RealRepositoryError(
+                f"{repository['id']}: fetched fix revision does not match suite"
+            )
+        fix_parent = run_git("rev-parse", f"{fix_revision}^", cwd=verifier)
+        if fix_parent != repository["revision"]:
+            raise RealRepositoryError(
+                f"{repository['id']}: benchmark revision is not the direct fix parent"
+            )
+
+
+def _git_commit_exists(revision: str, *, cwd: Path) -> bool:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    detail = completed.stderr.strip() or completed.stdout.strip() or "no output"
+    raise RealRepositoryError(f"git rev-parse oracle isolation probe failed: {detail}")
+
+
+def _assert_fix_object_excluded(
+    repository_id: str, fix_revision: str, destination: Path
+) -> None:
+    if _git_commit_exists(fix_revision, cwd=destination):
+        raise RealRepositoryError(
+            f"{repository_id}: upstream fix object leaked into evaluation checkout"
+        )
+    unreachable = run_git("fsck", "--no-reflogs", "--unreachable", cwd=destination)
+    if fix_revision in unreachable.split():
+        raise RealRepositoryError(
+            f"{repository_id}: upstream fix is enumerable as an unreachable object"
+        )
+
+
+def _assert_live_materialization(
+    repository: dict[str, Any], receipt_row: dict[str, Any], repository_root: Path
+) -> None:
+    if receipt_row.get("fixObjectExcluded") is not True:
+        raise RealRepositoryError(
+            f"{repository['id']}: materialization receipt does not attest fix object exclusion"
+        )
+    expected_state = {
+        "head": repository["revision"],
+        "tree": receipt_row["tree"],
+        "status": "",
+    }
+    if _repository_state(repository_root) != expected_state:
+        raise RealRepositoryError(
+            f"{repository['id']}: live materialization state does not match receipt"
+        )
+    real_probe = next(
+        probe for probe in repository["probes"] if probe["kind"] == "REAL_FINDING"
+    )
+    _assert_fix_object_excluded(
+        repository["id"], real_probe["upstreamFix"]["revision"], repository_root
+    )
+
+
 def _materialize_repository(repository: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     destination = workspace_root / "repositories" / repository["id"]
     if destination.exists():
         raise RealRepositoryError(f"materialization destination exists: {destination}")
-    destination.mkdir(parents=True, mode=0o700)
-    run_git("init", "--quiet", str(destination))
-    run_git("remote", "add", "origin", repository["remote"], cwd=destination)
     real_probe = next(probe for probe in repository["probes"] if probe["kind"] == "REAL_FINDING")
     fix_revision = real_probe["upstreamFix"]["revision"]
+    _verify_fix_parent(repository, workspace_root, fix_revision)
+
+    destination.mkdir(parents=True, mode=0o700)
+    _initialize_materialization_repository(destination, repository["remote"])
     run_git(
         "fetch",
         "--quiet",
+        "--no-tags",
         "--depth",
-        "2",
+        "1",
         "origin",
-        fix_revision,
+        repository["revision"],
         cwd=destination,
         timeout=900,
     )
-    fetched_fix = run_git("rev-parse", "FETCH_HEAD", cwd=destination)
-    if fetched_fix != fix_revision:
-        raise RealRepositoryError(f"{repository['id']}: fetched fix revision does not match suite")
-    fix_parent = run_git("rev-parse", f"{fix_revision}^", cwd=destination)
-    if fix_parent != repository["revision"]:
+    fetched_revision = run_git("rev-parse", "FETCH_HEAD", cwd=destination)
+    if fetched_revision != repository["revision"]:
         raise RealRepositoryError(
-            f"{repository['id']}: benchmark revision is not the direct fix parent"
+            f"{repository['id']}: fetched benchmark revision does not match suite"
         )
     run_git("checkout", "--quiet", "--detach", repository["revision"], cwd=destination)
     revision = run_git("rev-parse", "HEAD", cwd=destination)
     if revision != repository["revision"]:
         raise RealRepositoryError(f"{repository['id']}: checkout revision mismatch")
+    _assert_fix_object_excluded(repository["id"], fix_revision, destination)
     missing_scopes = [scope for scope in repository["scope"] if not (destination / scope).exists()]
     if missing_scopes:
         raise RealRepositoryError(
@@ -1081,6 +1174,7 @@ def _materialize_repository(repository: dict[str, Any], workspace_root: Path) ->
         "tree": run_git("rev-parse", "HEAD^{tree}", cwd=destination),
         "fixRevision": fix_revision,
         "fixParentVerified": True,
+        "fixObjectExcluded": True,
         "scope": repository["scope"],
         "checkout": destination.relative_to(workspace_root).as_posix(),
     }
@@ -2204,6 +2298,10 @@ def _verify_plan_workspaces(
     for repository_id in plan["selection"]["repositories"]:
         repository = repositories[repository_id]
         receipt_row = materialized[repository_id]
+        if receipt_row.get("fixObjectExcluded") is not True:
+            raise RealRepositoryError(
+                f"{repository_id}: materialization receipt does not attest fix object exclusion"
+            )
         repository_root = (workspace_root / receipt_row["checkout"]).resolve(strict=True)
         try:
             repository_root.relative_to(workspace_root)
@@ -2211,15 +2309,7 @@ def _verify_plan_workspaces(
             raise RealRepositoryError(
                 f"materialized checkout escapes workspace: {repository_root}"
             ) from error
-        expected_state = {
-            "head": repository["revision"],
-            "tree": receipt_row["tree"],
-            "status": "",
-        }
-        if _repository_state(repository_root) != expected_state:
-            raise RealRepositoryError(
-                f"{repository_id}: live materialization state does not match receipt"
-            )
+        _assert_live_materialization(repository, receipt_row, repository_root)
         roots[repository_id] = repository_root
     return roots
 
@@ -2887,6 +2977,10 @@ def command_run_campaign(args: argparse.Namespace) -> int:
     mutation_detected = False
     for repository in selected:
         receipt_row = materialized[repository["id"]]
+        if receipt_row.get("fixObjectExcluded") is not True:
+            raise RealRepositoryError(
+                f"{repository['id']}: materialization receipt does not attest fix object exclusion"
+            )
         repository_root = (workspace_root / receipt_row["checkout"]).resolve(strict=True)
         try:
             repository_root.relative_to(workspace_root)
@@ -2894,16 +2988,7 @@ def command_run_campaign(args: argparse.Namespace) -> int:
             raise RealRepositoryError(
                 f"materialized checkout escapes workspace: {repository_root}"
             ) from error
-        state = _repository_state(repository_root)
-        expected_state = {
-            "head": repository["revision"],
-            "tree": receipt_row["tree"],
-            "status": "",
-        }
-        if state != expected_state:
-            raise RealRepositoryError(
-                f"{repository['id']}: live materialization state does not match receipt"
-            )
+        _assert_live_materialization(repository, receipt_row, repository_root)
         for treatment in treatments:
             for adapter in adapter_config["adapters"]:
                 for repetition in range(1, repetitions + 1):

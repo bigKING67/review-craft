@@ -309,6 +309,153 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         self.assertTrue(any("contentSha256 mismatch" in error for error in errors), errors)
         self.assertTrue(any("revision does not match suite" in error for error in errors), errors)
 
+    def test_materialization_excludes_hidden_fix_from_evaluation_object_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            remote = root / "upstream"
+            workspace = root / "materialized"
+            remote.mkdir()
+            workspace.mkdir()
+            runner.run_git("init", "--quiet", str(remote))
+
+            source = remote / "sample.py"
+            source.write_text("VALUE = 1\n", encoding="utf-8")
+            runner.run_git("add", "sample.py", cwd=remote)
+            runner.run_git(
+                "-c",
+                "user.name=Review Craft Fixture",
+                "-c",
+                "user.email=review-craft@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "parent",
+                cwd=remote,
+            )
+            parent_revision = runner.run_git("rev-parse", "HEAD", cwd=remote)
+
+            source.write_text("VALUE = 2\n", encoding="utf-8")
+            runner.run_git("add", "sample.py", cwd=remote)
+            runner.run_git(
+                "-c",
+                "user.name=Review Craft Fixture",
+                "-c",
+                "user.email=review-craft@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fix",
+                cwd=remote,
+            )
+            fix_revision = runner.run_git("rev-parse", "HEAD", cwd=remote)
+            repository = {
+                "id": "fixture-repository",
+                "remote": remote.as_uri(),
+                "revision": parent_revision,
+                "scope": ["sample.py"],
+                "probes": [
+                    {
+                        "kind": "REAL_FINDING",
+                        "upstreamFix": {"revision": fix_revision},
+                    }
+                ],
+            }
+
+            receipt = runner._materialize_repository(repository, workspace)
+            evaluation = workspace / receipt["checkout"]
+            materialization_payload = {
+                "schema": "review-craft.eval-real-repository-materialization.v1",
+                "createdAt": "2026-08-23T00:00:00Z",
+                "suite": {
+                    "artifact": "suite.json",
+                    "bindingKind": contracts.MATERIALIZATION_BINDING_KIND,
+                    "sha256": contracts.materialization_suite_sha256(
+                        {"repositories": [repository]}
+                    ),
+                    "fullSuite": True,
+                    "selectedRepositoryIds": [repository["id"]],
+                },
+                "repositories": [receipt],
+                "contentSha256": "0" * 64,
+            }
+            materialization_payload["contentSha256"] = contracts.sha256_json(
+                {
+                    key: value
+                    for key, value in materialization_payload.items()
+                    if key != "contentSha256"
+                }
+            )
+            object_probe = subprocess.run(
+                ["git", "cat-file", "-e", f"{fix_revision}^{{commit}}"],
+                cwd=evaluation,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            fsck = subprocess.run(
+                ["git", "fsck", "--no-reflogs", "--unreachable"],
+                cwd=evaluation,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertEqual(receipt["revision"], parent_revision)
+            self.assertTrue(receipt["fixParentVerified"])
+            self.assertTrue(receipt["fixObjectExcluded"])
+            self.assertEqual(
+                contracts.validate_materialization_receipt(
+                    materialization_payload, {"repositories": [repository]}
+                ),
+                [],
+            )
+            self.assertNotEqual(object_probe.returncode, 0)
+            self.assertNotIn(fix_revision, fsck.stdout + fsck.stderr)
+            self.assertEqual(
+                {path.name for path in workspace.iterdir()},
+                {"repositories"},
+            )
+
+            plan = {"selection": {"repositories": [repository["id"]]}}
+            suite = {"repositories": [repository]}
+            materialization = {"repositories": [receipt]}
+            self.assertEqual(
+                runner._verify_plan_workspaces(
+                    plan=plan,
+                    suite=suite,
+                    receipt=materialization,
+                    workspace_root=workspace,
+                ),
+                {repository["id"]: evaluation},
+            )
+
+            runner.run_git("fetch", "--quiet", "origin", fix_revision, cwd=evaluation)
+            with self.assertRaisesRegex(
+                contracts.RealRepositoryError,
+                "upstream fix object leaked into evaluation checkout",
+            ):
+                runner._verify_plan_workspaces(
+                    plan=plan,
+                    suite=suite,
+                    receipt=materialization,
+                    workspace_root=workspace,
+                )
+
+    def test_campaign_execution_rejects_pre_hardening_materialization_receipt(self) -> None:
+        receipt = json.loads((CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8"))
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = {"selection": {"repositories": [repository_id]}}
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "materialization receipt does not attest fix object exclusion",
+        ):
+            runner._verify_plan_workspaces(
+                plan=plan,
+                suite=self.suite,
+                receipt=receipt,
+                workspace_root=Path(directory).resolve(),
+            )
+
     def test_materialization_source_binding_ignores_prompt_only_changes(self) -> None:
         receipt = json.loads((CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8"))
         prompt_only = copy.deepcopy(self.suite)

@@ -38,6 +38,16 @@ v1 receipts without `bindingKind` remain readable with their original full-suite
 Historical campaigns and adjudications also remain sealed to their original suite, prompt, output,
 and subject hashes; regenerating current artifacts does not relabel or upgrade that evidence.
 
+The materializer verifies fix-parent lineage in a disposable Git repository, then independently
+fetches only the benchmark parent at depth 1 into the evaluation checkout. It fails closed if the
+upstream fix object is accessible or enumerable there. This separation prevents treatments from
+recovering the hidden oracle through unreachable Git objects.
+
+New receipts record `fixObjectExcluded: true`. Earlier receipts remain schema-readable historical
+source evidence, but execution rejects them because they do not attest oracle-object exclusion.
+Re-materialize the selected repositories before starting any new campaign; campaign execution also
+rechecks the live Git object database so post-receipt leakage fails before provider work begins.
+
 The benchmark is not Golden until all declared treatments, repetitions, and model
 configurations complete, the outputs are independently adjudicated, and the stability
 report validates. Do not use the materialization receipt alone to claim review accuracy,
