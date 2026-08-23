@@ -13,6 +13,13 @@ Each repository defines five treatment-safe probes:
 - a claim that requires measurement;
 - a claim that must remain blocked by an evidence gap.
 
+A `KEEP` probe is a preservation candidate, not the rejected modernization proposal. Its public
+prompt therefore starts with `Determine whether evidence supports keeping ...`: evidence that
+supports `KEEP`, `DEFER`, or `DOCUMENT` validates the candidate, while `FALSIFIED` means the
+preservation decision itself was refuted. This convention is repeated in every treatment prompt
+so disposition labels do not depend on which side of the comparison a reviewer informally calls
+the candidate.
+
 `evals/specs/real-repositories.json` is the oracle-bearing suite. Never pass that file to a
 review treatment. Generate or use `current/blind-suite.json`, which excludes upstream fix
 identities, expected dispositions, decisions, rationales, and other answer-bearing data.
@@ -21,6 +28,15 @@ identities, expected dispositions, decisions, rationales, and other answer-beari
 2026-08-20. All eight source checkouts were clean, every declared scope existed, and each
 benchmark revision was verified as the direct parent of its bound upstream fix. This is a
 source receipt, not a model-quality result.
+
+Current materialization receipts declare `bindingKind: SOURCE_MATERIALIZATION_V1`. Their suite
+hash covers only source-determining fields: repository ID, remote, benchmark revision, upstream
+fix revision, and declared scope. Prompt and oracle wording changes therefore require a new blind
+suite and new campaign plans, but not a dishonest claim that the unchanged source checkouts were
+materialized again. Any change to a source-determining field invalidates the receipt. Historical
+v1 receipts without `bindingKind` remain readable with their original full-suite hash semantics.
+Historical campaigns and adjudications also remain sealed to their original suite, prompt, output,
+and subject hashes; regenerating current artifacts does not relabel or upgrade that evidence.
 
 The benchmark is not Golden until all declared treatments, repetitions, and model
 configurations complete, the outputs are independently adjudicated, and the stability

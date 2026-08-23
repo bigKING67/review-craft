@@ -1,5 +1,5 @@
 {
-  "contentSha256": "081558dff7fe6d6098df7ba7a3840ef3db5d631823a9c44d1fe637486fd5dc8b",
+  "contentSha256": "c554d59dbcab10b38f63fc4e4783e69295e38fdba992d61890fee9a24e6ec511",
   "protocol": {
     "minimumModelConfigurations": 2,
     "repetitions": 3,
@@ -21,7 +21,7 @@
         },
         {
           "id": "pypa-keep",
-          "publicPrompt": "Decide whether the packaging example should be rewritten solely because it uses an older but compatibility-relevant setup path."
+          "publicPrompt": "Determine whether evidence supports keeping the compatibility-relevant packaging example rather than rewriting it solely because it uses an older setup path."
         },
         {
           "id": "pypa-decoy",
@@ -56,7 +56,7 @@
         },
         {
           "id": "click-keep",
-          "publicPrompt": "Decide whether Click's compatibility-oriented parser should be rewritten solely because core.py is large and branch-heavy."
+          "publicPrompt": "Determine whether evidence supports keeping Click's compatibility-oriented parser rather than rewriting it solely because core.py is large and branch-heavy."
         },
         {
           "id": "click-decoy",
@@ -90,7 +90,7 @@
         },
         {
           "id": "p-limit-keep",
-          "publicPrompt": "Decide whether the bounded queue implementation should be replaced with worker threads solely because it is compact and event-loop based."
+          "publicPrompt": "Determine whether evidence supports keeping the bounded queue implementation rather than replacing it with worker threads solely because it is compact and event-loop based."
         },
         {
           "id": "p-limit-decoy",
@@ -126,7 +126,7 @@
         },
         {
           "id": "express-keep",
-          "publicPrompt": "Decide whether callback middleware compatibility should be rewritten wholesale to async functions solely for modernity."
+          "publicPrompt": "Determine whether evidence supports keeping callback middleware compatibility rather than rewriting it wholesale to async functions solely for modernity."
         },
         {
           "id": "express-decoy",
@@ -161,7 +161,7 @@
         },
         {
           "id": "electron-keep",
-          "publicPrompt": "Decide whether the separate main, preload, and renderer boundaries should be merged solely to reduce directory count."
+          "publicPrompt": "Determine whether evidence supports keeping the separate main, preload, and renderer boundaries rather than merging them solely to reduce directory count."
         },
         {
           "id": "electron-decoy",
@@ -197,7 +197,7 @@
         },
         {
           "id": "httprouter-keep",
-          "publicPrompt": "Decide whether the trie router should be replaced with regular expressions solely for local readability."
+          "publicPrompt": "Determine whether evidence supports keeping the trie router rather than replacing it with regular expressions solely for local readability."
         },
         {
           "id": "httprouter-decoy",
@@ -233,7 +233,7 @@
         },
         {
           "id": "bat-keep",
-          "publicPrompt": "Decide whether streaming preprocessing should be replaced with full-file buffering solely to simplify control flow."
+          "publicPrompt": "Determine whether evidence supports keeping streaming preprocessing rather than replacing it with full-file buffering solely to simplify control flow."
         },
         {
           "id": "bat-decoy",
@@ -268,7 +268,7 @@
         },
         {
           "id": "petclinic-keep",
-          "publicPrompt": "Decide whether the layered MVC sample should be rewritten to a reactive architecture solely because reactive APIs are newer."
+          "publicPrompt": "Determine whether evidence supports keeping the layered MVC sample rather than rewriting it to a reactive architecture solely because reactive APIs are newer."
         },
         {
           "id": "petclinic-decoy",
@@ -294,5 +294,5 @@
     }
   ],
   "schema": "review-craft.eval-real-repository-blind-suite.v1",
-  "sourceSuiteSha256": "8a78b8a7f2c6d81c12c3d72cc33ea3ba3d9124838275bb5a8e8c13dd99328083"
+  "sourceSuiteSha256": "b8d5c5172bcef3fcfaaefc83dbaff00fa42ad657aa07594a7df482161975a443"
 }

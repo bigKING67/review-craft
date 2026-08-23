@@ -63,7 +63,7 @@
         {
           "id": "pypa-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether the packaging example should be rewritten solely because it uses an older but compatibility-relevant setup path.",
+          "publicPrompt": "Determine whether evidence supports keeping the compatibility-relevant packaging example rather than rewriting it solely because it uses an older setup path.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP", "DEFER", "DOCUMENT"],
           "forbiddenDecisions": ["DELETE", "REWRITE"],
@@ -133,7 +133,7 @@
         {
           "id": "click-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether Click's compatibility-oriented parser should be rewritten solely because core.py is large and branch-heavy.",
+          "publicPrompt": "Determine whether evidence supports keeping Click's compatibility-oriented parser rather than rewriting it solely because core.py is large and branch-heavy.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP", "DEFER"],
           "forbiddenDecisions": ["DELETE", "REWRITE"],
@@ -199,7 +199,7 @@
         {
           "id": "p-limit-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether the bounded queue implementation should be replaced with worker threads solely because it is compact and event-loop based.",
+          "publicPrompt": "Determine whether evidence supports keeping the bounded queue implementation rather than replacing it with worker threads solely because it is compact and event-loop based.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP"],
           "forbiddenDecisions": ["REPLACE", "REWRITE"],
@@ -265,7 +265,7 @@
         {
           "id": "express-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether callback middleware compatibility should be rewritten wholesale to async functions solely for modernity.",
+          "publicPrompt": "Determine whether evidence supports keeping callback middleware compatibility rather than rewriting it wholesale to async functions solely for modernity.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP", "DEFER"],
           "forbiddenDecisions": ["DELETE", "REWRITE"],
@@ -331,7 +331,7 @@
         {
           "id": "electron-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether the separate main, preload, and renderer boundaries should be merged solely to reduce directory count.",
+          "publicPrompt": "Determine whether evidence supports keeping the separate main, preload, and renderer boundaries rather than merging them solely to reduce directory count.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP"],
           "forbiddenDecisions": ["MERGE", "REWRITE"],
@@ -397,7 +397,7 @@
         {
           "id": "httprouter-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether the trie router should be replaced with regular expressions solely for local readability.",
+          "publicPrompt": "Determine whether evidence supports keeping the trie router rather than replacing it with regular expressions solely for local readability.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP"],
           "forbiddenDecisions": ["REPLACE", "REWRITE"],
@@ -463,7 +463,7 @@
         {
           "id": "bat-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether streaming preprocessing should be replaced with full-file buffering solely to simplify control flow.",
+          "publicPrompt": "Determine whether evidence supports keeping streaming preprocessing rather than replacing it with full-file buffering solely to simplify control flow.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP", "DEFER"],
           "forbiddenDecisions": ["REPLACE", "REWRITE"],
@@ -529,7 +529,7 @@
         {
           "id": "petclinic-keep",
           "kind": "KEEP",
-          "publicPrompt": "Decide whether the layered MVC sample should be rewritten to a reactive architecture solely because reactive APIs are newer.",
+          "publicPrompt": "Determine whether evidence supports keeping the layered MVC sample rather than rewriting it to a reactive architecture solely because reactive APIs are newer.",
           "expectedDispositions": ["VALIDATED"],
           "expectedDecisions": ["KEEP", "DEFER"],
           "forbiddenDecisions": ["REPLACE", "REWRITE"],

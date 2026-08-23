@@ -95,6 +95,9 @@ ECOSYSTEM_MINIMUMS = {
     "rust": 1,
     "jvm": 1,
 }
+KEEP_PROMPT_PREFIX = "Determine whether evidence supports keeping "
+PRESERVATION_DECISIONS = frozenset({"KEEP", "DEFER", "DOCUMENT"})
+MATERIALIZATION_BINDING_KIND = "SOURCE_MATERIALIZATION_V1"
 
 
 class RealRepositoryError(ValueError):
@@ -116,6 +119,32 @@ def canonical_bytes(value: Any) -> bytes:
 
 def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def materialization_suite_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return only suite fields that determine materialized source identity."""
+    repositories = []
+    for repository in payload["repositories"]:
+        real_probe = next(
+            probe for probe in repository["probes"] if probe["kind"] == "REAL_FINDING"
+        )
+        repositories.append(
+            {
+                "id": repository["id"],
+                "remote": repository["remote"],
+                "revision": repository["revision"],
+                "fixRevision": real_probe["upstreamFix"]["revision"],
+                "scope": repository["scope"],
+            }
+        )
+    return {
+        "schema": "review-craft.eval-real-repository-materialization-source.v1",
+        "repositories": repositories,
+    }
+
+
+def materialization_suite_sha256(payload: dict[str, Any]) -> str:
+    return sha256_json(materialization_suite_projection(payload))
 
 
 @lru_cache(maxsize=1)
@@ -237,6 +266,29 @@ def validate_suite(payload: dict[str, Any]) -> list[str]:
                             f"{repository_id}/{probe_id}: fix location is outside scope: "
                             f"{location['path']}"
                         )
+            elif probe["kind"] == "KEEP":
+                if not probe["publicPrompt"].startswith(KEEP_PROMPT_PREFIX):
+                    errors.append(
+                        f"{repository_id}/{probe_id}: KEEP prompt must anchor the "
+                        "candidate as the preservation decision"
+                    )
+                if probe["expectedDispositions"] != ["VALIDATED"]:
+                    errors.append(
+                        f"{repository_id}/{probe_id}: KEEP probe must expect VALIDATED"
+                    )
+                unsupported_decisions = set(probe["expectedDecisions"]) - (
+                    PRESERVATION_DECISIONS
+                )
+                if unsupported_decisions:
+                    errors.append(
+                        f"{repository_id}/{probe_id}: KEEP probe has non-preservation "
+                        f"decisions: {sorted(unsupported_decisions)}"
+                    )
+                if upstream_fix is not None:
+                    errors.append(
+                        f"{repository_id}/{probe_id}: only REAL_FINDING may bind an "
+                        "upstream fix"
+                    )
             elif upstream_fix is not None:
                 errors.append(
                     f"{repository_id}/{probe_id}: only REAL_FINDING may bind an upstream fix"
@@ -315,9 +367,18 @@ def validate_materialization_receipt(
     )
     if payload["contentSha256"] != expected_hash:
         errors.append("materialization contentSha256 mismatch")
-    suite_hash = sha256_json(source_suite)
+    binding_kind = payload["suite"].get("bindingKind")
+    suite_hash = (
+        materialization_suite_sha256(source_suite)
+        if binding_kind == MATERIALIZATION_BINDING_KIND
+        else sha256_json(source_suite)
+    )
     if payload["suite"]["sha256"] != suite_hash:
-        errors.append("materialization suite hash mismatch")
+        errors.append(
+            "materialization suite source binding hash mismatch"
+            if binding_kind == MATERIALIZATION_BINDING_KIND
+            else "materialization suite hash mismatch"
+        )
     suite_by_id = {
         repository["id"]: repository for repository in source_suite["repositories"]
     }

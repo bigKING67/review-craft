@@ -108,10 +108,13 @@ first-class result; BLOCKED records an evidence gap; NOT_RAISED means the prompt
 candidate. A BLOCKED probe must use severity null. Every probe, evidence, and additional-finding
 location must be inside the declared scope. Do not turn modernity or style into a finding, do not
 claim performance without measurement, and do not infer cross-platform proof from source
-inspection. Put unrelated issues in additionalFindings only when they independently satisfy a
-concrete evidence bar. Use repository-relative locations. Use score.status NOT_PRODUCED with a
-null value unless the chosen method actually produced a defensible score; label any non-canonical
-estimate PROVISIONAL.
+inspection. For a preservation probe phrased as "Determine whether evidence supports keeping ...",
+treat the candidate as the preservation decision: use VALIDATED when evidence supports
+KEEP, DEFER, or DOCUMENT, and use FALSIFIED only when evidence refutes that preservation candidate.
+Do not use FALSIFIED merely because the rejected rewrite or replacement proposal is unsupported.
+Put unrelated issues in additionalFindings only when they independently satisfy a concrete evidence
+bar. Use repository-relative locations. Use score.status NOT_PRODUCED with a null value unless the
+chosen method actually produced a defensible score; label any non-canonical estimate PROVISIONAL.
 """
     return prompt.encode("utf-8")
 

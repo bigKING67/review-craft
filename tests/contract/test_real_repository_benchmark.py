@@ -182,6 +182,11 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 [probe["kind"] for probe in repository["probes"]],
                 list(contracts.PROBE_KINDS),
             )
+            keep_probe = repository["probes"][1]
+            self.assertTrue(
+                keep_probe["publicPrompt"].startswith(contracts.KEEP_PROMPT_PREFIX)
+            )
+            self.assertEqual(keep_probe["expectedDispositions"], ["VALIDATED"])
             real_finding = repository["probes"][0]
             self.assertIn("upstreamFix", real_finding)
             self.assertNotEqual(repository["revision"], real_finding["upstreamFix"]["revision"])
@@ -213,6 +218,9 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         receipt = json.loads((CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8"))
         self.assertEqual(contracts.validate_blind_suite(blind, self.suite), [])
         self.assertEqual(contracts.validate_materialization_receipt(receipt, self.suite), [])
+        self.assertEqual(
+            receipt["suite"]["bindingKind"], contracts.MATERIALIZATION_BINDING_KIND
+        )
         self.assertTrue(receipt["suite"]["fullSuite"])
         self.assertTrue(
             all(repository["fixParentVerified"] for repository in receipt["repositories"])
@@ -223,6 +231,37 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         errors = contracts.validate_materialization_receipt(tampered, self.suite)
         self.assertTrue(any("contentSha256 mismatch" in error for error in errors), errors)
         self.assertTrue(any("revision does not match suite" in error for error in errors), errors)
+
+    def test_materialization_source_binding_ignores_prompt_only_changes(self) -> None:
+        receipt = json.loads((CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8"))
+        prompt_only = copy.deepcopy(self.suite)
+        prompt_only["repositories"][0]["probes"][1]["publicPrompt"] += " Clarify evidence."
+        self.assertEqual(
+            contracts.validate_materialization_receipt(receipt, prompt_only), []
+        )
+
+        changed_source = copy.deepcopy(self.suite)
+        changed_source["repositories"][0]["revision"] = "0" * 40
+        errors = contracts.validate_materialization_receipt(receipt, changed_source)
+        self.assertTrue(
+            any("source binding hash mismatch" in error for error in errors), errors
+        )
+        self.assertTrue(any("revision does not match suite" in error for error in errors), errors)
+
+    def test_legacy_materialization_binding_remains_full_suite_bound(self) -> None:
+        receipt = json.loads((CURRENT_ROOT / "materialization.json").read_text(encoding="utf-8"))
+        legacy = copy.deepcopy(receipt)
+        legacy["suite"].pop("bindingKind")
+        legacy["suite"]["sha256"] = contracts.sha256_json(self.suite)
+        legacy["contentSha256"] = contracts.sha256_json(
+            {key: value for key, value in legacy.items() if key != "contentSha256"}
+        )
+        self.assertEqual(contracts.validate_materialization_receipt(legacy, self.suite), [])
+
+        prompt_only = copy.deepcopy(self.suite)
+        prompt_only["repositories"][0]["probes"][1]["publicPrompt"] += " Clarify evidence."
+        errors = contracts.validate_materialization_receipt(legacy, prompt_only)
+        self.assertIn("materialization suite hash mismatch", errors)
 
     def test_suite_rejects_missing_ecosystem_and_oracle_outside_scope(self) -> None:
         missing = copy.deepcopy(self.suite)
@@ -242,6 +281,16 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         errors = contracts.validate_suite(escaped)
         self.assertTrue(any("unsafe fix location" in error for error in errors), errors)
 
+        ambiguous_keep = copy.deepcopy(self.suite)
+        ambiguous_keep["repositories"][0]["probes"][1]["publicPrompt"] = (
+            "Decide whether the implementation should be rewritten."
+        )
+        errors = contracts.validate_suite(ambiguous_keep)
+        self.assertTrue(
+            any("anchor the candidate as the preservation decision" in error for error in errors),
+            errors,
+        )
+
     def test_all_treatment_prompts_expose_semantic_output_invariants(self) -> None:
         repository = self.suite["repositories"][0]
         for treatment in contracts.TREATMENTS:
@@ -260,6 +309,16 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 )
                 self.assertIn(
                     "keep each command below roughly 200 output lines or 32 KiB",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "treat the candidate as the preservation decision: use VALIDATED "
+                    "when evidence supports KEEP, DEFER, or DOCUMENT",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "Do not use FALSIFIED merely because the rejected rewrite or "
+                    "replacement proposal is unsupported.",
                     normalized_prompt,
                 )
 

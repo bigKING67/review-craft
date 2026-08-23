@@ -1,5 +1,5 @@
 {
-  "contentSha256": "36cb433b3a5ddc872c779dfd00634ad2ab691f41178d1e50285fde340f623df5",
+  "contentSha256": "dcd1119ec58c185da8c906a290acf7e26fca5399d8157ad1aea68f05c036a40e",
   "createdAt": "2026-08-19T16:20:03Z",
   "repositories": [
     {
@@ -120,6 +120,7 @@
   "schema": "review-craft.eval-real-repository-materialization.v1",
   "suite": {
     "artifact": "suite.json",
+    "bindingKind": "SOURCE_MATERIALIZATION_V1",
     "fullSuite": true,
     "selectedRepositoryIds": [
       "pypa-sampleproject",
@@ -131,6 +132,6 @@
       "sharkdp-bat",
       "spring-petclinic"
     ],
-    "sha256": "8a78b8a7f2c6d81c12c3d72cc33ea3ba3d9124838275bb5a8e8c13dd99328083"
+    "sha256": "124a8e7af363c51540e2bb548bbd8e2fc41aa951626fbe3356e43633f4c878fc"
   }
 }
