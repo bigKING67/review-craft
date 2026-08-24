@@ -88,6 +88,51 @@ class ProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(cleanup, "CONFIRMED")
         taskkill.assert_not_called()
 
+    def test_job_cleanup_also_terminates_the_snapshotted_tree(self) -> None:
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = 1
+        setattr(process, process_lifecycle._WINDOWS_JOB_ATTRIBUTE, 99)
+        with (
+            patch.object(
+                process_lifecycle,
+                "_terminate_windows_snapshot_tree",
+                return_value=True,
+            ) as snapshot_cleanup,
+            patch.object(
+                process_lifecycle,
+                "_close_windows_job",
+                return_value=True,
+            ) as close_job,
+            patch.object(process_lifecycle.subprocess, "run") as taskkill,
+        ):
+            cleanup = process_lifecycle._terminate_windows_tree(process)
+
+        self.assertEqual(cleanup, "CONFIRMED")
+        snapshot_cleanup.assert_called_once_with(process)
+        close_job.assert_called_once_with(process)
+        taskkill.assert_not_called()
+
+    def test_native_descendant_failure_preserves_root_for_taskkill(self) -> None:
+        process = MagicMock()
+        process.pid = 1234
+        with (
+            patch.object(
+                process_lifecycle,
+                "_windows_process_tree",
+                return_value=[5678, 1234],
+            ),
+            patch.object(
+                process_lifecycle,
+                "_terminate_windows_pid",
+                side_effect=[False],
+            ) as terminate_pid,
+        ):
+            confirmed = process_lifecycle._terminate_windows_snapshot_tree(process)
+
+        self.assertFalse(confirmed)
+        terminate_pid.assert_called_once_with(5678)
+
     def test_timeout_preserves_partial_output_and_explicit_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = run_process(

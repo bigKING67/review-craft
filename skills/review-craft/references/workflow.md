@@ -152,8 +152,8 @@ python3 <skill-root>/scripts/review_craft.py \
 The runner uses argv without a shell and records duration, exit code, output, and
 before/after repository state. It starts each command in an isolated POSIX session or a
 Windows process group. On timeout it terminates the inherited POSIX process group; on
-Windows it closes an assigned kill-on-close Job Object or terminates the captured
-descendant tree through fixed Win32 APIs, with fixed-argv
+Windows it terminates the captured descendant tree through fixed Win32 APIs and closes
+any assigned kill-on-close Job Object, with fixed-argv
 `taskkill /PID <pid> /T /F` as a compatibility fallback. It reaps the direct process and
 only then records the final repository state; unresolved cleanup fails closed. This closes
 ordinary inherited-descendant late-write windows, but does not contain detached processes,

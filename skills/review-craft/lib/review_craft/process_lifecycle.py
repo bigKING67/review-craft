@@ -254,7 +254,9 @@ def _windows_process_tree(root_pid: int) -> list[int]:
         key=depths.__getitem__,
         reverse=True,
     )
-    return [root_pid, *descendants]
+    # Keep the root alive until every known descendant is gone. If native
+    # descendant termination fails, taskkill can still traverse from the root.
+    return [*descendants, root_pid]
 
 
 def _terminate_windows_pid(pid: int) -> bool:
@@ -292,32 +294,36 @@ def _terminate_windows_snapshot_tree(process: subprocess.Popen[Any]) -> bool:
         process_tree = _windows_process_tree(process.pid)
     except OSError:
         return False
-    results = [_terminate_windows_pid(pid) for pid in process_tree]
-    return all(results)
+    descendant_results = [
+        _terminate_windows_pid(pid) for pid in process_tree if pid != process.pid
+    ]
+    if not all(descendant_results):
+        return False
+    return _terminate_windows_pid(process.pid)
 
 
 def _terminate_windows_tree(process: subprocess.Popen[Any]) -> str:
     had_job = getattr(process, _WINDOWS_JOB_ATTRIBUTE, None) is not None
-    closed = _close_windows_job(process) if had_job else False
-    snapshot_confirmed = False
+    # Closing a nested Job Object does not prove that every observed child was
+    # covered by it. Snapshot the live tree first and terminate it explicitly.
+    snapshot_confirmed = _terminate_windows_snapshot_tree(process)
     taskkill_confirmed = False
-    if not had_job:
-        snapshot_confirmed = _terminate_windows_snapshot_tree(process)
-        if not snapshot_confirmed:
-            try:
-                completed = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=FORCE_WAIT_SECONDS,
-                    check=False,
-                    shell=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                completed = None
-            taskkill_confirmed = completed is not None and completed.returncode == 0
-        if not (snapshot_confirmed or taskkill_confirmed) and process.poll() is None:
-            process.kill()
+    if not snapshot_confirmed:
+        try:
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=FORCE_WAIT_SECONDS,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            completed = None
+        taskkill_confirmed = completed is not None and completed.returncode == 0
+    closed = _close_windows_job(process) if had_job else False
+    if not (snapshot_confirmed or taskkill_confirmed or closed) and process.poll() is None:
+        process.kill()
     try:
         process.wait(timeout=FORCE_WAIT_SECONDS)
     except subprocess.TimeoutExpired:
