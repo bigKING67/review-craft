@@ -14,6 +14,9 @@ TERMINATION_GRACE_SECONDS = 5.0
 FORCE_WAIT_SECONDS = 5.0
 _WINDOWS_JOB_ATTRIBUTE = "_review_craft_windows_job_handle"
 _WINDOWS_JOB_LOCK = threading.Lock()
+_WINDOWS_ERROR_NO_MORE_FILES = 18
+_WINDOWS_ERROR_INVALID_PARAMETER = 87
+_WINDOWS_WAIT_OBJECT_0 = 0
 
 
 @dataclass(frozen=True)
@@ -191,24 +194,129 @@ def _close_windows_job(process: subprocess.Popen[Any]) -> bool:
         return closed
 
 
+def _windows_process_tree(root_pid: int) -> list[int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    if snapshot == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    parents: dict[int, int] = {}
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    try:
+        present = bool(kernel32.Process32FirstW(snapshot, ctypes.byref(entry)))
+        while present:
+            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            present = bool(kernel32.Process32NextW(snapshot, ctypes.byref(entry)))
+        error = ctypes.get_last_error()
+        if error not in (0, _WINDOWS_ERROR_NO_MORE_FILES):
+            raise ctypes.WinError(error)
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    depths = {root_pid: 0}
+    while True:
+        additions = {
+            pid: depths[parent] + 1
+            for pid, parent in parents.items()
+            if pid not in depths and parent in depths
+        }
+        if not additions:
+            break
+        depths.update(additions)
+    descendants = sorted(
+        (pid for pid in depths if pid != root_pid),
+        key=depths.__getitem__,
+        reverse=True,
+    )
+    return [root_pid, *descendants]
+
+
+def _terminate_windows_pid(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x00000001 | 0x00100000, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == _WINDOWS_ERROR_INVALID_PARAMETER
+    try:
+        if kernel32.WaitForSingleObject(handle, 0) == _WINDOWS_WAIT_OBJECT_0:
+            return True
+        if not kernel32.TerminateProcess(handle, 1):
+            return False
+        return (
+            kernel32.WaitForSingleObject(handle, round(FORCE_WAIT_SECONDS * 1000))
+            == _WINDOWS_WAIT_OBJECT_0
+        )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _terminate_windows_snapshot_tree(process: subprocess.Popen[Any]) -> bool:
+    try:
+        process_tree = _windows_process_tree(process.pid)
+    except OSError:
+        return False
+    results = [_terminate_windows_pid(pid) for pid in process_tree]
+    return all(results)
+
+
 def _terminate_windows_tree(process: subprocess.Popen[Any]) -> str:
     had_job = getattr(process, _WINDOWS_JOB_ATTRIBUTE, None) is not None
     closed = _close_windows_job(process) if had_job else False
+    snapshot_confirmed = False
     taskkill_confirmed = False
     if not had_job:
-        try:
-            completed = subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=FORCE_WAIT_SECONDS,
-                check=False,
-                shell=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            completed = None
-        taskkill_confirmed = completed is not None and completed.returncode == 0
-        if (completed is None or completed.returncode != 0) and process.poll() is None:
+        snapshot_confirmed = _terminate_windows_snapshot_tree(process)
+        if not snapshot_confirmed:
+            try:
+                completed = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=FORCE_WAIT_SECONDS,
+                    check=False,
+                    shell=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                completed = None
+            taskkill_confirmed = completed is not None and completed.returncode == 0
+        if not (snapshot_confirmed or taskkill_confirmed) and process.poll() is None:
             process.kill()
     try:
         process.wait(timeout=FORCE_WAIT_SECONDS)
@@ -217,7 +325,8 @@ def _terminate_windows_tree(process: subprocess.Popen[Any]) -> str:
         process.wait(timeout=FORCE_WAIT_SECONDS)
     return (
         "CONFIRMED"
-        if process.poll() is not None and (closed or taskkill_confirmed)
+        if process.poll() is not None
+        and (closed or snapshot_confirmed or taskkill_confirmed)
         else "FAILED"
     )
 

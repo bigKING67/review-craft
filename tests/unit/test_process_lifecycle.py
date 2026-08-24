@@ -38,7 +38,14 @@ class ProcessLifecycleTests(unittest.TestCase):
         process.poll.return_value = None
         setattr(process, process_lifecycle._WINDOWS_JOB_ATTRIBUTE, None)
         completed = MagicMock(returncode=1)
-        with patch.object(process_lifecycle.subprocess, "run", return_value=completed):
+        with (
+            patch.object(
+                process_lifecycle,
+                "_terminate_windows_snapshot_tree",
+                return_value=False,
+            ),
+            patch.object(process_lifecycle.subprocess, "run", return_value=completed),
+        ):
             cleanup = process_lifecycle._terminate_windows_tree(process)
 
         self.assertEqual(cleanup, "FAILED")
@@ -50,11 +57,36 @@ class ProcessLifecycleTests(unittest.TestCase):
         process.poll.return_value = 1
         setattr(process, process_lifecycle._WINDOWS_JOB_ATTRIBUTE, None)
         completed = MagicMock(returncode=0)
-        with patch.object(process_lifecycle.subprocess, "run", return_value=completed):
+        with (
+            patch.object(
+                process_lifecycle,
+                "_terminate_windows_snapshot_tree",
+                return_value=False,
+            ),
+            patch.object(process_lifecycle.subprocess, "run", return_value=completed),
+        ):
             cleanup = process_lifecycle._terminate_windows_tree(process)
 
         self.assertEqual(cleanup, "CONFIRMED")
         process.kill.assert_not_called()
+
+    def test_native_snapshot_cleanup_avoids_taskkill_fallback(self) -> None:
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = 1
+        setattr(process, process_lifecycle._WINDOWS_JOB_ATTRIBUTE, None)
+        with (
+            patch.object(
+                process_lifecycle,
+                "_terminate_windows_snapshot_tree",
+                return_value=True,
+            ),
+            patch.object(process_lifecycle.subprocess, "run") as taskkill,
+        ):
+            cleanup = process_lifecycle._terminate_windows_tree(process)
+
+        self.assertEqual(cleanup, "CONFIRMED")
+        taskkill.assert_not_called()
 
     def test_timeout_preserves_partial_output_and_explicit_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

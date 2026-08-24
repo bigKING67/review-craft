@@ -560,7 +560,10 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(final_progress["eventCount"], 4)
             self.assertEqual(final_progress["lastEventType"], "turn.completed")
             self.assertEqual(final_progress["terminationReason"], "PROCESS_EXIT")
-            self.assertEqual(final_progress["processTreeCleanup"], "NOT_REQUIRED")
+            self.assertEqual(
+                final_progress["processTreeCleanup"],
+                "CONFIRMED" if os.name == "nt" else "NOT_REQUIRED",
+            )
             self.assertIn('"type": "item.completed"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
@@ -630,7 +633,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 thread = threading.Thread(target=invoke)
                 thread.start()
                 try:
-                    deadline = time.monotonic() + 4
+                    deadline = time.monotonic() + 8
                     diagnostic = None
                     while time.monotonic() < deadline and thread.is_alive():
                         if progress_path.is_file():

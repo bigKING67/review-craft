@@ -505,11 +505,13 @@ Copy `skills/review-craft/templates/review-config.json` to
 Commands use argv arrays and execute with `shell=false`. A configured command is not
 a security sandbox and does not override host approvals, network policy, or sandboxing.
 Each command starts in an isolated POSIX session or Windows process group. On timeout,
-the runner terminates the inherited POSIX process group or uses fixed-argv `taskkill /T /F`
-on Windows, waits for the direct process, and only then captures the final repository
-fingerprint. This closes ordinary inherited-descendant late-write windows; it is not a
-hostile-code sandbox and does not prove termination of detached or externally launched
-processes.
+the runner terminates the inherited POSIX process group; on Windows it closes an assigned
+kill-on-close Job Object or terminates the captured descendant tree through fixed Win32
+APIs, with fixed-argv `taskkill /T /F` as a compatibility fallback. It waits for the direct
+process and only then captures the final repository fingerprint. Cleanup that cannot be
+confirmed fails closed. This closes ordinary inherited-descendant late-write windows; it
+is not a hostile-code sandbox and does not prove termination of detached or externally
+launched processes.
 The `allowNetwork` and `allowInstall` values are declarative host/agent policies;
 the Python runtime records them but does not enforce network or installation isolation.
 `allowRepositoryMutation` controls the runner response after before/after fingerprints
