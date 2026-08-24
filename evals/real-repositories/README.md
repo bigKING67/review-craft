@@ -64,10 +64,25 @@ conditions contract-verifiable without a model call. Host enforcement must still
 separately; `--cd` and a read-only mutation policy alone do not prove that the process cannot read
 arbitrary unrelated host paths.
 
-The benchmark is not Golden until all declared treatments, repetitions, and model
-configurations complete, the outputs are independently adjudicated, and the stability
-report validates. Do not use the materialization receipt alone to claim review accuracy,
-cross-model stability, or human agreement.
+The deterministic release gate, purpose-bound REAL_HOST engineering validation, and Golden
+research evidence are separate contracts. Ordinary source, protocol, documentation, packaging,
+or deterministic-test changes do not launch a provider campaign. A REAL_HOST plan must declare
+exactly one purpose; its matrix cannot be enlarged by CLI options or resume:
+
+| Purpose | Fixed matrix | Samples | Intended use |
+| --- | --- | ---: | --- |
+| `CANARY` | 1 repository x 3 treatments x 2 models x 1 | 6 | Provider, adapter, timeout, or process-lifecycle changes |
+| `CORE_ITERATION` | 8 repositories x Ordinary/Evidence Loop x primary model x 1 | 16 | Routine evidence-loop, prompt, or core review-method iteration |
+| `RISK_ITERATION` | 8 repositories x 3 treatments x primary model x 1 | 24 | Isolate Risk Lens marginal contribution |
+| `CANDIDATE` | 8 repositories x 3 treatments x 2 models x 1 | 48 | User-facing quality-mechanism candidate; directional cross-model evidence |
+| `GOLDEN` | 8 repositories x 3 treatments x 2 models x 3 | 144 | Refresh a broad, repeated quality claim with independent adjudication |
+
+The fixed primary profile is `gpt-5.6-terra/high`; the comparison profile is
+`gpt-5.6-sol/high`. A one-repetition result is directional evidence, not stability evidence.
+`CANDIDATE` is mandatory before publishing a user-facing Review Craft quality-mechanism change,
+but it does not itself authorize a public superiority claim. Only `GOLDEN` plus complete
+human adjudication, FINAL human oracle verification, agreement gates, and stability analysis can
+support a Golden claim. A model or provider update never automatically launches Golden.
 
 ```text
 uv run --locked python scripts/real_repository_benchmark.py validate-suite
@@ -89,22 +104,7 @@ uv run --locked python scripts/real_repository_benchmark.py plan-campaign \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --adapter-config <outside-adapters.json> \
   --campaign-id <immutable-campaign-id> \
-  --repetitions 3 --timeout-seconds 1800 \
-  --timeout-override <model-configuration-id> 1200 \
-  --treatment-timeout-override <model-configuration-id> REVIEW_CRAFT_EVIDENCE_LOOP 1800 \
-  --soft-wall-seconds 64800 --hard-wall-seconds 86400 \
-  --hard-reported-token-ceiling 60000000 \
-  --hard-reported-input-token-ceiling-per-sample 1250000 \
-  --hard-reported-token-ceiling-per-sample 1500000 \
-  --hard-reported-input-token-ceiling-per-shard 7000000 \
-  --hard-reported-token-ceiling-per-shard 8000000 \
-  --max-consecutive-infrastructure-failures 2 \
-  --max-unknown-usage-samples 1 \
-  --max-timed-out-samples-per-model-profile 1 \
-  --max-artifact-invalid-samples 1 \
-  --inactivity-warning-seconds 300 \
-  --inactivity-diagnostic-seconds 600 \
-  --max-recovered-inactivity-samples-per-model-profile 2 \
+  --purpose CANARY \
   --output <external-path>/campaign-plan.json
 
 uv run --locked python scripts/real_repository_benchmark.py \
@@ -112,8 +112,8 @@ uv run --locked python scripts/real_repository_benchmark.py \
   --blind-suite evals/real-repositories/current/blind-suite.json \
   --plan <external-path>/campaign-plan.json
 
-# Execute one natural repository shard at a time. Add --resume only to an
-# interrupted RUNNING state; terminal budget/circuit stops require a new plan.
+# Copy the exact contentSha256 printed by plan-campaign. Authorization is bound
+# to that immutable plan, not merely to a path or campaign ID.
 uv run --locked python scripts/real_repository_benchmark.py run-plan \
   --materialization <coordinator-directory>/materialization.json \
   --blind-suite evals/real-repositories/current/blind-suite.json \
@@ -123,7 +123,11 @@ uv run --locked python scripts/real_repository_benchmark.py run-plan \
   --shard <repository-id> \
   --run-dir <external-shard-directory> \
   --budget-ledger <external-path>/campaign-budget-ledger.json \
+  --authorize-plan-sha256 <campaign-plan-content-sha256> \
   --allow-partial
+
+# GOLDEN additionally requires the same exact hash in the explicit high-cost gate:
+# --allow-golden-campaign-sha256 <campaign-plan-content-sha256>
 
 uv run --locked python scripts/real_repository_benchmark.py \
   validate-campaign-run \
@@ -188,30 +192,43 @@ uv run --locked python scripts/real_repository_benchmark.py analyze-stability \
   --campaign <campaign.json> --adjudication <independent-adjudication.json> \
   --oracle-assessment <oracle-assessment.json> \
   --output <stability.json>
+
+uv run --locked python scripts/real_repository_benchmark.py assess-campaign-promotion \
+  --blind-suite evals/real-repositories/current/blind-suite.json \
+  --plan <campaign-plan.json> --campaign <campaign.json> \
+  --budget-ledger <campaign-budget-ledger.json> \
+  --adjudication <independent-adjudication.json> \
+  --oracle-assessment <oracle-assessment.json> \
+  --stability-report <stability.json> \
+  --output <promotion-receipt.json>
+
+# Provider-free release evidence check. This revalidates every bound artifact and
+# requires the exact assessed Review Craft source content to still be present.
+uv run --locked python scripts/real_repository_benchmark.py validate-quality-release \
+  --blind-suite evals/real-repositories/current/blind-suite.json \
+  --plan <campaign-plan.json> --campaign <campaign.json> \
+  --budget-ledger <campaign-budget-ledger.json> \
+  --adjudication <independent-adjudication.json> \
+  --oracle-assessment <oracle-assessment.json> \
+  --stability-report <stability.json> \
+  --receipt <promotion-receipt.json>
 ```
 
-New plans stop before scheduling another sample after the cumulative unknown-usage,
-artifact-invalid, or any single model-profile timeout budget is reached. They also capture a
-live progress diagnostic after 600 seconds without a first semantic item. A recovered diagnostic
-stall is counted by model profile: the first continues, while the second stops subsequent
-scheduling. These cumulative failure and inactivity limits apply across repository shards through
-the shared budget ledger; they do not dynamically shorten or increase the sealed per-sample
-timeout. Configured timeout variation uses an explicit plan override: `--timeout-override` applies
-to a model profile, while `--treatment-timeout-override` applies more specifically to one
-profile/treatment pair. The treatment override wins, and every expanded
-`samples[].timeoutSeconds` value is validated against the content-bound policy. The remaining hard
-wall-time can still cap an invocation below that sealed maximum. Prompted output invariants are
-not hidden post-processing rules:
+Purpose policy fixes a 300-second first-item deadline, a 900-second overall sample deadline,
+120/240-second inactivity warning/diagnostic thresholds, and fail-closed cumulative timeout,
+unknown-usage, artifact-invalid, recovered-stall, token, and wall-time limits. A first-item timeout
+is recorded as `BEFORE_FIRST_ITEM`; a later overall timeout is `AFTER_FIRST_ITEM`. The runner
+preserves the original timed-out sample and its lifecycle evidence. Diagnostic reruns are new
+artifacts and never replace a predecessor. Prompted output invariants are not hidden
+post-processing rules:
 `BLOCKED` probes must use null severity, and every reported location must stay inside the
 declared benchmark scope.
 
-The full matrix is eight repositories by three treatments by at least two real-host model
-configurations by three repetitions. `--repository`, `--treatment`, and `--repetitions` may
-produce a labeled partial smoke, but partial output is never Golden. The runner stores exact
+The runner stores exact
 prompt/output hashes, usage, wall time, adapter provenance, completion state, and before/after
 Git state; any target mutation fails the sample. Adapter processes run through the canonical
-process-lifecycle boundary. When an adapter declares `review-craft.eval-timeout-control.v1`, the
-runner passes it the sample deadline and reserves a separate bounded finalization grace period.
+process-lifecycle boundary. A purpose plan requires `review-craft.eval-timeout-control.v2`, so the
+runner passes both deadlines and reserves a separate bounded finalization grace period.
 The Codex adapter owns termination of its child process tree, then writes final progress, usage,
 tool-trace, and post-exit isolation sidecars before returning the dedicated timeout exit code; the
 outer runner timeout remains a failsafe for an adapter that cannot finalize. The Codex adapter
@@ -232,44 +249,32 @@ isolation sidecar preserves either condition. This receipt verifies the declared
 only. It is not evidence that the host enforced network denial or an operating-system filesystem
 sandbox.
 
-High-cost campaigns must use a content-bound plan and `run-plan`. The legacy `run` command
-remains available for compatibility and bounded diagnostics, but it does not provide resumable
-plan execution or campaign-level budget enforcement. A plan binds the suite, blind suite,
-materialization receipt, adapter configuration, live REAL_HOST descriptions, deterministic
-sample order, exact prompt hash for every cell, per-sample timeout, global token and wall-time
-ceilings, and infrastructure circuit-breaker threshold. New plans also bind cumulative unknown-usage, artifact-invalid,
-and per-model-profile timeout ceilings, plus inactivity warning/diagnostic thresholds and the
-recovered-inactivity ceiling. They additionally bind reported input/total-token ceilings per
-sample and per natural repository shard. The defaults are 1.25M input and 1.5M total tokens per
-sample, plus 7M input and 8M total tokens per repository shard; these are safety stops, not target
-budgets or quality claims.
+The CANARY token envelope is calibrated above the retained six-cell REAL_HOST smoke rather than
+below it: 300,000 input / 350,000 total per sample, 750,000 input / 800,000 total for the shard,
+and 800,000 total for the campaign. A future budget change requires a new purpose-policy hash; an
+over-budget final sample remains a safety stop and never becomes `SCHEDULE_COMPLETE`.
 
-Optional timeout overrides are canonicalized by selected model-profile and treatment order, reject
-unknown or duplicate selectors, and are expanded into the sealed sample matrix. Older uniform
-plans remain valid because the policy object is optional; execution always consumes the already
-expanded sample timeout rather than recalculating it from live host behavior.
+All REAL_HOST execution uses a purpose-bound content plan and `run-plan`; the unbound legacy
+`run` command fails closed. A v2 plan binds purpose policy, the exact fixed matrix, suite, blind
+suite, materialization receipt, adapter configuration, live REAL_HOST descriptions, prompt hashes,
+budgets, and the exact `skills/review-craft/` source content. `run-plan` requires
+`--authorize-plan-sha256` to match that plan. Golden additionally requires
+`--allow-golden-campaign-sha256` with the same hash. Source drift between planning and execution
+fails before provider work or run-artifact creation.
 
-An operational Canary and a quality Campaign need separate sealed plans. A Canary should use a
-bounded responsiveness timeout chosen from observed lifecycle data instead of automatically
-inheriting the longer Campaign timeout that may intentionally retain slow recovered samples. A
-Canary timeout is a fail-fast health decision, not evidence that the same model could never finish
-under a longer quality-study budget.
-
-Campaign-plan schemas remain backward-readable so historical evidence can still be validated.
-`run-plan` is stricter: plans without the current cumulative failure, inactivity, per-sample and
-per-shard token budgets, or without every prompt hash are validation-only legacy data and must be
-regenerated. This prevents an old global-ceiling-only plan from bypassing later safety controls
-or mixing prompt revisions across resumed repository shards. Every treatment also receives the
+Campaign-plan v1 remains backward-readable for historical validation only. It cannot be started,
+resumed, or implicitly upgraded. Purpose v2 rejects repository, treatment, model-count,
+repetition, timeout, or budget deviations rather than treating them as flexible CLI overrides.
+Every treatment also receives the
 same bounded-output instruction: inspect size first, prefer targeted matches and line windows,
 and keep a single command below roughly 200 lines or 32 KiB.
 
 Each sample commits an atomic `checkpoint.json` marker containing the exact content-bound run
-state before replacing the `campaign.json` and `run-state.json` mirrors. Resume trusts the
-checkpoint state only when its campaign hash matches the committed campaign, and repairs a
-stale state mirror from that marker. Any uncommitted sample directory is preserved and blocks
-overwrite rather than being silently replayed. Failed and timed-out samples remain immutable
-evidence. The default natural shard is one repository, or 18 cells for the declared
-8 x 3 x 2 x 3 matrix.
+state before replacing the `campaign.json` and `run-state.json` mirrors. Any uncommitted sample
+directory is preserved and blocks overwrite rather than being silently replayed. Failed and
+timed-out samples remain immutable evidence. An operator interrupt seals the attempt as
+`INTERRUPTED/OPERATOR_INTERRUPT`, updates the shared ledger and checkpoint, and cannot be resumed;
+diagnosis or retry requires a new content-bound attempt so predecessor evidence is not overwritten.
 
 Every shard in one plan must use the same external `--budget-ledger`. The runner holds an
 exclusive lock for the complete shard invocation, reserves one shard before creating its run
@@ -278,18 +283,27 @@ ledger aggregates reported tokens, unknown-usage samples, artifact-invalid sampl
 runner time, per-model-profile timeout and recovered-inactivity counts, plus the consecutive
 infrastructure-failure tail across the serial shard order. A resume repairs the latest ledger contribution from the
 committed checkpoint; it cannot recreate a missing ledger or switch to an older shard. Token
-usage is known only after an adapter checkpoint, so every reported-token ceiling stops before the
-next sample and may be exceeded by the final completed sample's reported usage. Per-sample limits
-therefore detect an oversized completed attempt; they do not terminate a model request mid-stream.
-All budget and circuit-breaker signals are admission stops: when the final scheduled attempt
-reaches a threshold, the exhausted shard remains `COMPLETED/SCHEDULE_COMPLETE`, while the shared
-ledger retains the threshold and prevents a later shard from admitting its first sample. Safety
-failures such as source mutation or credential exposure still fail an exhausted shard.
+usage is known only after an adapter checkpoint. Per-sample limits therefore detect an oversized
+completed attempt; they do not terminate a model request mid-stream. Every budget, lifecycle,
+cleanup, source-mutation, credential, and integrity stop takes precedence over
+`SCHEDULE_COMPLETE`, including when the final scheduled sample caused the stop. This prevents an
+exhausted matrix from being mislabeled complete at the same instant that its safety budget failed.
 
 `merge-campaign-runs` rejects running states, duplicate shards, duplicate cells, plan drift,
 budget-ledger drift, model-configuration drift, and samples outside the plan. Its receipt binds
 the exact shared ledger and copies it into the merge directory. A merged campaign becomes
-`COMPLETED` only when every planned full-matrix cell completed successfully.
+`COMPLETED` only when every cell in the fixed purpose matrix completed successfully.
+
+`assess-campaign-promotion` generates a deterministic, content-bound receipt. Canary promotion is
+structural: exact matrix completion, valid plan/campaign/ledger bindings, known usage, clean
+process-tree cleanup, and no recovered startup stall. All higher purposes additionally require
+adjudication.v3 plus a FINAL oracle assessment. Treatment comparisons fail on quality regression,
+false-positive regression, or excessive token/wall-time ratios; Candidate and Golden require a
+strict adjudicated Review Craft gain over ordinary review. Golden additionally requires human-only
+adjudication and oracle verification plus the agreement threshold. A blocked receipt remains
+useful diagnostic evidence but cannot be presented as a quality pass. `validate-quality-release`
+is provider-free and revalidates an eligible Candidate/Golden receipt against its complete artifact
+set and the exact currently packaged Review Craft source content.
 
 The current adjudication workflow uses v2 packets and submissions to produce a v3 assembled
 artifact covering every probe response plus every additional finding from completed samples.

@@ -61,7 +61,7 @@
     "statusByShard": {
       "type": "object",
       "additionalProperties": {
-        "enum": ["RUNNING", "COMPLETED", "STOPPED", "FAILED"]
+        "enum": ["RUNNING", "COMPLETED", "STOPPED", "FAILED", "INTERRUPTED"]
       }
     },
     "executionOrder": {

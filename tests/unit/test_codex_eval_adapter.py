@@ -78,9 +78,10 @@ class CodexEvalAdapterTests(unittest.TestCase):
         self.assertEqual(
             description["timeoutControl"],
             {
-                "protocol": "review-craft.eval-timeout-control.v1",
+                "protocol": "review-craft.eval-timeout-control.v2",
                 "transport": "ENV_VALUE",
                 "environmentVariable": adapter.SAMPLE_TIMEOUT_ENV,
+                "firstItemEnvironmentVariable": adapter.FIRST_ITEM_TIMEOUT_ENV,
                 "timeoutExitCode": 124,
                 "finalizationGraceSeconds": 30,
             },
@@ -978,6 +979,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 adapter.USAGE_OUTPUT_ENV: str(usage_path),
                 adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
                 adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                adapter.FIRST_ITEM_TIMEOUT_ENV: "1",
             }
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -994,7 +996,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
                     command_env=environment,
                     replacements={},
                     pre_run_isolation=pre,
-                    timeout_seconds=1,
+                    timeout_seconds=5,
                 )
                 elapsed = time.monotonic() - started
 
@@ -1006,7 +1008,8 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertIsNotNone(receipt["postExit"])
             progress = json.loads(progress_path.read_text(encoding="utf-8"))
             self.assertEqual(progress["terminationReason"], "TIMEOUT")
-            self.assertEqual(progress["processTreeCleanup"], "COMPLETED")
+            self.assertEqual(progress["timeoutPhase"], "BEFORE_FIRST_ITEM")
+            self.assertEqual(progress["processTreeCleanup"], "CONFIRMED")
             self.assertEqual(
                 progress["inactivityState"], "TIMED_OUT_BEFORE_FIRST_ITEM"
             )
@@ -1016,6 +1019,46 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(usage["unavailableReason"], "HOST_USAGE_MISSING")
             time.sleep(2.5)
             self.assertFalse(late_path.exists())
+
+    def test_codex_process_distinguishes_timeout_after_first_item(self) -> None:
+        child = "\n".join(
+            (
+                "import json, sys, time",
+                "sys.stdin.read()",
+                "print(json.dumps({'type': 'thread.started'}), flush=True)",
+                "print(json.dumps({'type': 'turn.started'}), flush=True)",
+                "print(json.dumps({'type': 'item.completed', 'item': "
+                "{'id': 'reason-1', 'type': 'reasoning', 'text': 'started'}}), "
+                "flush=True)",
+                "time.sleep(60)",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            progress_path = home / "progress.json"
+            environment = {
+                **os.environ,
+                "HOME": str(home),
+                "CODEX_HOME": str(home),
+                adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                adapter.FIRST_ITEM_TIMEOUT_ENV: "1",
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                pre = adapter.codex_home_extension_state(allow_extensions=False)
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env=environment,
+                    replacements={},
+                    pre_run_isolation=pre,
+                    timeout_seconds=2,
+                )
+            self.assertEqual(status, adapter.TIMEOUT_EXIT_CODE)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["timeoutPhase"], "AFTER_FIRST_ITEM")
+            self.assertEqual(progress["terminationReason"], "TIMEOUT")
+            self.assertEqual(progress["processTreeCleanup"], "CONFIRMED")
+            self.assertIsNotNone(progress["firstItemAt"])
 
     def test_tool_trace_normalizes_paths_and_hashes_without_raw_output(self) -> None:
         output = "verification result\n"

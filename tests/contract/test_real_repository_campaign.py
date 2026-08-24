@@ -56,8 +56,8 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             ],
         }
         self.descriptions = {
-            "fixture-standard": self._description("standard", "high"),
-            "fixture-assured": self._description("assured", "xhigh"),
+            "fixture-standard": self._description("gpt-5.6-terra", "high"),
+            "fixture-assured": self._description("gpt-5.6-sol", "high"),
         }
         self.models = [
             runner._model_configuration(adapter["id"], self.descriptions[adapter["id"]])
@@ -69,7 +69,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "schema": "review-craft.eval-adapter.v5",
             "name": "fixture-adapter",
             "version": "fixture-host-v1",
-            "model": f"fixture-{model}",
+            "model": model,
             "reasoning": reasoning,
             "adapterVersion": "fixture-v1",
             "evidenceKind": "REAL_HOST",
@@ -126,6 +126,17 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 max_recovered_inactivity_samples_per_model_profile
             ),
             timeout_overrides=timeout_overrides,
+        )
+
+    def _purpose_plan(self, purpose: str = "CANARY") -> dict:
+        return campaign_runtime.build_purpose_campaign_plan(
+            source_suite=self.suite,
+            blind_suite=self.blind,
+            materialization=self.receipt,
+            adapter_config=self.adapter_config,
+            model_configurations=self.models,
+            campaign_id=f"fixture-{purpose.lower().replace('_', '-')}",
+            campaign_purpose=purpose,
         )
 
     def _output(self, repository: dict) -> dict:
@@ -227,6 +238,19 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         sample["artifacts"]["outputSha256"] = None
         return sample
 
+    def _sample_with_usage(
+        self, *, input_tokens: int, total_tokens: int, **kwargs: object
+    ) -> dict:
+        sample = self._sample(**kwargs)
+        sample["usage"].update(
+            {
+                "inputTokens": input_tokens,
+                "outputTokens": total_tokens - input_tokens,
+                "totalTokens": total_tokens,
+            }
+        )
+        return sample
+
     def _timed_out_sample(self, **kwargs: object) -> dict:
         sample = self._failed_sample("TIMEOUT", **kwargs)
         sample["status"] = "TIMED_OUT"
@@ -273,6 +297,158 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         }
         return sample
 
+    def _healthy_lifecycle_sample(self, **kwargs: object) -> dict:
+        sample = self._recovered_inactivity_sample(**kwargs)
+        sample["lifecycle"].update(
+            {
+                "completedAt": "2026-08-21T00:00:04Z",
+                "firstItemAt": "2026-08-21T00:00:03Z",
+                "lastEventAt": "2026-08-21T00:00:04Z",
+                "timeToFirstItemSeconds": 3.0,
+                "inactivityState": "NORMAL",
+                "maximumPreItemInactivitySeconds": 3.0,
+                "diagnosticCapturedAt": None,
+                "processAliveWhenDiagnosticCaptured": None,
+            }
+        )
+        return sample
+
+    def _completed_purpose_evidence(
+        self, purpose: str
+    ) -> tuple[dict, dict, dict]:
+        plan = self._purpose_plan(purpose)
+        repositories = {row["id"]: row for row in self.blind["repositories"]}
+        adapters = {row["id"]: row for row in self.adapter_config["adapters"]}
+        samples = [
+            self._healthy_lifecycle_sample(
+                repository=repositories[row["repositoryId"]],
+                adapter=adapters[row["modelConfigurationId"]],
+                treatment=row["treatment"],
+                repetition=row["repetition"],
+                description=self.descriptions[row["modelConfigurationId"]],
+            )
+            for row in plan["samples"]
+        ]
+        campaign = campaign_runtime.merge_campaigns(
+            plan=plan,
+            campaigns=[{"samples": samples}],
+        )
+        state = campaign_runtime.new_run_state(
+            plan=plan,
+            campaign_id=campaign["campaignId"],
+            shard_id="ALL",
+            now="2026-08-21T00:00:00Z",
+        )
+        campaign_runtime.update_run_state(
+            state,
+            campaign=campaign,
+            elapsed_seconds=1.0,
+            now="2026-08-21T00:00:01Z",
+            status="COMPLETED",
+            stop_reason="SCHEDULE_COMPLETE",
+        )
+        ledger = campaign_runtime.new_budget_ledger(
+            plan, now="2026-08-21T00:00:00Z"
+        )
+        campaign_runtime.update_budget_ledger(
+            ledger, state, now="2026-08-21T00:00:01Z"
+        )
+        return plan, campaign, ledger
+
+    def _quality_evidence(self, campaign: dict) -> tuple[dict, dict]:
+        samples = {row["sampleId"]: row for row in campaign["samples"]}
+        subject_hashes = contracts.adjudication_subject_content_hashes(campaign)
+        labels = []
+        for adjudicator_id in ("agent-a", "agent-b"):
+            for sample_id, subject_type, subject_key in sorted(
+                contracts.adjudication_subjects(campaign)
+            ):
+                ordinary_real_finding = (
+                    samples[sample_id]["treatment"] == "ORDINARY_PROMPT"
+                    and subject_type == "PROBE_RESPONSE"
+                    and next(
+                        row
+                        for row in self.suite["repositories"]
+                        if row["id"] == samples[sample_id]["repositoryId"]
+                    )["probes"][0]["id"]
+                    == subject_key
+                )
+                components = [
+                    {
+                        "key": key,
+                        "label": (
+                            "INCORRECT"
+                            if ordinary_real_finding and index == 0
+                            else "CORRECT"
+                        ),
+                        "rationale": "Synthetic promotion contract fixture.",
+                    }
+                    for index, key in enumerate(
+                        contracts.ADJUDICATION_COMPONENT_KEYS[subject_type]
+                    )
+                ]
+                labels.append(
+                    {
+                        "adjudicatorId": adjudicator_id,
+                        "itemId": "item-"
+                        + contracts.sha256_json(
+                            [adjudicator_id, sample_id, subject_type, subject_key]
+                        )[:20],
+                        "sampleId": sample_id,
+                        "subjectType": subject_type,
+                        "subjectKey": subject_key,
+                        "subjectContentSha256": subject_hashes[
+                            (sample_id, subject_type, subject_key)
+                        ],
+                        "label": (
+                            "INCORRECT" if ordinary_real_finding else "CORRECT"
+                        ),
+                        "rationale": "Synthetic promotion contract fixture.",
+                        "components": components,
+                    }
+                )
+        adjudication = {
+            "schema": "review-craft.eval-real-repository-adjudication.v3",
+            "campaignContentSha256": campaign["contentSha256"],
+            "mappingContentSha256": "6" * 64,
+            "rubricVersion": "review-craft.real-repository-component-rubric.v1",
+            "adjudicators": [
+                {
+                    "id": adjudicator_id,
+                    "kind": "AGENT_ASSISTED",
+                    "independent": True,
+                    "packetContentSha256": contracts.sha256_json(
+                        [adjudicator_id, "packet"]
+                    ),
+                    "submissionContentSha256": contracts.sha256_json(
+                        [adjudicator_id, "submission"]
+                    ),
+                }
+                for adjudicator_id in ("agent-a", "agent-b")
+            ],
+            "labels": labels,
+            "subjectResolutions": contracts.build_adjudication_resolutions(labels),
+            "contentSha256": "0" * 64,
+        }
+        campaign_runtime.seal(adjudication)
+        assessment = contracts.build_oracle_assessment_template(
+            self.suite,
+            campaign,
+            adjudication,
+            verifier_id="agent-oracle",
+            verifier_kind="AGENT_ASSISTED",
+        )
+        for row in assessment["assessments"]:
+            row["classification"] = (
+                "MISSED"
+                if samples[row["sampleId"]]["treatment"] == "ORDINARY_PROMPT"
+                else "EXACT_ORACLE_MATCH"
+            )
+            row["rationale"] = "Synthetic promotion oracle fixture."
+        assessment["status"] = "FINAL"
+        campaign_runtime.seal(assessment)
+        return adjudication, assessment
+
     def _write_inputs(
         self,
         root: Path,
@@ -304,6 +480,12 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             shard=None,
             resume=False,
             allow_partial=True,
+            authorize_plan_sha256=plan["contentSha256"],
+            allow_golden_campaign_sha256=(
+                plan["contentSha256"]
+                if plan.get("campaignPurpose") == "GOLDEN"
+                else None
+            ),
         )
 
     def _repository_state(self, repository_root: Path) -> dict[str, str]:
@@ -357,9 +539,211 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             campaign_runtime.validate_campaign_plan(reordered, self.suite, self.blind),
         )
 
+    def test_purpose_policy_generates_only_the_five_fixed_matrices(self) -> None:
+        expected_counts = {
+            "CANARY": 6,
+            "CORE_ITERATION": 16,
+            "RISK_ITERATION": 24,
+            "CANDIDATE": 48,
+            "GOLDEN": 144,
+        }
+        for purpose, expected_count in expected_counts.items():
+            with self.subTest(purpose=purpose):
+                plan = self._purpose_plan(purpose)
+                self.assertEqual(len(plan["samples"]), expected_count)
+                self.assertEqual(plan["campaignPurpose"], purpose)
+                self.assertEqual(
+                    campaign_runtime.validate_campaign_plan(
+                        plan, self.suite, self.blind
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    campaign_runtime.validate_campaign_plan_execution_safety(plan),
+                    [],
+                )
+
+    def test_canary_budget_keeps_headroom_over_preserved_real_host_baseline(
+        self,
+    ) -> None:
+        budgets = campaign_runtime.PURPOSE_POLICY_V1["purposes"]["CANARY"][
+            "budgets"
+        ]
+
+        # The retained six-cell v1 smoke used 577,162 input and 608,932 total tokens.
+        self.assertGreaterEqual(
+            budgets["hardReportedInputTokenCeilingPerRepositoryShard"], 750_000
+        )
+        self.assertGreaterEqual(
+            budgets["hardReportedTokenCeilingPerRepositoryShard"], 800_000
+        )
+        self.assertGreaterEqual(budgets["hardReportedTokenCeiling"], 800_000)
+
+    def test_purpose_policy_rejects_matrix_model_and_budget_tampering(self) -> None:
+        mutations = (
+            ("repositories", lambda plan: plan["selection"]["repositories"].append("x")),
+            ("treatments", lambda plan: plan["selection"]["treatments"].pop()),
+            ("repetitions", lambda plan: plan["selection"].update(repetitions=2)),
+            (
+                "models",
+                lambda plan: plan["modelConfigurations"][0].update(
+                    model="gpt-5.6-sol"
+                ),
+            ),
+            (
+                "budgets",
+                lambda plan: plan["budgets"].update(sampleTimeoutSeconds=901),
+            ),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                plan = self._purpose_plan("CANARY")
+                mutate(plan)
+                campaign_runtime.seal(plan)
+                self.assertTrue(
+                    campaign_runtime.validate_campaign_plan(
+                        plan, self.suite, self.blind
+                    )
+                )
+
+    def test_execution_authorization_is_bound_to_exact_plan_hash(self) -> None:
+        canary = self._purpose_plan("CANARY")
+        args = SimpleNamespace(
+            authorize_plan_sha256="0" * 64,
+            allow_golden_campaign_sha256=None,
+        )
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError, "authorize-plan-sha256"
+        ):
+            runner._validate_campaign_execution_authorization(args, canary)
+        args.authorize_plan_sha256 = canary["contentSha256"]
+        runner._validate_campaign_execution_authorization(args, canary)
+
+        golden = self._purpose_plan("GOLDEN")
+        args.authorize_plan_sha256 = golden["contentSha256"]
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError, "allow-golden-campaign-sha256"
+        ):
+            runner._validate_campaign_execution_authorization(args, golden)
+        args.allow_golden_campaign_sha256 = golden["contentSha256"]
+        runner._validate_campaign_execution_authorization(args, golden)
+
+    def test_execution_rejects_review_craft_source_drift(self) -> None:
+        plan = self._purpose_plan("CANARY")
+        args = SimpleNamespace(skill_root=str(ROOT / "skills/review-craft"))
+        runner._validate_review_craft_source_binding(args, plan)
+        with tempfile.TemporaryDirectory() as directory:
+            drifted = Path(directory) / "review-craft"
+            drifted.mkdir()
+            (drifted / "SKILL.md").write_text("drift\n", encoding="utf-8")
+            args.skill_root = str(drifted)
+            with self.assertRaisesRegex(
+                contracts.RealRepositoryError, "source content differs"
+            ):
+                runner._validate_review_craft_source_binding(args, plan)
+
+    def test_unbound_run_command_is_disabled_before_filesystem_access(self) -> None:
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError, "unbound campaign execution is disabled"
+        ):
+            runner.command_run_campaign(SimpleNamespace())
+
+    def test_canary_promotion_receipt_requires_clean_structural_evidence(self) -> None:
+        plan, campaign, ledger = self._completed_purpose_evidence("CANARY")
+        receipt = campaign_runtime.build_promotion_receipt(
+            plan=plan,
+            campaign=campaign,
+            budget_ledger=ledger,
+            source_suite=self.suite,
+            blind_suite=self.blind,
+        )
+        self.assertEqual(receipt["status"], "ELIGIBLE")
+        self.assertEqual(receipt["comparisons"], [])
+        self.assertEqual(
+            campaign_runtime.validate_promotion_receipt(
+                receipt,
+                plan=plan,
+                campaign=campaign,
+                budget_ledger=ledger,
+                source_suite=self.suite,
+                blind_suite=self.blind,
+            ),
+            [],
+        )
+
+        stalled = copy.deepcopy(campaign)
+        stalled["samples"][0]["lifecycle"]["inactivityState"] = (
+            "RECOVERED_DIAGNOSTIC"
+        )
+        campaign_runtime.seal(stalled)
+        blocked = campaign_runtime.build_promotion_receipt(
+            plan=plan,
+            campaign=stalled,
+            budget_ledger=ledger,
+            source_suite=self.suite,
+            blind_suite=self.blind,
+        )
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertIn("lifecycle-clean", {
+            row["id"] for row in blocked["checks"] if not row["passed"]
+        })
+
+        stopped_ledger = copy.deepcopy(ledger)
+        stopped_ledger["statusByShard"]["ALL"] = "STOPPED"
+        campaign_runtime.seal(stopped_ledger)
+        blocked = campaign_runtime.build_promotion_receipt(
+            plan=plan,
+            campaign=campaign,
+            budget_ledger=stopped_ledger,
+            source_suite=self.suite,
+            blind_suite=self.blind,
+        )
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertIn("budget-clean", {
+            row["id"] for row in blocked["checks"] if not row["passed"]
+        })
+
+    def test_candidate_promotion_is_blocked_without_quality_evidence(self) -> None:
+        plan, campaign, ledger = self._completed_purpose_evidence("CANDIDATE")
+        receipt = campaign_runtime.build_promotion_receipt(
+            plan=plan,
+            campaign=campaign,
+            budget_ledger=ledger,
+            source_suite=self.suite,
+            blind_suite=self.blind,
+        )
+        self.assertEqual(receipt["status"], "BLOCKED")
+        self.assertIn("quality-evidence", {
+            row["id"] for row in receipt["checks"] if not row["passed"]
+        })
+
+    def test_candidate_promotion_requires_nonregression_and_strict_gain(self) -> None:
+        plan, campaign, ledger = self._completed_purpose_evidence("CANDIDATE")
+        adjudication, assessment = self._quality_evidence(campaign)
+        receipt = campaign_runtime.build_promotion_receipt(
+            plan=plan,
+            campaign=campaign,
+            budget_ledger=ledger,
+            source_suite=self.suite,
+            blind_suite=self.blind,
+            adjudication=adjudication,
+            oracle_assessment=assessment,
+        )
+        self.assertEqual(receipt["status"], "ELIGIBLE")
+        self.assertEqual(len(receipt["comparisons"]), 4)
+        self.assertTrue(all(row["passed"] for row in receipt["comparisons"]))
+        evidence_rows = [
+            row
+            for row in receipt["comparisons"]
+            if row["treatment"] == "REVIEW_CRAFT_EVIDENCE_LOOP"
+        ]
+        self.assertTrue(all(row["correctRateDelta"] > 0 for row in evidence_rows))
+        self.assertTrue(
+            all(row["exactOracleRecallDelta"] > 0 for row in evidence_rows)
+        )
+
     def test_run_plan_rejects_coordinator_artifact_before_adapter_description(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], repetitions=1)
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -378,8 +762,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             describe.assert_not_called()
 
     def test_run_plan_rejects_run_directory_inside_evaluator_before_writes(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], repetitions=1)
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -399,8 +782,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertFalse(Path(args.budget_ledger).exists())
 
     def test_run_plan_rejects_non_directory_run_target_before_writes(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], repetitions=1)
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -421,7 +803,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
 
     def test_run_plan_rejects_control_input_hidden_in_evaluator(self) -> None:
         repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], repetitions=1)
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -444,9 +826,8 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertFalse(Path(args.budget_ledger).exists())
 
     def test_run_plan_validates_unselected_materialized_checkout(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
         unselected_id = self.suite["repositories"][1]["id"]
-        plan = self._plan(repositories=[repository_id], repetitions=1)
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -600,67 +981,32 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 ]
             )
 
-    def test_timeout_override_cli_contract_is_unambiguous(self) -> None:
-        args = runner.build_parser().parse_args(
-            [
-                "plan-campaign",
-                "--blind-suite",
-                "blind.json",
-                "--materialization",
-                "materialization.json",
-                "--adapter-config",
-                "adapters.json",
-                "--output",
-                "plan.json",
-                "--campaign-id",
-                "fixture-campaign",
-                "--timeout-override",
-                "fixture-standard",
-                "1200",
-                "--treatment-timeout-override",
-                "fixture-standard",
-                "REVIEW_CRAFT_EVIDENCE_LOOP",
-                "2400",
-            ]
-        )
-        self.assertEqual(
-            runner._campaign_timeout_overrides(args),
-            [
-                {
-                    "modelConfigurationId": "fixture-standard",
-                    "timeoutSeconds": 1200,
-                },
-                {
-                    "modelConfigurationId": "fixture-standard",
-                    "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
-                    "timeoutSeconds": 2400,
-                },
-            ],
-        )
-        args.timeout_override[0][1] = "0"
-        with self.assertRaisesRegex(
-            contracts.RealRepositoryError,
-            "positive integer",
-        ):
-            runner._campaign_timeout_overrides(args)
+    def test_plan_campaign_cli_requires_purpose_and_rejects_matrix_overrides(
+        self,
+    ) -> None:
+        parser = runner.build_parser()
+        base = [
+            "plan-campaign",
+            "--blind-suite",
+            "blind.json",
+            "--materialization",
+            "materialization.json",
+            "--adapter-config",
+            "adapters.json",
+            "--output",
+            "plan.json",
+            "--campaign-id",
+            "fixture-campaign",
+        ]
+        with self.assertRaises(SystemExit):
+            parser.parse_args(base)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(base + ["--purpose", "CANARY", "--repetitions", "3"])
+        args = parser.parse_args(base + ["--purpose", "CANARY"])
+        self.assertEqual(args.purpose, "CANARY")
 
-    def test_runner_consumes_expanded_sample_timeouts_without_inference(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(
-            repositories=[repository_id],
-            repetitions=1,
-            timeout_overrides=[
-                {
-                    "modelConfigurationId": "fixture-standard",
-                    "timeoutSeconds": 1200,
-                },
-                {
-                    "modelConfigurationId": "fixture-standard",
-                    "treatment": "REVIEW_CRAFT_EVIDENCE_LOOP",
-                    "timeoutSeconds": 2400,
-                },
-            ],
-        )
+    def test_runner_consumes_purpose_bound_timeouts_without_inference(self) -> None:
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -691,12 +1037,13 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             ): call.kwargs["timeout_seconds"]
             for call in run_sample.call_args_list
         }
-        self.assertEqual(observed[("fixture-standard", "RISK_LENS_REVIEW")], 1200)
-        self.assertEqual(
-            observed[("fixture-standard", "REVIEW_CRAFT_EVIDENCE_LOOP")],
-            2400,
+        self.assertEqual(set(observed.values()), {900})
+        self.assertTrue(
+            all(
+                call.kwargs["first_item_timeout_seconds"] == 300
+                for call in run_sample.call_args_list
+            )
         )
-        self.assertEqual(observed[("fixture-assured", "RISK_LENS_REVIEW")], 1800)
 
     def test_legacy_plan_and_empty_state_remain_readable(self) -> None:
         plan = self._plan()
@@ -735,8 +1082,13 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         )
         self.assertTrue(any("current execution budgets" in row for row in execution_errors))
         self.assertTrue(any("prompt hashes" in row for row in execution_errors))
-        self.assertEqual(
-            campaign_runtime.validate_campaign_plan_execution_safety(plan), []
+        self.assertTrue(
+            any(
+                "campaignPurpose" in row
+                for row in campaign_runtime.validate_campaign_plan_execution_safety(
+                    plan
+                )
+            )
         )
 
         partial_prompt_binding = copy.deepcopy(legacy)
@@ -1206,8 +1558,8 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             campaign_runtime.validate_checkpoint(tampered, plan, campaign),
         )
 
-    def test_fake_144_rehearsal_resumes_without_replaying_completed_samples(self) -> None:
-        plan = self._plan()
+    def test_interrupted_golden_attempt_is_terminal_and_cannot_be_resumed(self) -> None:
+        plan = self._purpose_plan("GOLDEN")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1239,48 +1591,18 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
             self.assertEqual(len(partial["samples"]), 49)
-            self.assertEqual(partial_state["status"], "RUNNING")
-
-            ledger_path = Path(args.budget_ledger)
-            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-            ledger["statusByShard"]["ALL"] = "COMPLETED"
-            campaign_runtime.seal(ledger)
-            runner.write_json(ledger_path, ledger)
+            self.assertEqual(partial_state["status"], "INTERRUPTED")
+            self.assertEqual(partial_state["stopReason"], "OPERATOR_INTERRUPT")
+            checkpoint = json.loads(
+                (Path(args.run_dir) / "checkpoint.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(checkpoint["state"]["status"], "INTERRUPTED")
+            ledger = json.loads(
+                Path(args.budget_ledger).read_text(encoding="utf-8")
+            )
+            self.assertEqual(ledger["statusByShard"]["ALL"], "INTERRUPTED")
 
             args.resume = True
-            resumed_calls = 0
-
-            def resumed(**kwargs: object) -> dict:
-                nonlocal resumed_calls
-                resumed_calls += 1
-                return self._sample(**kwargs)
-
-            with (
-                patch.object(
-                    runner,
-                    "_describe_adapter",
-                    side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
-                ),
-                patch.object(runner, "_repository_state", side_effect=self._repository_state),
-                patch.object(runner, "_run_sample", side_effect=resumed),
-            ):
-                self.assertEqual(runner.command_run_campaign_plan(args), 0)
-
-            completed = json.loads(
-                (Path(args.run_dir) / "campaign.json").read_text(encoding="utf-8")
-            )
-            state = json.loads(
-                (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(resumed_calls, 95)
-            self.assertEqual(len(completed["samples"]), 144)
-            self.assertEqual(len({row["sampleId"] for row in completed["samples"]}), 144)
-            self.assertEqual(completed["status"], "COMPLETED")
-            self.assertEqual(state["status"], "COMPLETED")
-            self.assertEqual(state["stopReason"], "SCHEDULE_COMPLETE")
-            self.assertEqual(
-                campaign_runtime.validate_run_state(state, plan, completed), []
-            )
             with (
                 patch.object(
                     runner,
@@ -1320,21 +1642,14 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 },
             ],
         }
-        plan = campaign_runtime.build_campaign_plan(
+        plan = campaign_runtime.build_purpose_campaign_plan(
             source_suite=self.suite,
             blind_suite=self.blind,
             materialization=self.receipt,
             adapter_config=adapter_config,
             model_configurations=self.models,
             campaign_id="fixture-physical-campaign-144",
-            repository_ids=[row["id"] for row in self.suite["repositories"]],
-            treatments=list(contracts.TREATMENTS),
-            repetitions=3,
-            sample_timeout_seconds=30,
-            soft_wall_time_seconds=300,
-            hard_wall_time_seconds=600,
-            hard_reported_token_ceiling=1_000_000,
-            max_consecutive_infrastructure_failures=2,
+            campaign_purpose="GOLDEN",
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1361,11 +1676,8 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(state["status"], "COMPLETED")
             self.assertEqual(state["reportedTokens"], 17_280)
 
-    def test_runner_stops_after_two_consecutive_infrastructure_failures(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(
-            repositories=[repository_id], max_unknown_usage_samples=3
-        )
+    def test_runner_stops_after_first_infrastructure_failure(self) -> None:
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1388,20 +1700,15 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             state = json.loads(
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(run_sample.call_count, 2)
+            self.assertEqual(run_sample.call_count, 1)
             self.assertEqual(state["status"], "STOPPED")
             self.assertEqual(state["stopReason"], "INFRASTRUCTURE_CIRCUIT_BREAKER")
 
-    def test_runner_stops_after_two_nonconsecutive_timeouts_for_one_profile(
+    def test_runner_stops_after_first_timeout_for_one_profile(
         self,
     ) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(
-            repositories=[repository_id],
-            max_unknown_usage_samples=3,
-            max_timed_out_samples_per_model_profile=2,
-        )
-        outcomes = iter(("timeout", "success", "timeout"))
+        plan = self._purpose_plan("CANARY")
+        outcomes = iter(("timeout",))
 
         def sample_for_outcome(**kwargs: object) -> dict:
             if next(outcomes) == "timeout":
@@ -1427,30 +1734,26 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
             ledger = json.loads(Path(args.budget_ledger).read_text(encoding="utf-8"))
-            self.assertEqual(run_sample.call_count, 3)
+            self.assertEqual(run_sample.call_count, 1)
             self.assertEqual(state["status"], "STOPPED")
             self.assertEqual(
                 state["stopReason"], "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED"
             )
             self.assertEqual(
-                state["timedOutSamplesByModelProfile"], {"fixture-standard": 2}
+                state["timedOutSamplesByModelProfile"], {"fixture-standard": 1}
             )
             self.assertEqual(
                 campaign_runtime.budget_ledger_timed_out_samples_by_model_profile(
                     ledger
                 ),
-                {"fixture-standard": 2},
+                {"fixture-standard": 1},
             )
 
-    def test_runner_stops_after_second_recovered_inactivity_for_one_profile(
+    def test_runner_stops_after_first_recovered_inactivity_for_one_profile(
         self,
     ) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(
-            repositories=[repository_id],
-            max_recovered_inactivity_samples_per_model_profile=2,
-        )
-        outcomes = iter(("stalled", "success", "stalled"))
+        plan = self._purpose_plan("CANARY")
+        outcomes = iter(("stalled",))
 
         def sample_for_outcome(**kwargs: object) -> dict:
             if next(outcomes) == "stalled":
@@ -1476,7 +1779,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
             ledger = json.loads(Path(args.budget_ledger).read_text(encoding="utf-8"))
-            self.assertEqual(run_sample.call_count, 3)
+            self.assertEqual(run_sample.call_count, 1)
             self.assertEqual(state["status"], "STOPPED")
             self.assertEqual(
                 state["stopReason"],
@@ -1484,18 +1787,17 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             )
             self.assertEqual(
                 state["recoveredInactivitySamplesByModelProfile"],
-                {"fixture-standard": 2},
+                {"fixture-standard": 1},
             )
             self.assertEqual(
                 campaign_runtime.budget_ledger_recovered_inactivity_samples_by_model_profile(
                     ledger
                 ),
-                {"fixture-standard": 2},
+                {"fixture-standard": 1},
             )
 
     def test_runner_stops_after_first_unknown_usage_sample(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id])
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1522,8 +1824,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(state["stopReason"], "UNKNOWN_USAGE_BUDGET_EXCEEDED")
 
     def test_runner_stops_after_first_artifact_invalid_sample(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id])
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1566,9 +1867,8 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 1,
             )
 
-    def test_runner_enforces_reported_token_ceiling_after_checkpoint(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], token_ceiling=200)
+    def test_runner_enforces_sample_token_ceiling_after_checkpoint(self) -> None:
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1579,19 +1879,26 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                     side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
                 ),
                 patch.object(runner, "_repository_state", side_effect=self._repository_state),
-                patch.object(runner, "_run_sample", side_effect=self._sample) as run_sample,
+                patch.object(
+                    runner,
+                    "_run_sample",
+                    side_effect=lambda **kwargs: self._sample_with_usage(
+                        input_tokens=200_000,
+                        total_tokens=350_001,
+                        **kwargs,
+                    ),
+                ) as run_sample,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
             state = json.loads(
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(run_sample.call_count, 2)
-            self.assertEqual(state["reportedTokens"], 240)
-            self.assertEqual(state["stopReason"], "TOKEN_CEILING")
+            self.assertEqual(run_sample.call_count, 1)
+            self.assertEqual(state["reportedTokens"], 350_001)
+            self.assertEqual(state["stopReason"], "SAMPLE_TOKEN_CEILING")
 
-    def test_final_sample_cost_ceiling_completes_exhausted_schedule(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], token_ceiling=2_160)
+    def test_final_sample_cost_ceiling_precedes_schedule_completion(self) -> None:
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1609,7 +1916,13 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                     side_effect=self._repository_state,
                 ),
                 patch.object(
-                    runner, "_run_sample", side_effect=self._sample
+                    runner,
+                    "_run_sample",
+                    side_effect=lambda **kwargs: self._sample_with_usage(
+                        input_tokens=120_000,
+                        total_tokens=140_000,
+                        **kwargs,
+                    ),
                 ) as run_sample,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
@@ -1619,15 +1932,14 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             ledger = json.loads(
                 Path(args.budget_ledger).read_text(encoding="utf-8")
             )
-            self.assertEqual(run_sample.call_count, 18)
-            self.assertEqual(state["status"], "COMPLETED")
-            self.assertEqual(state["stopReason"], "SCHEDULE_COMPLETE")
-            self.assertEqual(state["reportedTokens"], 2_160)
-            self.assertEqual(campaign_runtime.budget_ledger_totals(ledger)[0], 2_160)
+            self.assertEqual(run_sample.call_count, 6)
+            self.assertEqual(state["status"], "STOPPED")
+            self.assertEqual(state["stopReason"], "SHARD_TOKEN_CEILING")
+            self.assertEqual(state["reportedTokens"], 840_000)
+            self.assertEqual(campaign_runtime.budget_ledger_totals(ledger)[0], 840_000)
 
     def test_final_sample_failure_budgets_precede_schedule_completion(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(repositories=[repository_id], repetitions=1)
+        plan = self._purpose_plan("CANARY")
 
         def unknown_usage_sample(**kwargs: object) -> dict:
             return self._failed_sample("REVIEW_FAILURE", **kwargs)
@@ -1736,18 +2048,11 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 "TOKEN_CEILING",
                 schedule_complete=True,
             ),
-            ("COMPLETED", "SCHEDULE_COMPLETE"),
+            ("STOPPED", "TOKEN_CEILING"),
         )
 
     def test_runner_stops_after_sample_input_token_ceiling(self) -> None:
-        repository_id = self.suite["repositories"][0]["id"]
-        plan = self._plan(
-            repositories=[repository_id],
-            sample_input_token_ceiling=100,
-            sample_token_ceiling=200,
-            shard_input_token_ceiling=1_000,
-            shard_token_ceiling=1_200,
-        )
+        plan = self._purpose_plan("CANARY")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1758,7 +2063,15 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                     side_effect=lambda _command, adapter_id: self.descriptions[adapter_id],
                 ),
                 patch.object(runner, "_repository_state", side_effect=self._repository_state),
-                patch.object(runner, "_run_sample", side_effect=self._sample) as run_sample,
+                patch.object(
+                    runner,
+                    "_run_sample",
+                    side_effect=lambda **kwargs: self._sample_with_usage(
+                        input_tokens=300_001,
+                        total_tokens=310_000,
+                        **kwargs,
+                    ),
+                ) as run_sample,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
             state = json.loads(
@@ -1767,9 +2080,9 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             self.assertEqual(run_sample.call_count, 1)
             self.assertEqual(state["stopReason"], "SAMPLE_INPUT_TOKEN_CEILING")
 
-    def test_shared_budget_prevents_a_second_shard_from_spending_again(self) -> None:
+    def test_shared_budget_ledger_executes_each_candidate_shard_once(self) -> None:
         repositories = [row["id"] for row in self.suite["repositories"][:2]]
-        plan = self._plan(repositories=repositories, token_ceiling=200)
+        plan = self._purpose_plan("CANDIDATE")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = self._write_inputs(root, plan)
@@ -1786,7 +2099,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 patch.object(runner, "_run_sample", side_effect=self._sample) as first,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
-            self.assertEqual(first.call_count, 2)
+            self.assertEqual(first.call_count, 6)
 
             args.run_dir = str(root / "run-second")
             args.shard = repositories[1]
@@ -1802,24 +2115,21 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 patch.object(runner, "_run_sample", side_effect=self._sample) as second,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
-            self.assertEqual(second.call_count, 0)
+            self.assertEqual(second.call_count, 6)
             second_state = json.loads(
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
             ledger = json.loads(
                 Path(args.budget_ledger).read_text(encoding="utf-8")
             )
-            self.assertEqual(second_state["stopReason"], "TOKEN_CEILING")
+            self.assertEqual(second_state["stopReason"], "SCHEDULE_COMPLETE")
             self.assertEqual(
-                campaign_runtime.budget_ledger_totals(ledger)[0], 240
+                campaign_runtime.budget_ledger_totals(ledger)[0], 1_440
             )
 
-    def test_recovered_inactivity_budget_accumulates_across_shards(self) -> None:
+    def test_recovered_inactivity_budget_blocks_later_candidate_shards(self) -> None:
         repositories = [row["id"] for row in self.suite["repositories"][:2]]
-        plan = self._plan(
-            repositories=repositories,
-            max_recovered_inactivity_samples_per_model_profile=2,
-        )
+        plan = self._purpose_plan("CANDIDATE")
         first_attempt = True
 
         def first_shard_sample(**kwargs: object) -> dict:
@@ -1847,11 +2157,11 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 ) as first,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
-            self.assertEqual(first.call_count, 18)
+            self.assertEqual(first.call_count, 1)
             first_state = json.loads(
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(first_state["status"], "COMPLETED")
+            self.assertEqual(first_state["status"], "STOPPED")
             self.assertEqual(
                 first_state["recoveredInactivitySamplesByModelProfile"],
                 {"fixture-standard": 1},
@@ -1875,7 +2185,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 ) as second,
             ):
                 self.assertEqual(runner.command_run_campaign_plan(args), 0)
-            self.assertEqual(second.call_count, 1)
+            self.assertEqual(second.call_count, 0)
             second_state = json.loads(
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
@@ -1891,24 +2201,20 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 campaign_runtime.budget_ledger_recovered_inactivity_samples_by_model_profile(
                     ledger
                 ),
-                {"fixture-standard": 2},
+                {"fixture-standard": 1},
             )
 
     def test_final_recovered_inactivity_completes_shard_and_blocks_next_shard(
         self,
     ) -> None:
         repositories = [row["id"] for row in self.suite["repositories"][:2]]
-        plan = self._plan(
-            repositories=repositories,
-            repetitions=1,
-            max_recovered_inactivity_samples_per_model_profile=2,
-        )
+        plan = self._purpose_plan("CANDIDATE")
         first_calls = 0
 
         def first_shard_sample(**kwargs: object) -> dict:
             nonlocal first_calls
             first_calls += 1
-            if first_calls in {4, 6}:
+            if first_calls == 6:
                 return self._recovered_inactivity_sample(**kwargs)
             return self._sample(**kwargs)
 
@@ -1938,11 +2244,14 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 (Path(args.run_dir) / "run-state.json").read_text(encoding="utf-8")
             )
             self.assertEqual(first.call_count, 6)
-            self.assertEqual(first_state["status"], "COMPLETED")
-            self.assertEqual(first_state["stopReason"], "SCHEDULE_COMPLETE")
+            self.assertEqual(first_state["status"], "STOPPED")
+            self.assertEqual(
+                first_state["stopReason"],
+                "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED",
+            )
             self.assertEqual(
                 first_state["recoveredInactivitySamplesByModelProfile"],
-                {"fixture-assured": 2},
+                {"fixture-assured": 1},
             )
 
             args.run_dir = str(root / "run-second")
@@ -1981,7 +2290,7 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                 campaign_runtime.budget_ledger_recovered_inactivity_samples_by_model_profile(
                     ledger
                 ),
-                {"fixture-assured": 2},
+                {"fixture-assured": 1},
             )
 
     def test_eight_repository_shards_merge_to_the_same_complete_matrix(self) -> None:

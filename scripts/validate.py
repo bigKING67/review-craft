@@ -109,6 +109,7 @@ REQUIRED_FILES = (
     "evals/schemas/eval-real-repository-adjudication-submission.schema.json",
     "evals/schemas/eval-real-repository-blind-suite.schema.json",
     "evals/schemas/eval-real-repository-campaign.schema.json",
+    "evals/schemas/eval-real-repository-promotion-receipt.schema.json",
     "evals/schemas/eval-real-repository-materialization.schema.json",
     "evals/schemas/eval-real-repository-output.schema.json",
     "evals/schemas/eval-real-repository-stability.schema.json",

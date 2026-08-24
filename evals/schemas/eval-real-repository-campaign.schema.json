@@ -36,8 +36,23 @@
   "additionalProperties": false,
   "required": ["schema", "campaignId", "status", "suiteSha256", "blindSuiteSha256", "samples", "contentSha256"],
   "properties": {
-    "schema": {"const": "review-craft.eval-real-repository-campaign.v1"},
+    "schema": {
+      "enum": [
+        "review-craft.eval-real-repository-campaign.v1",
+        "review-craft.eval-real-repository-campaign.v2"
+      ]
+    },
     "campaignId": {"type": "string", "minLength": 1},
+    "campaignPlanContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "campaignPurpose": {
+      "enum": ["CANARY", "CORE_ITERATION", "RISK_ITERATION", "CANDIDATE", "GOLDEN"]
+    },
+    "plannedSampleIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
     "status": {"enum": ["COMPLETED", "PARTIAL", "FAILED"]},
     "suiteSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "blindSuiteSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -96,6 +111,7 @@
               "ADAPTER_CONTRACT",
               "MODEL_UNAVAILABLE",
               "TIMEOUT",
+              "PROCESS_CLEANUP",
               "REVIEW_FAILURE",
               "SOURCE_MUTATION",
               "ARTIFACT_INVALID",
@@ -121,5 +137,31 @@
       }
     },
     "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema": {"const": "review-craft.eval-real-repository-campaign.v2"}
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "required": [
+          "campaignPlanContentSha256",
+          "campaignPurpose",
+          "plannedSampleIds"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["campaignPlanContentSha256"]},
+            {"required": ["campaignPurpose"]},
+            {"required": ["plannedSampleIds"]}
+          ]
+        }
+      }
+    }
+  ]
 }

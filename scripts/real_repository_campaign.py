@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
 from pathlib import Path
@@ -10,6 +11,10 @@ from real_repository_contracts import (
     RealRepositoryError,
     schema_errors,
     sha256_json,
+    validate_adjudication,
+    validate_campaign,
+    validate_oracle_assessment,
+    validate_stability_report,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +23,9 @@ RUN_STATE_SCHEMA = ROOT / "evals/schemas/eval-real-repository-run-state.schema.j
 MERGE_SCHEMA = ROOT / "evals/schemas/eval-real-repository-campaign-merge.schema.json"
 CHECKPOINT_SCHEMA = ROOT / "evals/schemas/eval-real-repository-run-checkpoint.schema.json"
 BUDGET_LEDGER_SCHEMA = ROOT / "evals/schemas/eval-real-repository-budget-ledger.schema.json"
+PROMOTION_RECEIPT_SCHEMA = (
+    ROOT / "evals/schemas/eval-real-repository-promotion-receipt.schema.json"
+)
 
 INFRASTRUCTURE_FAILURE_CLASSES = {
     "AUTHENTICATION",
@@ -28,6 +36,7 @@ INFRASTRUCTURE_FAILURE_CLASSES = {
 
 CURRENT_EXECUTION_BUDGET_KEYS = frozenset(
     {
+        "firstItemTimeoutSeconds",
         "hardReportedInputTokenCeilingPerSample",
         "hardReportedTokenCeilingPerSample",
         "hardReportedInputTokenCeilingPerRepositoryShard",
@@ -41,6 +50,145 @@ CURRENT_EXECUTION_BUDGET_KEYS = frozenset(
     }
 )
 
+PURPOSE_POLICY_VERSION = "review-craft.eval-campaign-purpose-policy.v1"
+CANONICAL_REPOSITORY_IDS = (
+    "pypa-sampleproject",
+    "pallets-click",
+    "sindresorhus-p-limit",
+    "expressjs-express",
+    "electron-react-boilerplate",
+    "julienschmidt-httprouter",
+    "sharkdp-bat",
+    "spring-petclinic",
+)
+MODEL_ROLES = {
+    "PRIMARY": {"model": "gpt-5.6-terra", "reasoning": "high"},
+    "COMPARISON": {"model": "gpt-5.6-sol", "reasoning": "high"},
+}
+
+
+def _purpose_budgets(
+    *,
+    hard_tokens: int,
+    soft_wall: int,
+    hard_wall: int,
+    shard_input: int,
+    shard_total: int,
+) -> dict[str, int]:
+    return {
+        "sampleTimeoutSeconds": 900,
+        "firstItemTimeoutSeconds": 300,
+        "softWallTimeSeconds": soft_wall,
+        "hardWallTimeSeconds": hard_wall,
+        "hardReportedTokenCeiling": hard_tokens,
+        "hardReportedInputTokenCeilingPerSample": 300_000,
+        "hardReportedTokenCeilingPerSample": 350_000,
+        "hardReportedInputTokenCeilingPerRepositoryShard": shard_input,
+        "hardReportedTokenCeilingPerRepositoryShard": shard_total,
+        "maxConsecutiveInfrastructureFailures": 1,
+        "maxUnknownUsageSamples": 1,
+        "maxTimedOutSamplesPerModelProfile": 1,
+        "maxArtifactInvalidSamples": 1,
+        "inactivityWarningSeconds": 120,
+        "inactivityDiagnosticSeconds": 240,
+        "maxRecoveredInactivitySamplesPerModelProfile": 1,
+    }
+
+
+PURPOSE_POLICY_V1 = {
+    "version": PURPOSE_POLICY_VERSION,
+    "canonicalRepositories": list(CANONICAL_REPOSITORY_IDS),
+    "modelRoles": MODEL_ROLES,
+    "purposes": {
+        "CANARY": {
+            "repositories": [CANONICAL_REPOSITORY_IDS[0]],
+            "treatments": list(TREATMENTS),
+            "modelRoles": ["PRIMARY", "COMPARISON"],
+            "repetitions": 1,
+            "budgets": _purpose_budgets(
+                hard_tokens=800_000,
+                soft_wall=5_400,
+                hard_wall=7_200,
+                shard_input=750_000,
+                shard_total=800_000,
+            ),
+        },
+        "CORE_ITERATION": {
+            "repositories": list(CANONICAL_REPOSITORY_IDS),
+            "treatments": ["ORDINARY_PROMPT", "REVIEW_CRAFT_EVIDENCE_LOOP"],
+            "modelRoles": ["PRIMARY"],
+            "repetitions": 1,
+            "budgets": _purpose_budgets(
+                hard_tokens=1_600_000,
+                soft_wall=10_800,
+                hard_wall=14_400,
+                shard_input=350_000,
+                shard_total=450_000,
+            ),
+        },
+        "RISK_ITERATION": {
+            "repositories": list(CANONICAL_REPOSITORY_IDS),
+            "treatments": list(TREATMENTS),
+            "modelRoles": ["PRIMARY"],
+            "repetitions": 1,
+            "budgets": _purpose_budgets(
+                hard_tokens=2_400_000,
+                soft_wall=16_200,
+                hard_wall=21_600,
+                shard_input=500_000,
+                shard_total=600_000,
+            ),
+        },
+        "CANDIDATE": {
+            "repositories": list(CANONICAL_REPOSITORY_IDS),
+            "treatments": list(TREATMENTS),
+            "modelRoles": ["PRIMARY", "COMPARISON"],
+            "repetitions": 1,
+            "budgets": _purpose_budgets(
+                hard_tokens=4_800_000,
+                soft_wall=32_400,
+                hard_wall=43_200,
+                shard_input=650_000,
+                shard_total=800_000,
+            ),
+        },
+        "GOLDEN": {
+            "repositories": list(CANONICAL_REPOSITORY_IDS),
+            "treatments": list(TREATMENTS),
+            "modelRoles": ["PRIMARY", "COMPARISON"],
+            "repetitions": 3,
+            "budgets": _purpose_budgets(
+                hard_tokens=14_000_000,
+                soft_wall=108_000,
+                hard_wall=129_600,
+                shard_input=1_800_000,
+                shard_total=2_400_000,
+            ),
+        },
+    },
+}
+PURPOSE_POLICY_CONTENT_SHA256 = sha256_json(PURPOSE_POLICY_V1)
+PROMOTION_POLICY_VERSION = "review-craft.eval-campaign-promotion-policy.v1"
+PROMOTION_POLICY_V1 = {
+    "version": PROMOTION_POLICY_VERSION,
+    "qualityPurposes": [
+        "CORE_ITERATION",
+        "RISK_ITERATION",
+        "CANDIDATE",
+        "GOLDEN",
+    ],
+    "thresholds": {
+        "minimumCorrectRateDelta": 0.0,
+        "maximumIncorrectRateDelta": 0.0,
+        "minimumExactOracleRecallDelta": 0.0,
+        "maximumTokenCostRatio": 3.0,
+        "maximumWallTimeRatio": 3.0,
+        "minimumGoldenHumanKappa": 0.6,
+    },
+    "strictGainPurposes": ["CANDIDATE", "GOLDEN"],
+}
+PROMOTION_POLICY_CONTENT_SHA256 = sha256_json(PROMOTION_POLICY_V1)
+
 
 def _without_content_hash(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key != "contentSha256"}
@@ -49,6 +197,25 @@ def _without_content_hash(payload: dict[str, Any]) -> dict[str, Any]:
 def seal(payload: dict[str, Any]) -> dict[str, Any]:
     payload["contentSha256"] = sha256_json(_without_content_hash(payload))
     return payload
+
+
+def directory_content_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    files = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix not in {".pyc", ".pyo"}
+    )
+    for path in files:
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        data = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
 
 
 def sample_id(
@@ -361,6 +528,111 @@ def build_campaign_plan(
     return payload
 
 
+def _purpose_model_configurations(
+    model_configurations: list[dict[str, Any]], role_names: list[str]
+) -> list[dict[str, Any]]:
+    selected = []
+    for role_name in role_names:
+        selector = MODEL_ROLES[role_name]
+        matches = [
+            row
+            for row in model_configurations
+            if row["model"] == selector["model"]
+            and row["reasoning"] == selector["reasoning"]
+        ]
+        if len(matches) != 1:
+            raise RealRepositoryError(
+                f"campaign purpose requires exactly one {role_name} model "
+                f"({selector['model']}/{selector['reasoning']})"
+            )
+        selected.append(copy.deepcopy(matches[0]))
+    return selected
+
+
+def build_purpose_campaign_plan(
+    *,
+    source_suite: dict[str, Any],
+    blind_suite: dict[str, Any],
+    materialization: dict[str, Any],
+    adapter_config: dict[str, Any],
+    model_configurations: list[dict[str, Any]],
+    campaign_id: str,
+    campaign_purpose: str,
+) -> dict[str, Any]:
+    policy = PURPOSE_POLICY_V1["purposes"].get(campaign_purpose)
+    if policy is None:
+        raise RealRepositoryError(f"unsupported campaign purpose: {campaign_purpose}")
+    suite_ids = [row["id"] for row in source_suite["repositories"]]
+    blind_ids = [row["id"] for row in blind_suite["repositories"]]
+    if suite_ids != list(CANONICAL_REPOSITORY_IDS) or blind_ids != suite_ids:
+        raise RealRepositoryError(
+            "campaign purpose policy requires the canonical eight-repository suite order"
+        )
+    selected_models = _purpose_model_configurations(
+        model_configurations, policy["modelRoles"]
+    )
+    budgets = policy["budgets"]
+    payload = build_campaign_plan(
+        source_suite=source_suite,
+        blind_suite=blind_suite,
+        materialization=materialization,
+        adapter_config=adapter_config,
+        model_configurations=selected_models,
+        campaign_id=campaign_id,
+        repository_ids=list(policy["repositories"]),
+        treatments=list(policy["treatments"]),
+        repetitions=policy["repetitions"],
+        sample_timeout_seconds=budgets["sampleTimeoutSeconds"],
+        soft_wall_time_seconds=budgets["softWallTimeSeconds"],
+        hard_wall_time_seconds=budgets["hardWallTimeSeconds"],
+        hard_reported_token_ceiling=budgets["hardReportedTokenCeiling"],
+        max_consecutive_infrastructure_failures=budgets[
+            "maxConsecutiveInfrastructureFailures"
+        ],
+        hard_reported_input_token_ceiling_per_sample=budgets[
+            "hardReportedInputTokenCeilingPerSample"
+        ],
+        hard_reported_token_ceiling_per_sample=budgets[
+            "hardReportedTokenCeilingPerSample"
+        ],
+        hard_reported_input_token_ceiling_per_shard=budgets[
+            "hardReportedInputTokenCeilingPerRepositoryShard"
+        ],
+        hard_reported_token_ceiling_per_shard=budgets[
+            "hardReportedTokenCeilingPerRepositoryShard"
+        ],
+        max_unknown_usage_samples=budgets["maxUnknownUsageSamples"],
+        max_timed_out_samples_per_model_profile=budgets[
+            "maxTimedOutSamplesPerModelProfile"
+        ],
+        max_artifact_invalid_samples=budgets["maxArtifactInvalidSamples"],
+        inactivity_warning_seconds=budgets["inactivityWarningSeconds"],
+        inactivity_diagnostic_seconds=budgets["inactivityDiagnosticSeconds"],
+        max_recovered_inactivity_samples_per_model_profile=budgets[
+            "maxRecoveredInactivitySamplesPerModelProfile"
+        ],
+    )
+    payload.update(
+        {
+            "schema": "review-craft.eval-real-repository-campaign-plan.v2",
+            "campaignPurpose": campaign_purpose,
+            "purposePolicyVersion": PURPOSE_POLICY_VERSION,
+            "purposePolicyContentSha256": PURPOSE_POLICY_CONTENT_SHA256,
+            "reviewCraftSourceContentSha256": directory_content_sha256(
+                ROOT / "skills/review-craft"
+            ),
+        }
+    )
+    payload["budgets"] = dict(budgets)
+    seal(payload)
+    errors = validate_campaign_plan(payload, source_suite, blind_suite)
+    if errors:
+        raise RealRepositoryError(
+            "invalid generated purpose campaign plan: " + "; ".join(errors)
+        )
+    return payload
+
+
 def validate_campaign_plan(
     payload: dict[str, Any],
     source_suite: dict[str, Any],
@@ -381,17 +653,77 @@ def validate_campaign_plan(
     )
     if prompt_bindings not in {0, len(payload["samples"])}:
         errors.append("campaign plan prompt hashes must be declared for every sample")
-    if payload["samples"] != _expected_plan_samples(
-        payload,
-        blind_suite,
-        include_prompt_sha256=prompt_bindings == len(payload["samples"]),
+    known_repository_ids = {row["id"] for row in blind_suite["repositories"]}
+    if (
+        set(payload["selection"]["repositories"]) <= known_repository_ids
+        and payload["samples"]
+        != _expected_plan_samples(
+            payload,
+            blind_suite,
+            include_prompt_sha256=prompt_bindings == len(payload["samples"]),
+        )
     ):
         errors.append("campaign plan samples do not match the deterministic matrix")
+    if payload["schema"] == "review-craft.eval-real-repository-campaign-plan.v2":
+        errors.extend(_purpose_plan_errors(payload))
+    return errors
+
+
+def _purpose_plan_errors(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    purpose = payload["campaignPurpose"]
+    policy = PURPOSE_POLICY_V1["purposes"][purpose]
+    if payload["purposePolicyVersion"] != PURPOSE_POLICY_VERSION:
+        errors.append("campaign purpose policy version is unsupported")
+    if payload["purposePolicyContentSha256"] != PURPOSE_POLICY_CONTENT_SHA256:
+        errors.append("campaign purpose policy contentSha256 mismatch")
+    selection = payload["selection"]
+    expected_selection = {
+        "repositories": policy["repositories"],
+        "treatments": policy["treatments"],
+        "repetitions": policy["repetitions"],
+    }
+    for key, expected in expected_selection.items():
+        if selection[key] != expected:
+            errors.append(f"campaign purpose {purpose} requires exact {key}")
+    expected_roles = policy["modelRoles"]
+    if len(payload["modelConfigurations"]) != len(expected_roles):
+        errors.append(f"campaign purpose {purpose} requires exact model count")
+    else:
+        for role_name, configuration in zip(
+            expected_roles, payload["modelConfigurations"], strict=True
+        ):
+            selector = MODEL_ROLES[role_name]
+            if any(configuration[key] != value for key, value in selector.items()):
+                errors.append(
+                    f"campaign purpose {purpose} model role {role_name} mismatch"
+                )
+    if payload["budgets"] != policy["budgets"]:
+        errors.append(f"campaign purpose {purpose} requires exact budgets")
+    if "timeoutPolicy" in payload:
+        errors.append("purpose-bound campaign plans do not allow timeout overrides")
+    expected_samples = (
+        len(policy["repositories"])
+        * len(policy["treatments"])
+        * len(policy["modelRoles"])
+        * policy["repetitions"]
+    )
+    if len(payload["samples"]) != expected_samples:
+        errors.append(f"campaign purpose {purpose} requires {expected_samples} samples")
+    if (
+        payload["budgets"]["firstItemTimeoutSeconds"]
+        > payload["budgets"]["sampleTimeoutSeconds"]
+    ):
+        errors.append("campaign first-item timeout must not exceed sample timeout")
     return errors
 
 
 def validate_campaign_plan_execution_safety(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    if payload.get("schema") != "review-craft.eval-real-repository-campaign-plan.v2":
+        errors.append(
+            "campaign plan is validation-only legacy data; regenerate it with campaignPurpose"
+        )
     budgets = payload.get("budgets")
     if not isinstance(budgets, dict):
         return ["campaign plan has no executable budget contract"]
@@ -613,7 +945,12 @@ def validate_plan_inputs(
         errors.append("campaign plan materializationContentSha256 mismatch")
     if payload["adapterConfigSha256"] != sha256_json(adapter_config):
         errors.append("campaign plan adapterConfigSha256 mismatch")
-    if payload["modelConfigurations"] != model_configurations:
+    live_models = {row["id"]: row for row in model_configurations}
+    selected_live_models = [
+        live_models.get(model_id)
+        for model_id in payload["selection"]["modelConfigurations"]
+    ]
+    if payload["modelConfigurations"] != selected_live_models:
         errors.append("campaign plan live adapter descriptions changed")
     materialized_ids = {row["id"] for row in materialization["repositories"]}
     missing = set(payload["selection"]["repositories"]) - materialized_ids
@@ -646,7 +983,10 @@ def campaign_status(
         if row["status"] == "COMPLETED" and not row["sourceMutationDetected"]
     }
     plan_ids = {row["sampleId"] for row in plan["samples"]}
-    if plan["selection"]["fullMatrix"] and completed_ids == plan_ids:
+    purpose_bound = (
+        plan.get("schema") == "review-craft.eval-real-repository-campaign-plan.v2"
+    )
+    if (purpose_bound or plan["selection"]["fullMatrix"]) and completed_ids == plan_ids:
         return "COMPLETED"
     if completed_ids:
         return "PARTIAL"
@@ -722,7 +1062,8 @@ def recovered_inactivity_samples_by_model_profile(
 
 def artifact_invalid_samples(samples: list[dict[str, Any]]) -> int:
     return sum(
-        sample.get("failureClass") == "ARTIFACT_INVALID" for sample in samples
+        sample.get("failureClass") in {"ARTIFACT_INVALID", "PROCESS_CLEANUP"}
+        for sample in samples
     )
 
 
@@ -1194,6 +1535,10 @@ def _run_state_status_errors(
         "INTEGRITY_FAILURE",
     }:
         errors.append("failed campaign run state requires an integrity or safety stop")
+    elif state["status"] == "INTERRUPTED" and state["stopReason"] != (
+        "OPERATOR_INTERRUPT"
+    ):
+        errors.append("interrupted campaign run state requires OPERATOR_INTERRUPT")
     return errors
 
 
@@ -1317,6 +1662,11 @@ def budget_stop_reason(
         and artifact_invalid_samples >= max_artifact_invalid
     ):
         return "ARTIFACT_INVALID_BUDGET_EXCEEDED"
+    if (
+        consecutive_infrastructure_failures
+        >= budgets["maxConsecutiveInfrastructureFailures"]
+    ):
+        return "INFRASTRUCTURE_CIRCUIT_BREAKER"
     max_unknown_usage = budgets.get("maxUnknownUsageSamples")
     if (
         max_unknown_usage is not None
@@ -1335,11 +1685,6 @@ def budget_stop_reason(
         return "MODEL_PROFILE_INACTIVITY_BUDGET_EXCEEDED"
     if elapsed_seconds >= budgets["softWallTimeSeconds"]:
         return "SOFT_WALL_TIME"
-    if (
-        consecutive_infrastructure_failures
-        >= budgets["maxConsecutiveInfrastructureFailures"]
-    ):
-        return "INFRASTRUCTURE_CIRCUIT_BREAKER"
     return None
 
 
@@ -1353,6 +1698,523 @@ def effective_sample_timeout(
     if remaining <= 0:
         return 0
     return min(sample_timeout_seconds, max(1, math.ceil(remaining)))
+
+
+def _promotion_check(
+    check_id: str, passed: bool, passed_detail: str, failed_detail: str
+) -> dict[str, Any]:
+    return {
+        "id": check_id,
+        "passed": passed,
+        "detail": passed_detail if passed else failed_detail,
+    }
+
+
+def _safe_rate(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def _safe_delta(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return round(left - right, 6)
+
+
+def _safe_ratio(left: float, right: float) -> float | None:
+    if right == 0:
+        return 1.0 if left == 0 else None
+    return round(left / right, 6)
+
+
+def _human_label_kappa(adjudication: dict[str, Any]) -> float | None:
+    labels_by_subject: dict[tuple[str, str, str], list[str]] = {}
+    for row in adjudication["labels"]:
+        key = (row["sampleId"], row["subjectType"], row["subjectKey"])
+        labels_by_subject.setdefault(key, []).append(row["label"])
+    if not labels_by_subject:
+        return None
+    categories = ("CORRECT", "INCORRECT", "UNRESOLVED")
+    label_totals = {category: 0 for category in categories}
+    observed_terms = []
+    raters: int | None = None
+    for values in labels_by_subject.values():
+        if raters is None:
+            raters = len(values)
+        if len(values) != raters or len(values) < 2:
+            return None
+        counts = {category: values.count(category) for category in categories}
+        for category, count in counts.items():
+            label_totals[category] += count
+        observed_terms.append(
+            sum(count * (count - 1) for count in counts.values())
+            / (len(values) * (len(values) - 1))
+        )
+    total_labels = sum(label_totals.values())
+    expected = sum((count / total_labels) ** 2 for count in label_totals.values())
+    observed = sum(observed_terms) / len(observed_terms)
+    if expected == 1:
+        return 1.0 if observed == 1 else None
+    return round((observed - expected) / (1 - expected), 6)
+
+
+def _promotion_group_metrics(
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any],
+    oracle_assessment: dict[str, Any],
+) -> dict[tuple[str, str], dict[str, float | int | None]]:
+    samples = {row["sampleId"]: row for row in campaign["samples"]}
+    groups: dict[tuple[str, str], dict[str, float | int]] = {}
+    for sample in campaign["samples"]:
+        key = (sample["modelConfiguration"]["id"], sample["treatment"])
+        group = groups.setdefault(
+            key,
+            {
+                "subjects": 0,
+                "correct": 0,
+                "incorrect": 0,
+                "oracleSubjects": 0,
+                "exactOracle": 0,
+                "tokens": 0,
+                "duration": 0.0,
+                "samples": 0,
+            },
+        )
+        group["tokens"] += int(sample["usage"]["totalTokens"] or 0)
+        group["duration"] += float(sample["durationSeconds"])
+        group["samples"] += 1
+    for resolution in adjudication["subjectResolutions"]:
+        sample = samples[resolution["sampleId"]]
+        key = (sample["modelConfiguration"]["id"], sample["treatment"])
+        group = groups[key]
+        group["subjects"] += 1
+        group["correct"] += resolution["resolvedLabel"] == "CORRECT"
+        group["incorrect"] += resolution["resolvedLabel"] == "INCORRECT"
+    for assessment in oracle_assessment["assessments"]:
+        sample = samples[assessment["sampleId"]]
+        key = (sample["modelConfiguration"]["id"], sample["treatment"])
+        group = groups[key]
+        group["oracleSubjects"] += 1
+        group["exactOracle"] += assessment["classification"] == "EXACT_ORACLE_MATCH"
+    normalized: dict[tuple[str, str], dict[str, float | int | None]] = {}
+    for key, group in groups.items():
+        sample_count = int(group["samples"])
+        normalized[key] = {
+            **group,
+            "correctRate": _safe_rate(
+                int(group["correct"]), int(group["subjects"])
+            ),
+            "incorrectRate": _safe_rate(
+                int(group["incorrect"]), int(group["subjects"])
+            ),
+            "exactOracleRecall": _safe_rate(
+                int(group["exactOracle"]), int(group["oracleSubjects"])
+            ),
+            "meanTokens": float(group["tokens"]) / sample_count,
+            "meanDuration": float(group["duration"]) / sample_count,
+        }
+    return normalized
+
+
+def _promotion_comparisons(
+    plan: dict[str, Any],
+    campaign: dict[str, Any],
+    adjudication: dict[str, Any],
+    oracle_assessment: dict[str, Any],
+) -> list[dict[str, Any]]:
+    thresholds = PROMOTION_POLICY_V1["thresholds"]
+    metrics = _promotion_group_metrics(campaign, adjudication, oracle_assessment)
+    comparison_pairs = [
+        ("REVIEW_CRAFT_EVIDENCE_LOOP", "ORDINARY_PROMPT"),
+    ]
+    if plan["campaignPurpose"] in {"RISK_ITERATION", "CANDIDATE", "GOLDEN"}:
+        comparison_pairs.append(("RISK_LENS_REVIEW", "REVIEW_CRAFT_EVIDENCE_LOOP"))
+    rows = []
+    for model in plan["modelConfigurations"]:
+        model_id = model["id"]
+        for treatment, baseline in comparison_pairs:
+            current = metrics.get((model_id, treatment))
+            reference = metrics.get((model_id, baseline))
+            if current is None or reference is None:
+                rows.append(
+                    {
+                        "modelConfigurationId": model_id,
+                        "treatment": treatment,
+                        "baselineTreatment": baseline,
+                        "correctRateDelta": None,
+                        "incorrectRateDelta": None,
+                        "exactOracleRecallDelta": None,
+                        "tokenCostRatio": None,
+                        "wallTimeRatio": None,
+                        "passed": False,
+                    }
+                )
+                continue
+            correct_delta = _safe_delta(
+                current["correctRate"], reference["correctRate"]
+            )
+            incorrect_delta = _safe_delta(
+                current["incorrectRate"], reference["incorrectRate"]
+            )
+            oracle_delta = _safe_delta(
+                current["exactOracleRecall"], reference["exactOracleRecall"]
+            )
+            token_ratio = _safe_ratio(
+                float(current["meanTokens"]), float(reference["meanTokens"])
+            )
+            wall_ratio = _safe_ratio(
+                float(current["meanDuration"]), float(reference["meanDuration"])
+            )
+            values = (
+                correct_delta,
+                incorrect_delta,
+                oracle_delta,
+                token_ratio,
+                wall_ratio,
+            )
+            passed = all(value is not None for value in values) and (
+                correct_delta >= thresholds["minimumCorrectRateDelta"]
+                and incorrect_delta <= thresholds["maximumIncorrectRateDelta"]
+                and oracle_delta >= thresholds["minimumExactOracleRecallDelta"]
+                and token_ratio <= thresholds["maximumTokenCostRatio"]
+                and wall_ratio <= thresholds["maximumWallTimeRatio"]
+            )
+            rows.append(
+                {
+                    "modelConfigurationId": model_id,
+                    "treatment": treatment,
+                    "baselineTreatment": baseline,
+                    "correctRateDelta": correct_delta,
+                    "incorrectRateDelta": incorrect_delta,
+                    "exactOracleRecallDelta": oracle_delta,
+                    "tokenCostRatio": token_ratio,
+                    "wallTimeRatio": wall_ratio,
+                    "passed": passed,
+                }
+            )
+    return rows
+
+
+def build_promotion_receipt(
+    *,
+    plan: dict[str, Any],
+    campaign: dict[str, Any],
+    budget_ledger: dict[str, Any],
+    source_suite: dict[str, Any],
+    blind_suite: dict[str, Any],
+    adjudication: dict[str, Any] | None = None,
+    oracle_assessment: dict[str, Any] | None = None,
+    stability_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan_errors = validate_campaign_plan(plan, source_suite, blind_suite)
+    execution_errors = validate_campaign_plan_execution_safety(plan)
+    campaign_errors = validate_campaign(campaign, source_suite, blind_suite)
+    ledger_errors = validate_budget_ledger(budget_ledger, plan)
+    checks = [
+        _promotion_check(
+            "plan-valid",
+            not plan_errors and not execution_errors,
+            "purpose-bound plan is valid and execution-ready",
+            "plan validation failed: " + "; ".join(plan_errors + execution_errors),
+        ),
+        _promotion_check(
+            "campaign-valid",
+            not campaign_errors,
+            "campaign artifact is valid",
+            "campaign validation failed: " + "; ".join(campaign_errors),
+        ),
+        _promotion_check(
+            "ledger-valid",
+            not ledger_errors,
+            "budget ledger is valid",
+            "budget ledger validation failed: " + "; ".join(ledger_errors),
+        ),
+    ]
+    planned = len(plan.get("samples", []))
+    observed = len(campaign.get("samples", []))
+    completed = sum(row.get("status") == "COMPLETED" for row in campaign.get("samples", []))
+    artifact_binding = (
+        campaign.get("campaignPlanContentSha256") == plan.get("contentSha256")
+        and campaign.get("campaignPurpose") == plan.get("campaignPurpose")
+        and budget_ledger.get("planContentSha256") == plan.get("contentSha256")
+    )
+    checks.append(
+        _promotion_check(
+            "content-bindings",
+            artifact_binding,
+            "campaign and ledger bind the exact plan",
+            "campaign or ledger does not bind the exact purpose plan",
+        )
+    )
+    matrix_complete = (
+        campaign.get("status") == "COMPLETED"
+        and planned == observed == completed
+        and {row["sampleId"] for row in campaign.get("samples", [])}
+        == {row["sampleId"] for row in plan.get("samples", [])}
+    )
+    checks.append(
+        _promotion_check(
+            "matrix-complete",
+            matrix_complete,
+            "the fixed purpose matrix completed without replacement samples",
+            "the fixed purpose matrix is incomplete or contains failed samples",
+        )
+    )
+    ledger_clean = (
+        bool(budget_ledger.get("statusByShard"))
+        and all(
+            status == "COMPLETED"
+            for status in budget_ledger.get("statusByShard", {}).values()
+        )
+        and sum(budget_ledger.get("attemptedSamplesByShard", {}).values())
+        == planned
+    )
+    checks.append(
+        _promotion_check(
+            "budget-clean",
+            ledger_clean,
+            "all scheduled attempts completed without a budget or circuit stop",
+            "the shared ledger contains a stop, failure, interrupt, or incomplete schedule",
+        )
+    )
+    lifecycle_rows = [row.get("lifecycle") for row in campaign.get("samples", [])]
+    lifecycle_healthy = bool(lifecycle_rows) and all(
+        isinstance(row, dict)
+        and row.get("availability") == "AVAILABLE"
+        and row.get("processTreeCleanup") in {"NOT_REQUIRED", "CONFIRMED"}
+        and row.get("timeoutPhase") is None
+        and row.get("inactivityState") not in {
+            "RECOVERED_WARNING",
+            "RECOVERED_DIAGNOSTIC",
+        }
+        for row in lifecycle_rows
+    )
+    checks.append(
+        _promotion_check(
+            "lifecycle-clean",
+            lifecycle_healthy,
+            "all samples have clean lifecycle and process-tree evidence",
+            "lifecycle evidence is missing, stalled, timed out, or cleanup is unresolved",
+        )
+    )
+    usage_known = bool(campaign.get("samples")) and all(
+        row.get("usage", {}).get("totalTokens") is not None
+        for row in campaign.get("samples", [])
+    )
+    checks.append(
+        _promotion_check(
+            "usage-known",
+            usage_known,
+            "reported token usage is known for every sample",
+            "one or more samples have unknown token usage",
+        )
+    )
+
+    purpose = plan.get("campaignPurpose", "CANARY")
+    comparisons: list[dict[str, Any]] = []
+    quality_required = purpose in PROMOTION_POLICY_V1["qualityPurposes"]
+    quality_inputs_valid = False
+    if quality_required:
+        adjudication_errors = (
+            validate_adjudication(adjudication, campaign)
+            if adjudication is not None and not campaign_errors
+            else ["independent adjudication.v3 is required"]
+        )
+        if adjudication is not None and adjudication.get("schema") != (
+            "review-craft.eval-real-repository-adjudication.v3"
+        ):
+            adjudication_errors.append("independent adjudication.v3 is required")
+        oracle_errors = (
+            validate_oracle_assessment(
+                oracle_assessment,
+                source_suite,
+                campaign,
+                adjudication,
+            )
+            if oracle_assessment is not None
+            and adjudication is not None
+            and not adjudication_errors
+            else ["FINAL oracle assessment is required"]
+        )
+        quality_inputs_valid = not adjudication_errors and not oracle_errors
+        checks.append(
+            _promotion_check(
+                "quality-evidence",
+                quality_inputs_valid,
+                "independent adjudication and FINAL oracle assessment are valid",
+                "quality evidence failed: "
+                + "; ".join(adjudication_errors + oracle_errors),
+            )
+        )
+        if quality_inputs_valid:
+            assert adjudication is not None and oracle_assessment is not None
+            comparisons = _promotion_comparisons(
+                plan, campaign, adjudication, oracle_assessment
+            )
+            comparisons_passed = bool(comparisons) and all(
+                row["passed"] for row in comparisons
+            )
+            checks.append(
+                _promotion_check(
+                    "quality-direction",
+                    comparisons_passed,
+                    "all required treatment comparisons meet quality and cost thresholds",
+                    "one or more treatment comparisons regress quality or exceed cost limits",
+                )
+            )
+            if purpose in PROMOTION_POLICY_V1["strictGainPurposes"]:
+                strict_gain = any(
+                    row["treatment"] == "REVIEW_CRAFT_EVIDENCE_LOOP"
+                    and (
+                        (row["correctRateDelta"] or 0) > 0
+                        or (row["exactOracleRecallDelta"] or 0) > 0
+                    )
+                    for row in comparisons
+                )
+                checks.append(
+                    _promotion_check(
+                        "strict-marginal-gain",
+                        strict_gain,
+                        "Review Craft has a strict adjudicated marginal gain",
+                        "Review Craft has no strict adjudicated gain over ordinary review",
+                    )
+                )
+            if purpose == "GOLDEN":
+                human_only = (
+                    {row["kind"] for row in adjudication["adjudicators"]}
+                    == {"HUMAN"}
+                    and oracle_assessment["verifier"]["kind"] == "HUMAN"
+                )
+                checks.append(
+                    _promotion_check(
+                        "human-verification",
+                        human_only,
+                        "Golden evidence uses independent human adjudication and verification",
+                        "Golden evidence requires human-only adjudication and oracle verification",
+                    )
+                )
+                kappa = _human_label_kappa(adjudication)
+                kappa_passed = (
+                    kappa is not None
+                    and kappa
+                    >= PROMOTION_POLICY_V1["thresholds"][
+                        "minimumGoldenHumanKappa"
+                    ]
+                )
+                checks.append(
+                    _promotion_check(
+                        "human-kappa",
+                        kappa_passed,
+                        f"human label kappa is {kappa}",
+                        f"human label kappa {kappa} is below the Golden threshold",
+                    )
+                )
+                stability_errors = (
+                    validate_stability_report(
+                        stability_report,
+                        source_suite,
+                        campaign,
+                        adjudication,
+                        oracle_assessment,
+                    )
+                    if stability_report is not None
+                    else ["Golden stability report is required"]
+                )
+                stability_complete = (
+                    not stability_errors
+                    and stability_report is not None
+                    and stability_report.get("status") == "COMPLETE"
+                    and not stability_report.get("limitations")
+                )
+                checks.append(
+                    _promotion_check(
+                        "golden-stability",
+                        stability_complete,
+                        "Golden repeated-output stability report is complete",
+                        "Golden stability failed: " + "; ".join(stability_errors),
+                    )
+                )
+
+    limitations = [row["detail"] for row in checks if not row["passed"]]
+    receipt = seal(
+        {
+            "schema": "review-craft.eval-real-repository-promotion-receipt.v1",
+            "status": "ELIGIBLE" if not limitations else "BLOCKED",
+            "campaignPurpose": purpose,
+            "promotionPolicyVersion": PROMOTION_POLICY_VERSION,
+            "promotionPolicyContentSha256": PROMOTION_POLICY_CONTENT_SHA256,
+            "reviewCraftSourceContentSha256": plan.get(
+                "reviewCraftSourceContentSha256", "0" * 64
+            ),
+            "planContentSha256": plan.get("contentSha256", "0" * 64),
+            "campaignContentSha256": campaign.get("contentSha256", "0" * 64),
+            "budgetLedgerContentSha256": budget_ledger.get(
+                "contentSha256", "0" * 64
+            ),
+            "adjudicationContentSha256": (
+                adjudication.get("contentSha256")
+                if adjudication is not None
+                else None
+            ),
+            "oracleAssessmentContentSha256": (
+                oracle_assessment.get("contentSha256")
+                if oracle_assessment is not None
+                else None
+            ),
+            "stabilityReportContentSha256": (
+                stability_report.get("contentSha256")
+                if stability_report is not None
+                else None
+            ),
+            "samples": {
+                "planned": planned,
+                "observed": observed,
+                "completed": completed,
+            },
+            "checks": checks,
+            "comparisons": comparisons,
+            "limitations": limitations,
+            "contentSha256": "0" * 64,
+        }
+    )
+    schema_failures = schema_errors(receipt, PROMOTION_RECEIPT_SCHEMA)
+    if schema_failures:
+        raise RealRepositoryError(
+            "invalid promotion receipt: " + "; ".join(schema_failures)
+        )
+    return receipt
+
+
+def validate_promotion_receipt(
+    receipt: dict[str, Any],
+    *,
+    plan: dict[str, Any],
+    campaign: dict[str, Any],
+    budget_ledger: dict[str, Any],
+    source_suite: dict[str, Any],
+    blind_suite: dict[str, Any],
+    adjudication: dict[str, Any] | None = None,
+    oracle_assessment: dict[str, Any] | None = None,
+    stability_report: dict[str, Any] | None = None,
+) -> list[str]:
+    errors = schema_errors(receipt, PROMOTION_RECEIPT_SCHEMA)
+    if errors:
+        return errors
+    if receipt["contentSha256"] != sha256_json(_without_content_hash(receipt)):
+        errors.append("promotion receipt contentSha256 mismatch")
+        return errors
+    expected = build_promotion_receipt(
+        plan=plan,
+        campaign=campaign,
+        budget_ledger=budget_ledger,
+        source_suite=source_suite,
+        blind_suite=blind_suite,
+        adjudication=adjudication,
+        oracle_assessment=oracle_assessment,
+        stability_report=stability_report,
+    )
+    if receipt != expected:
+        errors.append("promotion receipt does not match deterministic assessment")
+    return errors
 
 
 def merge_campaigns(
@@ -1396,6 +2258,15 @@ def merge_campaigns(
         "samples": samples,
         "contentSha256": "0" * 64,
     }
+    if plan.get("schema") == "review-craft.eval-real-repository-campaign-plan.v2":
+        payload.update(
+            {
+                "schema": "review-craft.eval-real-repository-campaign.v2",
+                "campaignPlanContentSha256": plan["contentSha256"],
+                "campaignPurpose": plan["campaignPurpose"],
+                "plannedSampleIds": [row["sampleId"] for row in plan["samples"]],
+            }
+        )
     payload["status"] = campaign_status(samples, plan)
     return seal(payload)
 

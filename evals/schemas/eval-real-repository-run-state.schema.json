@@ -26,7 +26,7 @@
     "planContentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "campaignId": {"type": "string", "minLength": 1},
     "shardId": {"type": "string", "minLength": 1},
-    "status": {"enum": ["RUNNING", "COMPLETED", "STOPPED", "FAILED"]},
+    "status": {"enum": ["RUNNING", "COMPLETED", "STOPPED", "FAILED", "INTERRUPTED"]},
     "stopReason": {
       "type": ["string", "null"],
       "enum": [
@@ -46,7 +46,8 @@
         "SHARD_TOKEN_CEILING",
         "SOURCE_MUTATION",
         "CREDENTIAL_EXPOSURE",
-        "INTEGRITY_FAILURE"
+        "INTEGRITY_FAILURE",
+        "OPERATOR_INTERRUPT"
       ]
     },
     "startedAt": {"type": "string", "format": "date-time"},

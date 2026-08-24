@@ -60,7 +60,32 @@
     "contentSha256"
   ],
   "properties": {
-    "schema": {"const": "review-craft.eval-real-repository-campaign-plan.v1"},
+    "schema": {
+      "enum": [
+        "review-craft.eval-real-repository-campaign-plan.v1",
+        "review-craft.eval-real-repository-campaign-plan.v2"
+      ]
+    },
+    "campaignPurpose": {
+      "enum": [
+        "CANARY",
+        "CORE_ITERATION",
+        "RISK_ITERATION",
+        "CANDIDATE",
+        "GOLDEN"
+      ]
+    },
+    "purposePolicyVersion": {
+      "const": "review-craft.eval-campaign-purpose-policy.v1"
+    },
+    "purposePolicyContentSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reviewCraftSourceContentSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "campaignId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
     "suiteSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "blindSuiteSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -115,6 +140,7 @@
       ],
       "properties": {
         "sampleTimeoutSeconds": {"type": "integer", "minimum": 1},
+        "firstItemTimeoutSeconds": {"type": "integer", "minimum": 1},
         "softWallTimeSeconds": {"type": "integer", "minimum": 1},
         "hardWallTimeSeconds": {"type": "integer", "minimum": 1},
         "hardReportedTokenCeiling": {"type": "integer", "minimum": 1},
@@ -179,5 +205,41 @@
       }
     },
     "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema": {
+            "const": "review-craft.eval-real-repository-campaign-plan.v2"
+          }
+        },
+        "required": ["schema"]
+      },
+      "then": {
+        "required": [
+          "campaignPurpose",
+          "purposePolicyVersion",
+          "purposePolicyContentSha256",
+          "reviewCraftSourceContentSha256"
+        ],
+        "properties": {
+          "budgets": {"required": ["firstItemTimeoutSeconds"]},
+          "samples": {
+            "items": {"required": ["promptSha256"]}
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["campaignPurpose"]},
+            {"required": ["purposePolicyVersion"]},
+            {"required": ["purposePolicyContentSha256"]},
+            {"required": ["reviewCraftSourceContentSha256"]}
+          ]
+        }
+      }
+    }
+  ]
 }

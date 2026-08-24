@@ -24,10 +24,12 @@ from real_repository_campaign import (
     budget_ledger_timed_out_samples_by_model_profile,
     budget_ledger_totals,
     budget_stop_reason,
-    build_campaign_plan,
     build_checkpoint,
     build_merge_receipt,
+    build_promotion_receipt,
+    build_purpose_campaign_plan,
     campaign_status,
+    directory_content_sha256,
     effective_sample_timeout,
     merge_campaigns,
     new_budget_ledger,
@@ -43,6 +45,7 @@ from real_repository_campaign import (
     validate_campaign_plan_execution_safety,
     validate_checkpoint,
     validate_plan_inputs,
+    validate_promotion_receipt,
     validate_run_state,
     validate_sample_against_plan,
 )
@@ -104,8 +107,10 @@ PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
 ISOLATION_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_ISOLATION_OUTPUT"
 INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
+FIRST_ITEM_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_FIRST_ITEM_TIMEOUT_SECONDS"
 SAMPLE_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
-TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v1"
+LEGACY_TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v1"
+TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v2"
 TIMEOUT_EXIT_CODE = 124
 EVALUATOR_WORKSPACE_TOP_LEVEL = ("repositories",)
 sys.path.insert(0, str(RUNTIME_LIB))
@@ -263,12 +268,17 @@ def _model_configuration(adapter_id: str, description: dict[str, Any]) -> dict[s
 
 
 def _adapter_timeout_control(
-    description: dict[str, Any], sample_timeout_seconds: int
+    description: dict[str, Any],
+    sample_timeout_seconds: int,
+    first_item_timeout_seconds: int | None,
 ) -> tuple[int, dict[str, str], int | None]:
     control = description.get("timeoutControl")
     if control is None:
         return sample_timeout_seconds, {}, None
-    if not isinstance(control, dict) or control.get("protocol") != TIMEOUT_CONTROL_PROTOCOL:
+    if not isinstance(control, dict) or control.get("protocol") not in {
+        LEGACY_TIMEOUT_CONTROL_PROTOCOL,
+        TIMEOUT_CONTROL_PROTOCOL,
+    }:
         raise RealRepositoryError("adapter timeout control is invalid")
     grace_seconds = control.get("finalizationGraceSeconds")
     exit_code = control.get("timeoutExitCode")
@@ -281,9 +291,22 @@ def _adapter_timeout_control(
         or environment_variable != SAMPLE_TIMEOUT_ENV
     ):
         raise RealRepositoryError("adapter timeout control is invalid")
+    timeout_environment = {SAMPLE_TIMEOUT_ENV: str(sample_timeout_seconds)}
+    if control["protocol"] == TIMEOUT_CONTROL_PROTOCOL:
+        if (
+            control.get("firstItemEnvironmentVariable") != FIRST_ITEM_TIMEOUT_ENV
+            or first_item_timeout_seconds is None
+            or first_item_timeout_seconds > sample_timeout_seconds
+        ):
+            raise RealRepositoryError("adapter first-item timeout control is invalid")
+        timeout_environment[FIRST_ITEM_TIMEOUT_ENV] = str(first_item_timeout_seconds)
+    elif first_item_timeout_seconds is not None:
+        raise RealRepositoryError(
+            "adapter does not support the required first-item timeout control"
+        )
     return (
         sample_timeout_seconds + grace_seconds,
-        {SAMPLE_TIMEOUT_ENV: str(sample_timeout_seconds)},
+        timeout_environment,
         exit_code,
     )
 
@@ -378,6 +401,7 @@ def _unavailable_progress(started_at: str, reason: str) -> dict[str, Any]:
         "schema": "review-craft.eval-progress.v1",
         "availability": "UNAVAILABLE",
         "startedAt": started_at,
+        "completedAt": None,
         "threadStartedAt": None,
         "turnStartedAt": None,
         "firstItemAt": None,
@@ -401,6 +425,7 @@ def _unavailable_progress(started_at: str, reason: str) -> dict[str, Any]:
         "diagnosticCapturedAt": None,
         "processAliveWhenDiagnosticCaptured": None,
         "terminationReason": None,
+        "timeoutPhase": None,
         "processTreeCleanup": "NOT_VERIFIED",
         "unavailableReason": reason,
     }
@@ -428,12 +453,19 @@ def _finalize_progress(
             unavailable_reason = "ADAPTER_PROGRESS_INVALID"
     if progress is None:
         progress = _unavailable_progress(started_at, unavailable_reason)
+    progress["completedAt"] = progress.get("completedAt") or utc_now()
     if completed is None:
         progress["terminationReason"] = "ADAPTER_UNAVAILABLE"
         progress["processTreeCleanup"] = "NOT_REQUIRED"
-    elif completed.timed_out or timed_out:
+        progress["timeoutPhase"] = None
+    elif completed.timed_out:
         progress["terminationReason"] = "TIMEOUT"
-        progress["processTreeCleanup"] = "COMPLETED"
+        progress["processTreeCleanup"] = completed.process_tree_cleanup
+        progress["timeoutPhase"] = (
+            "AFTER_FIRST_ITEM"
+            if progress.get("firstItemAt") is not None
+            else "BEFORE_FIRST_ITEM"
+        )
         if (
             progress.get("inactivityWarningSeconds") is not None
             and progress.get("firstItemAt") is None
@@ -442,11 +474,38 @@ def _finalize_progress(
             progress["maximumPreItemInactivitySeconds"] = progress.get(
                 "inactivityAgeSeconds"
             )
+    elif timed_out:
+        progress["terminationReason"] = "TIMEOUT"
+        progress["timeoutPhase"] = progress.get("timeoutPhase") or (
+            "AFTER_FIRST_ITEM"
+            if progress.get("firstItemAt") is not None
+            else "BEFORE_FIRST_ITEM"
+        )
     else:
-        progress["terminationReason"] = "PROCESS_EXIT"
-        progress["processTreeCleanup"] = "NOT_REQUIRED"
+        progress["terminationReason"] = progress.get("terminationReason") or "PROCESS_EXIT"
+        progress["timeoutPhase"] = None
+        if completed.process_tree_cleanup == "FAILED":
+            progress["processTreeCleanup"] = "FAILED"
+        elif progress.get("processTreeCleanup") == "NOT_VERIFIED":
+            progress["processTreeCleanup"] = completed.process_tree_cleanup
     write_json(progress_path, progress)
     return progress
+
+
+def _process_cleanup_outcome(
+    lifecycle: dict[str, Any],
+    *,
+    status: str,
+    failure_reason: str | None,
+    failure_class: str | None,
+) -> tuple[str, str | None, str | None]:
+    if lifecycle.get("processTreeCleanup") != "FAILED":
+        return status, failure_reason, failure_class
+    return (
+        "FAILED",
+        "adapter process-tree cleanup could not be confirmed",
+        "PROCESS_CLEANUP",
+    )
 
 
 def _bind_content_hash(payload: dict[str, Any]) -> dict[str, Any]:
@@ -806,6 +865,7 @@ def _run_sample(
     timeout_seconds: int,
     skill_root: Path,
     evidence_root: Path,
+    first_item_timeout_seconds: int | None = None,
     inactivity_warning_seconds: int | None = None,
     inactivity_diagnostic_seconds: int | None = None,
 ) -> dict[str, Any]:
@@ -878,7 +938,11 @@ def _run_sample(
             {ISOLATION_OUTPUT_ENV: str(isolation_path)} if isolation_required else {}
         )
         outer_timeout_seconds, timeout_env, managed_timeout_exit_code = (
-            _adapter_timeout_control(description, timeout_seconds)
+            _adapter_timeout_control(
+                description,
+                timeout_seconds,
+                first_item_timeout_seconds,
+            )
         )
         completed = run_process(
             command,
@@ -944,6 +1008,12 @@ def _run_sample(
         started_at=started_at,
         completed=completed,
         timed_out=timeout_observed,
+    )
+    status, failure_reason, failure_class = _process_cleanup_outcome(
+        lifecycle,
+        status=status,
+        failure_reason=failure_reason,
+        failure_class=failure_class,
     )
     if isolation_required:
         isolation_valid = False
@@ -2107,6 +2177,171 @@ def command_validate_stability(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_promotion_context(
+    args: argparse.Namespace,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+]:
+    suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
+    blind = read_json(Path(args.blind_suite).expanduser().resolve(strict=True))
+    plan = read_json(Path(args.plan).expanduser().resolve(strict=True))
+    campaign = read_json(Path(args.campaign).expanduser().resolve(strict=True))
+    ledger = read_json(Path(args.budget_ledger).expanduser().resolve(strict=True))
+    adjudication = (
+        read_json(Path(args.adjudication).expanduser().resolve(strict=True))
+        if args.adjudication is not None
+        else None
+    )
+    oracle_assessment = (
+        read_json(Path(args.oracle_assessment).expanduser().resolve(strict=True))
+        if args.oracle_assessment is not None
+        else None
+    )
+    stability_report = (
+        read_json(Path(args.stability_report).expanduser().resolve(strict=True))
+        if args.stability_report is not None
+        else None
+    )
+    return (
+        suite,
+        blind,
+        plan,
+        campaign,
+        ledger,
+        adjudication,
+        oracle_assessment,
+        stability_report,
+    )
+
+
+def command_assess_campaign_promotion(args: argparse.Namespace) -> int:
+    (
+        suite,
+        blind,
+        plan,
+        campaign,
+        ledger,
+        adjudication,
+        oracle_assessment,
+        stability_report,
+    ) = _load_promotion_context(args)
+    receipt = build_promotion_receipt(
+        plan=plan,
+        campaign=campaign,
+        budget_ledger=ledger,
+        source_suite=suite,
+        blind_suite=blind,
+        adjudication=adjudication,
+        oracle_assessment=oracle_assessment,
+        stability_report=stability_report,
+    )
+    output = Path(args.output).expanduser().resolve()
+    if output.exists():
+        raise RealRepositoryError(f"promotion receipt output already exists: {output}")
+    write_json(output, receipt)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "status": receipt["status"],
+                "campaignPurpose": receipt["campaignPurpose"],
+                "failedChecks": sum(
+                    not row["passed"] for row in receipt["checks"]
+                ),
+                "contentSha256": receipt["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0 if receipt["status"] == "ELIGIBLE" else 2
+
+
+def command_validate_campaign_promotion(args: argparse.Namespace) -> int:
+    (
+        suite,
+        blind,
+        plan,
+        campaign,
+        ledger,
+        adjudication,
+        oracle_assessment,
+        stability_report,
+    ) = _load_promotion_context(args)
+    receipt = read_json(Path(args.receipt).expanduser().resolve(strict=True))
+    errors = validate_promotion_receipt(
+        receipt,
+        plan=plan,
+        campaign=campaign,
+        budget_ledger=ledger,
+        source_suite=suite,
+        blind_suite=blind,
+        adjudication=adjudication,
+        oracle_assessment=oracle_assessment,
+        stability_report=stability_report,
+    )
+    if errors:
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "status": receipt["status"],
+                "campaignPurpose": receipt["campaignPurpose"],
+                "contentSha256": receipt["contentSha256"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_validate_quality_release(args: argparse.Namespace) -> int:
+    result = command_validate_campaign_promotion(args)
+    if result != 0:
+        return result
+    receipt = read_json(Path(args.receipt).expanduser().resolve(strict=True))
+    if receipt["status"] != "ELIGIBLE" or receipt["campaignPurpose"] not in {
+        "CANDIDATE",
+        "GOLDEN",
+    }:
+        raise RealRepositoryError(
+            "quality release requires an ELIGIBLE CANDIDATE or GOLDEN receipt"
+        )
+    skill_root = Path(args.skill_root).expanduser().resolve(strict=True)
+    if directory_content_sha256(skill_root) != receipt[
+        "reviewCraftSourceContentSha256"
+    ]:
+        raise RealRepositoryError(
+            "quality release source differs from the assessed Review Craft content"
+        )
+    print(
+        json.dumps(
+            {
+                "qualityReleaseReady": True,
+                "campaignPurpose": receipt["campaignPurpose"],
+                "promotionReceiptContentSha256": receipt["contentSha256"],
+                "reviewCraftSourceContentSha256": receipt[
+                    "reviewCraftSourceContentSha256"
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _load_campaign_suite_and_blind(
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2296,55 +2531,7 @@ def command_validate_campaign_isolation(args: argparse.Namespace) -> int:
     return 0
 
 
-def _campaign_timeout_overrides(args: argparse.Namespace) -> list[dict[str, Any]]:
-    overrides: list[dict[str, Any]] = []
-    for model_id, raw_seconds in getattr(args, "timeout_override", None) or []:
-        try:
-            timeout_seconds = int(raw_seconds)
-        except ValueError as error:
-            raise RealRepositoryError(
-                "--timeout-override SECONDS must be a positive integer"
-            ) from error
-        if timeout_seconds < 1:
-            raise RealRepositoryError(
-                "--timeout-override SECONDS must be a positive integer"
-            )
-        overrides.append(
-            {
-                "modelConfigurationId": model_id,
-                "timeoutSeconds": timeout_seconds,
-            }
-        )
-    for model_id, treatment, raw_seconds in (
-        getattr(args, "treatment_timeout_override", None) or []
-    ):
-        if treatment not in TREATMENTS:
-            raise RealRepositoryError(
-                "--treatment-timeout-override TREATMENT must be one of: "
-                + ", ".join(TREATMENTS)
-            )
-        try:
-            timeout_seconds = int(raw_seconds)
-        except ValueError as error:
-            raise RealRepositoryError(
-                "--treatment-timeout-override SECONDS must be a positive integer"
-            ) from error
-        if timeout_seconds < 1:
-            raise RealRepositoryError(
-                "--treatment-timeout-override SECONDS must be a positive integer"
-            )
-        overrides.append(
-            {
-                "modelConfigurationId": model_id,
-                "treatment": treatment,
-                "timeoutSeconds": timeout_seconds,
-            }
-        )
-    return overrides
-
-
 def command_plan_campaign(args: argparse.Namespace) -> int:
-    timeout_overrides = _campaign_timeout_overrides(args)
     (
         suite,
         blind,
@@ -2353,50 +2540,14 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         _descriptions,
         model_configurations,
     ) = _load_campaign_plan_context(args)
-    repositories = _selected_repositories(suite, args.repository)
-    requested_treatments = set(args.treatment or TREATMENTS)
-    treatments = [row for row in TREATMENTS if row in requested_treatments]
-    repetitions = args.repetitions or suite["protocol"]["repetitions"]
-    plan = build_campaign_plan(
+    plan = build_purpose_campaign_plan(
         source_suite=suite,
         blind_suite=blind,
         materialization=receipt,
         adapter_config=adapter_config,
         model_configurations=model_configurations,
         campaign_id=args.campaign_id,
-        repository_ids=[row["id"] for row in repositories],
-        treatments=treatments,
-        repetitions=repetitions,
-        sample_timeout_seconds=args.timeout_seconds,
-        soft_wall_time_seconds=args.soft_wall_seconds,
-        hard_wall_time_seconds=args.hard_wall_seconds,
-        hard_reported_token_ceiling=args.hard_reported_token_ceiling,
-        hard_reported_input_token_ceiling_per_sample=(
-            args.hard_reported_input_token_ceiling_per_sample
-        ),
-        hard_reported_token_ceiling_per_sample=(
-            args.hard_reported_token_ceiling_per_sample
-        ),
-        hard_reported_input_token_ceiling_per_shard=(
-            args.hard_reported_input_token_ceiling_per_shard
-        ),
-        hard_reported_token_ceiling_per_shard=(
-            args.hard_reported_token_ceiling_per_shard
-        ),
-        max_consecutive_infrastructure_failures=(
-            args.max_consecutive_infrastructure_failures
-        ),
-        max_unknown_usage_samples=args.max_unknown_usage_samples,
-        max_timed_out_samples_per_model_profile=(
-            args.max_timed_out_samples_per_model_profile
-        ),
-        max_artifact_invalid_samples=args.max_artifact_invalid_samples,
-        inactivity_warning_seconds=args.inactivity_warning_seconds,
-        inactivity_diagnostic_seconds=args.inactivity_diagnostic_seconds,
-        max_recovered_inactivity_samples_per_model_profile=(
-            args.max_recovered_inactivity_samples_per_model_profile
-        ),
-        timeout_overrides=timeout_overrides,
+        campaign_purpose=args.purpose,
     )
     output = Path(args.output).expanduser().resolve()
     if output.exists():
@@ -2408,6 +2559,7 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
                 "output": str(output),
                 "samples": len(plan["samples"]),
                 "shards": len({row["shardId"] for row in plan["samples"]}),
+                "campaignPurpose": plan["campaignPurpose"],
                 "fullMatrix": plan["selection"]["fullMatrix"],
                 "contentSha256": plan["contentSha256"],
             },
@@ -2451,7 +2603,7 @@ def _campaign_from_plan(plan: dict[str, Any], shard_id: str) -> dict[str, Any]:
         if shard_id == "ALL"
         else f"{plan['campaignId']}--shard-{shard_id}"
     )
-    return {
+    campaign = {
         "schema": "review-craft.eval-real-repository-campaign.v1",
         "campaignId": campaign_id,
         "status": "FAILED",
@@ -2460,6 +2612,18 @@ def _campaign_from_plan(plan: dict[str, Any], shard_id: str) -> dict[str, Any]:
         "samples": [],
         "contentSha256": "0" * 64,
     }
+    if plan.get("schema") == "review-craft.eval-real-repository-campaign-plan.v2":
+        campaign.update(
+            {
+                "schema": "review-craft.eval-real-repository-campaign.v2",
+                "campaignPlanContentSha256": plan["contentSha256"],
+                "campaignPurpose": plan["campaignPurpose"],
+                "plannedSampleIds": [
+                    row["sampleId"] for row in selected_plan_samples(plan, shard_id)
+                ],
+            }
+        )
+    return campaign
 
 
 def _campaign_checkpoint(
@@ -2638,19 +2802,10 @@ def _terminal_run_state(
         return "FAILED", "SOURCE_MUTATION"
     if failure_class == "CREDENTIAL_EXPOSURE":
         return "FAILED", "CREDENTIAL_EXPOSURE"
-    # Failure budgets explain a partial final sample; pure ceilings still allow a
-    # completed shard to close before the shared ledger blocks later admission.
-    if budget_reason in {
-        "INFRASTRUCTURE_CIRCUIT_BREAKER",
-        "UNKNOWN_USAGE_BUDGET_EXCEEDED",
-        "MODEL_PROFILE_TIMEOUT_BUDGET_EXCEEDED",
-        "ARTIFACT_INVALID_BUDGET_EXCEEDED",
-    }:
+    if budget_reason is not None:
         return "STOPPED", budget_reason
     if schedule_complete:
         return "COMPLETED", "SCHEDULE_COMPLETE"
-    if budget_reason is not None:
-        return "STOPPED", budget_reason
     return "RUNNING", None
 
 
@@ -2739,6 +2894,9 @@ def command_run_campaign_plan(args: argparse.Namespace) -> int:
         run_dir=run_dir,
         budget_ledger=ledger_path,
     )
+    plan = read_json(Path(args.plan).expanduser().resolve(strict=True))
+    _validate_campaign_execution_authorization(args, plan)
+    _validate_review_craft_source_binding(args, plan)
     ledger_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     with exclusive_file_lock(
         ledger_path.parent,
@@ -2746,7 +2904,86 @@ def command_run_campaign_plan(args: argparse.Namespace) -> int:
         wait_seconds=5,
         timeout_message="another campaign shard holds the shared budget ledger lock",
     ):
-        return _command_run_campaign_plan_locked(args, ledger_path)
+        try:
+            return _command_run_campaign_plan_locked(args, ledger_path)
+        except KeyboardInterrupt:
+            _record_campaign_interruption(args, plan, ledger_path)
+            raise
+
+
+def _validate_campaign_execution_authorization(
+    args: argparse.Namespace, plan: dict[str, Any]
+) -> None:
+    plan_sha256 = plan.get("contentSha256")
+    if getattr(args, "authorize_plan_sha256", None) != plan_sha256:
+        raise RealRepositoryError(
+            "campaign execution requires --authorize-plan-sha256 matching the "
+            "sealed plan contentSha256"
+        )
+    if plan.get("campaignPurpose") == "GOLDEN" and (
+        getattr(args, "allow_golden_campaign_sha256", None) != plan_sha256
+    ):
+        raise RealRepositoryError(
+            "GOLDEN execution requires --allow-golden-campaign-sha256 matching "
+            "the sealed plan contentSha256"
+        )
+
+
+def _validate_review_craft_source_binding(
+    args: argparse.Namespace, plan: dict[str, Any]
+) -> None:
+    expected = plan.get("reviewCraftSourceContentSha256")
+    if expected is None:
+        return
+    skill_root = Path(args.skill_root).expanduser().resolve(strict=True)
+    if directory_content_sha256(skill_root) != expected:
+        raise RealRepositoryError(
+            "Review Craft source content differs from the sealed campaign plan"
+        )
+
+
+def _record_campaign_interruption(
+    args: argparse.Namespace,
+    plan: dict[str, Any],
+    ledger_path: Path,
+) -> None:
+    run_dir = _resolve_campaign_run_directory(args.run_dir)
+    state_path = run_dir / "run-state.json"
+    if not state_path.is_file():
+        return
+    state = read_json(state_path)
+    if state.get("status") != "RUNNING":
+        return
+    state.update(
+        {
+            "status": "INTERRUPTED",
+            "stopReason": "OPERATOR_INTERRUPT",
+            "updatedAt": utc_now(),
+        }
+    )
+    seal(state)
+    if ledger_path.is_file():
+        ledger = read_json(ledger_path)
+        update_budget_ledger(ledger, state, now=utc_now())
+        _write_campaign_budget_ledger(
+            ledger=ledger,
+            plan=plan,
+            ledger_path=ledger_path,
+            label="invalid interrupted campaign budget ledger",
+        )
+    write_json(state_path, state)
+    campaign_path = run_dir / "campaign.json"
+    checkpoint_path = run_dir / "checkpoint.json"
+    if campaign_path.is_file():
+        campaign = read_json(campaign_path)
+        checkpoint = build_checkpoint(plan=plan, campaign=campaign, state=state)
+        checkpoint_errors = validate_checkpoint(checkpoint, plan, campaign)
+        if checkpoint_errors:
+            raise RealRepositoryError(
+                "invalid interrupted campaign checkpoint: "
+                + "; ".join(checkpoint_errors)
+            )
+        write_json(checkpoint_path, checkpoint)
 
 
 def _command_run_campaign_plan_locked(
@@ -2762,6 +2999,8 @@ def _command_run_campaign_plan_locked(
         raise RealRepositoryError(
             "campaign plan is not execution-ready: " + "; ".join(execution_errors)
         )
+    _validate_campaign_execution_authorization(args, plan)
+    _validate_review_craft_source_binding(args, plan)
     receipt, adapter_config = _load_materialization_and_adapter_config(args, suite)
     workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
     run_dir = _resolve_campaign_run_directory(args.run_dir)
@@ -2900,6 +3139,7 @@ def _command_run_campaign_plan_locked(
             timeout_seconds=timeout_seconds,
             skill_root=skill_root,
             evidence_root=evidence_root,
+            first_item_timeout_seconds=budgets.get("firstItemTimeoutSeconds"),
             inactivity_warning_seconds=budgets.get("inactivityWarningSeconds"),
             inactivity_diagnostic_seconds=budgets.get(
                 "inactivityDiagnosticSeconds"
@@ -3182,6 +3422,13 @@ def command_merge_campaign_runs(args: argparse.Namespace) -> int:
 
 
 def command_run_campaign(args: argparse.Namespace) -> int:
+    raise RealRepositoryError(
+        "unbound campaign execution is disabled; create a purpose-bound plan with "
+        "plan-campaign and execute it with run-plan"
+    )
+
+
+def _legacy_command_run_campaign(args: argparse.Namespace) -> int:
     workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
     run_dir = _resolve_campaign_run_directory(args.run_dir)
     _assert_execution_artifact_boundary(
@@ -3462,6 +3709,32 @@ def build_parser() -> argparse.ArgumentParser:
     validate_stability.add_argument("--report", required=True)
     validate_stability.set_defaults(handler=command_validate_stability)
 
+    def add_promotion_inputs(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--suite", default=str(DEFAULT_SUITE))
+        command.add_argument("--blind-suite", required=True)
+        command.add_argument("--plan", required=True)
+        command.add_argument("--campaign", required=True)
+        command.add_argument("--budget-ledger", required=True)
+        command.add_argument("--adjudication")
+        command.add_argument("--oracle-assessment")
+        command.add_argument("--stability-report")
+
+    assess_promotion = subparsers.add_parser("assess-campaign-promotion")
+    add_promotion_inputs(assess_promotion)
+    assess_promotion.add_argument("--output", required=True)
+    assess_promotion.set_defaults(handler=command_assess_campaign_promotion)
+
+    validate_promotion = subparsers.add_parser("validate-campaign-promotion")
+    add_promotion_inputs(validate_promotion)
+    validate_promotion.add_argument("--receipt", required=True)
+    validate_promotion.set_defaults(handler=command_validate_campaign_promotion)
+
+    validate_quality_release = subparsers.add_parser("validate-quality-release")
+    add_promotion_inputs(validate_quality_release)
+    validate_quality_release.add_argument("--receipt", required=True)
+    validate_quality_release.add_argument("--skill-root", default=str(DEFAULT_SKILL))
+    validate_quality_release.set_defaults(handler=command_validate_quality_release)
+
     plan_campaign = subparsers.add_parser("plan-campaign")
     plan_campaign.add_argument("--suite", default=str(DEFAULT_SUITE))
     plan_campaign.add_argument("--blind-suite", required=True)
@@ -3469,71 +3742,16 @@ def build_parser() -> argparse.ArgumentParser:
     plan_campaign.add_argument("--adapter-config", required=True)
     plan_campaign.add_argument("--output", required=True)
     plan_campaign.add_argument("--campaign-id", required=True)
-    plan_campaign.add_argument("--repository", action="append")
-    plan_campaign.add_argument("--treatment", action="append", choices=TREATMENTS)
-    plan_campaign.add_argument("--repetitions", type=int)
-    plan_campaign.add_argument("--timeout-seconds", type=int, default=1800)
     plan_campaign.add_argument(
-        "--timeout-override",
-        action="append",
-        nargs=2,
-        metavar=("MODEL_CONFIGURATION_ID", "SECONDS"),
-        help="override the default timeout for every selected cell of a model profile",
-    )
-    plan_campaign.add_argument(
-        "--treatment-timeout-override",
-        action="append",
-        nargs=3,
-        metavar=("MODEL_CONFIGURATION_ID", "TREATMENT", "SECONDS"),
-        help="override a model profile timeout for one selected treatment",
-    )
-    plan_campaign.add_argument("--soft-wall-seconds", type=int, default=64800)
-    plan_campaign.add_argument("--hard-wall-seconds", type=int, default=86400)
-    plan_campaign.add_argument(
-        "--hard-reported-token-ceiling", type=int, default=60_000_000
-    )
-    plan_campaign.add_argument(
-        "--hard-reported-input-token-ceiling-per-sample",
-        type=int,
-        default=1_250_000,
-    )
-    plan_campaign.add_argument(
-        "--hard-reported-token-ceiling-per-sample",
-        type=int,
-        default=1_500_000,
-    )
-    plan_campaign.add_argument(
-        "--hard-reported-input-token-ceiling-per-shard",
-        type=int,
-        default=7_000_000,
-    )
-    plan_campaign.add_argument(
-        "--hard-reported-token-ceiling-per-shard",
-        type=int,
-        default=8_000_000,
-    )
-    plan_campaign.add_argument(
-        "--max-consecutive-infrastructure-failures", type=int, default=2
-    )
-    plan_campaign.add_argument(
-        "--max-unknown-usage-samples", type=int, default=1
-    )
-    plan_campaign.add_argument(
-        "--max-timed-out-samples-per-model-profile", type=int, default=1
-    )
-    plan_campaign.add_argument(
-        "--max-artifact-invalid-samples", type=int, default=1
-    )
-    plan_campaign.add_argument(
-        "--inactivity-warning-seconds", type=int, default=300
-    )
-    plan_campaign.add_argument(
-        "--inactivity-diagnostic-seconds", type=int, default=600
-    )
-    plan_campaign.add_argument(
-        "--max-recovered-inactivity-samples-per-model-profile",
-        type=int,
-        default=2,
+        "--purpose",
+        required=True,
+        choices=(
+            "CANARY",
+            "CORE_ITERATION",
+            "RISK_ITERATION",
+            "CANDIDATE",
+            "GOLDEN",
+        ),
     )
     plan_campaign.set_defaults(handler=command_plan_campaign)
 
@@ -3570,6 +3788,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_plan.add_argument("--shard")
     run_plan.add_argument("--resume", action="store_true")
     run_plan.add_argument("--allow-partial", action="store_true")
+    run_plan.add_argument("--authorize-plan-sha256", required=True)
+    run_plan.add_argument("--allow-golden-campaign-sha256")
     run_plan.set_defaults(handler=command_run_campaign_plan)
 
     validate_run = subparsers.add_parser("validate-campaign-run")

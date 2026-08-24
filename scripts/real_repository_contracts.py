@@ -642,9 +642,22 @@ def validate_campaign(
                 )
 
     expected, completed = _campaign_matrix(payload, source_suite)
-    minimum_models = source_suite["protocol"]["minimumModelConfigurations"]
-    has_minimum_models = len(model_configurations) >= minimum_models
-    full_matrix = has_minimum_models and expected <= completed
+    if payload["schema"] == "review-craft.eval-real-repository-campaign.v2":
+        planned_ids = set(payload["plannedSampleIds"])
+        observed_ids = {sample["sampleId"] for sample in payload["samples"]}
+        completed_ids = {
+            sample["sampleId"]
+            for sample in payload["samples"]
+            if sample["status"] == "COMPLETED"
+            and not sample["sourceMutationDetected"]
+        }
+        if not observed_ids <= planned_ids:
+            errors.append("campaign contains samples outside the sealed plan selection")
+        full_matrix = completed_ids == planned_ids
+    else:
+        minimum_models = source_suite["protocol"]["minimumModelConfigurations"]
+        has_minimum_models = len(model_configurations) >= minimum_models
+        full_matrix = has_minimum_models and expected <= completed
     if payload["status"] == "COMPLETED" and not full_matrix:
         errors.append("campaign status COMPLETED requires the full successful matrix")
     if payload["status"] == "FAILED" and completed:

@@ -870,6 +870,31 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         self.assertEqual(usage["inputTokens"], 100)
         self.assertEqual(usage["totalTokens"], 125)
 
+    def test_failed_process_tree_cleanup_has_a_distinct_failure_class(self) -> None:
+        lifecycle = {"processTreeCleanup": "FAILED"}
+        self.assertEqual(
+            runner._process_cleanup_outcome(
+                lifecycle,
+                status="TIMED_OUT",
+                failure_reason="adapter timed out",
+                failure_class="TIMEOUT",
+            ),
+            (
+                "FAILED",
+                "adapter process-tree cleanup could not be confirmed",
+                "PROCESS_CLEANUP",
+            ),
+        )
+        self.assertEqual(
+            runner._process_cleanup_outcome(
+                {"processTreeCleanup": "CONFIRMED"},
+                status="TIMED_OUT",
+                failure_reason="adapter timed out",
+                failure_class="TIMEOUT",
+            ),
+            ("TIMED_OUT", "adapter timed out", "TIMEOUT"),
+        )
+
     def test_only_evidence_loop_receives_oracle_free_verifier_boundary(self) -> None:
         evidence_root = ROOT / "evals/real-repositories/verifiers"
         self.assertEqual(
@@ -1003,7 +1028,13 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                         "unavailableReason": "POST_EXIT_NOT_CAPTURED",
                     },
                 )
-                return runner.ProcessResult(124, b'{"type":"item.completed"}\n', b"", True)
+                return runner.ProcessResult(
+                    124,
+                    b'{"type":"item.completed"}\n',
+                    b"",
+                    True,
+                    "CONFIRMED",
+                )
 
             with patch.object(runner, "run_process", side_effect=timed_out):
                 sample = runner._run_sample(
@@ -1028,7 +1059,7 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
             self.assertIsNotNone(sample["artifacts"]["isolationReceiptSha256"])
             self.assertEqual(sample["lifecycle"]["lastEventType"], "turn.started")
             self.assertEqual(sample["lifecycle"]["terminationReason"], "TIMEOUT")
-            self.assertEqual(sample["lifecycle"]["processTreeCleanup"], "COMPLETED")
+            self.assertEqual(sample["lifecycle"]["processTreeCleanup"], "CONFIRMED")
             self.assertEqual(
                 sample["lifecycle"]["inactivityState"],
                 "TIMED_OUT_BEFORE_FIRST_ITEM",

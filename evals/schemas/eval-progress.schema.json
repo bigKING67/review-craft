@@ -24,6 +24,7 @@
     "schema": {"const": "review-craft.eval-progress.v1"},
     "availability": {"enum": ["AVAILABLE", "UNAVAILABLE"]},
     "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": ["string", "null"], "format": "date-time"},
     "threadStartedAt": {"type": ["string", "null"], "format": "date-time"},
     "turnStartedAt": {"type": ["string", "null"], "format": "date-time"},
     "firstItemAt": {"type": ["string", "null"], "format": "date-time"},
@@ -58,10 +59,26 @@
     "diagnosticCapturedAt": {"type": ["string", "null"], "format": "date-time"},
     "processAliveWhenDiagnosticCaptured": {"type": ["boolean", "null"]},
     "terminationReason": {
-      "enum": [null, "PROCESS_EXIT", "TIMEOUT", "ADAPTER_UNAVAILABLE"]
+      "enum": [
+        null,
+        "PROCESS_EXIT",
+        "TIMEOUT",
+        "INTERRUPTED",
+        "ERROR",
+        "ADAPTER_UNAVAILABLE"
+      ]
+    },
+    "timeoutPhase": {
+      "enum": [null, "BEFORE_FIRST_ITEM", "AFTER_FIRST_ITEM"]
     },
     "processTreeCleanup": {
-      "enum": ["NOT_REQUIRED", "COMPLETED", "NOT_VERIFIED"]
+      "enum": [
+        "NOT_REQUIRED",
+        "CONFIRMED",
+        "FAILED",
+        "COMPLETED",
+        "NOT_VERIFIED"
+      ]
     },
     "unavailableReason": {
       "enum": [
