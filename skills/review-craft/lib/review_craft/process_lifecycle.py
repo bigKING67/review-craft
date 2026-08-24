@@ -123,12 +123,10 @@ def open_process_tree(
     else:
         options["start_new_session"] = True
     process = subprocess.Popen(argv, **options)  # type: ignore[arg-type]
-    try:
+    # Some managed Windows hosts prohibit nested Job Objects. Keep the
+    # documented taskkill fallback instead of rejecting valid commands.
+    with contextlib.suppress(OSError):
         _assign_windows_kill_job(process)
-    except BaseException:
-        process.kill()
-        process.wait(timeout=FORCE_WAIT_SECONDS)
-        raise
     return process
 
 
@@ -196,6 +194,7 @@ def _close_windows_job(process: subprocess.Popen[Any]) -> bool:
 def _terminate_windows_tree(process: subprocess.Popen[Any]) -> str:
     had_job = getattr(process, _WINDOWS_JOB_ATTRIBUTE, None) is not None
     closed = _close_windows_job(process) if had_job else False
+    taskkill_confirmed = False
     if not had_job:
         try:
             completed = subprocess.run(
@@ -208,6 +207,7 @@ def _terminate_windows_tree(process: subprocess.Popen[Any]) -> str:
             )
         except (OSError, subprocess.TimeoutExpired):
             completed = None
+        taskkill_confirmed = completed is not None and completed.returncode == 0
         if (completed is None or completed.returncode != 0) and process.poll() is None:
             process.kill()
     try:
@@ -215,7 +215,11 @@ def _terminate_windows_tree(process: subprocess.Popen[Any]) -> str:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=FORCE_WAIT_SECONDS)
-    return "CONFIRMED" if process.poll() is not None and (closed or not had_job) else "FAILED"
+    return (
+        "CONFIRMED"
+        if process.poll() is not None and (closed or taskkill_confirmed)
+        else "FAILED"
+    )
 
 
 def terminate_process_tree(process: subprocess.Popen[Any]) -> str:

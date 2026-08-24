@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_LIB = ROOT / "skills/review-craft/lib"
@@ -17,6 +17,45 @@ from review_craft.process_lifecycle import run_process  # noqa: E402
 
 
 class ProcessLifecycleTests(unittest.TestCase):
+    def test_job_assignment_rejection_uses_process_group_fallback(self) -> None:
+        process = MagicMock()
+        with (
+            patch.object(process_lifecycle.subprocess, "Popen", return_value=process),
+            patch.object(
+                process_lifecycle,
+                "_assign_windows_kill_job",
+                side_effect=PermissionError(5, "Access is denied"),
+            ),
+        ):
+            opened = process_lifecycle.open_process_tree(["fixture"])
+
+        self.assertIs(opened, process)
+        process.kill.assert_not_called()
+
+    def test_taskkill_failure_does_not_claim_confirmed_cleanup(self) -> None:
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+        setattr(process, process_lifecycle._WINDOWS_JOB_ATTRIBUTE, None)
+        completed = MagicMock(returncode=1)
+        with patch.object(process_lifecycle.subprocess, "run", return_value=completed):
+            cleanup = process_lifecycle._terminate_windows_tree(process)
+
+        self.assertEqual(cleanup, "FAILED")
+        process.kill.assert_called_once_with()
+
+    def test_taskkill_success_confirms_fallback_cleanup(self) -> None:
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = 1
+        setattr(process, process_lifecycle._WINDOWS_JOB_ATTRIBUTE, None)
+        completed = MagicMock(returncode=0)
+        with patch.object(process_lifecycle.subprocess, "run", return_value=completed):
+            cleanup = process_lifecycle._terminate_windows_tree(process)
+
+        self.assertEqual(cleanup, "CONFIRMED")
+        process.kill.assert_not_called()
+
     def test_timeout_preserves_partial_output_and_explicit_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = run_process(
