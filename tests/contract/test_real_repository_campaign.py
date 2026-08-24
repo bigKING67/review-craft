@@ -377,6 +377,100 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
 
             describe.assert_not_called()
 
+    def test_run_plan_rejects_run_directory_inside_evaluator_before_writes(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id], repetitions=1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            args.run_dir = str(Path(args.workspace_root) / "run")
+
+            with (
+                patch.object(runner, "_describe_adapter") as describe,
+                self.assertRaisesRegex(
+                    contracts.RealRepositoryError,
+                    "campaign run directory must be outside evaluator workspace root",
+                ),
+            ):
+                runner.command_run_campaign_plan(args)
+
+            describe.assert_not_called()
+            self.assertFalse(Path(args.run_dir).exists())
+            self.assertFalse(Path(args.budget_ledger).exists())
+
+    def test_run_plan_rejects_non_directory_run_target_before_writes(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id], repetitions=1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            run_target = Path(args.run_dir)
+            run_target.write_text("not a directory\n", encoding="utf-8")
+
+            with (
+                patch.object(runner, "_describe_adapter") as describe,
+                self.assertRaisesRegex(
+                    contracts.RealRepositoryError,
+                    "campaign run directory must be a directory",
+                ),
+            ):
+                runner.command_run_campaign_plan(args)
+
+            describe.assert_not_called()
+            self.assertFalse(Path(args.budget_ledger).exists())
+
+    def test_run_plan_rejects_control_input_hidden_in_evaluator(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        plan = self._plan(repositories=[repository_id], repetitions=1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            hidden_root = Path(args.workspace_root) / "repositories" / repository_id / ".git"
+            hidden_root.mkdir()
+            hidden_plan = hidden_root / "campaign-plan.json"
+            Path(args.plan).replace(hidden_plan)
+            args.plan = str(hidden_plan)
+
+            with (
+                patch.object(runner, "_describe_adapter") as describe,
+                self.assertRaisesRegex(
+                    contracts.RealRepositoryError,
+                    "campaign plan must be outside evaluator workspace root",
+                ),
+            ):
+                runner.command_run_campaign_plan(args)
+
+            describe.assert_not_called()
+            self.assertFalse(Path(args.budget_ledger).exists())
+
+    def test_run_plan_validates_unselected_materialized_checkout(self) -> None:
+        repository_id = self.suite["repositories"][0]["id"]
+        unselected_id = self.suite["repositories"][1]["id"]
+        plan = self._plan(repositories=[repository_id], repetitions=1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._write_inputs(root, plan)
+            unselected = Path(args.workspace_root) / "repositories" / unselected_id
+            unselected.rmdir()
+            unselected.write_text("not a checkout\n", encoding="utf-8")
+
+            with (
+                patch.object(runner, "_describe_adapter") as describe,
+                patch.object(
+                    runner,
+                    "_repository_state",
+                    side_effect=self._repository_state,
+                ),
+                self.assertRaisesRegex(
+                    contracts.RealRepositoryError,
+                    "materialized checkout must be a real directory",
+                ),
+            ):
+                runner.command_run_campaign_plan(args)
+
+            describe.assert_not_called()
+            self.assertFalse(Path(args.run_dir).exists())
+
     def test_timeout_policy_is_content_bound_and_uses_specific_precedence(
         self,
     ) -> None:

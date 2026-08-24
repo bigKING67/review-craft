@@ -49,13 +49,18 @@ They also record `evaluatorBoundary.kind: DISJOINT_COORDINATOR_ROOT_V1`. The eva
 contains only `repositories/`; oracle-bearing `suite.json` and `materialization.json` are written
 to a separate, non-nested coordinator root. Planning and execution reject receipts without this
 attestation, while execution and the standalone live validator reject extra evaluator-root files,
-symlinked repository roots, nested coordinator roots, and post-receipt Git-object leakage before
-adapter description or provider work begins. Re-materialize the selected repositories before
-starting any new campaign.
+non-directory or symlinked repository roots, nested coordinator roots, and post-receipt Git-object
+leakage before adapter description or provider work begins. Execution revalidates every checkout
+listed in the receipt, including unselected siblings, so a partial shard cannot hide a control
+artifact behind an unselected repository name. It also rejects the campaign run directory when it
+contains or is contained by the evaluator root, and rejects suite, receipt, plan, adapter, skill,
+verifier, or budget-ledger paths placed anywhere inside that root. Re-materialize the selected
+repositories before starting any new campaign.
 
 This is a path and artifact-delivery boundary, not an operating-system read sandbox. It prevents
-coordinator artifacts from being placed in or above the evaluator workspace and makes that
-condition contract-verifiable without a model call. Host enforcement must still be reported
+the materialization coordinator and campaign run artifacts from being placed in or above the
+evaluator workspace, prevents control inputs from being embedded inside it, and makes those
+conditions contract-verifiable without a model call. Host enforcement must still be reported
 separately; `--cd` and a read-only mutation policy alone do not prove that the process cannot read
 arbitrary unrelated host paths.
 

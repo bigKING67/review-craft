@@ -814,9 +814,12 @@ by a missing post-exit capture, while an explicit system or user-extension drift
 artifact-invalid. The isolation sidecar continues to expose either condition. Adapters declaring
 `review-craft.eval-timeout-control.v1` receive the inner sample deadline and a content-bound
 finalization-grace contract. The Codex adapter terminates its child tree and finalizes sidecars;
-the outer runner deadline is only a failsafe. This proves that the declared Codex-home skill/plugin
-surface remained stable after explicit preparation. It does not prove operating-system network or
-filesystem sandbox enforcement. Operational Canaries should use a separately sealed,
+the outer runner deadline is only a failsafe. Before adapter description, execution also revalidates
+every materialized checkout, not only the selected shard, and rejects control inputs, ledgers, or
+run directories embedded in the evaluator workspace. This proves that the declared Codex-home
+skill/plugin surface remained stable after explicit preparation and that runner-managed artifacts
+respect the declared path boundary. It does not prove operating-system network or filesystem
+sandbox enforcement. Operational Canaries should use a separately sealed,
 responsiveness-oriented timeout rather than inheriting a longer quality-Campaign timeout. Legacy plans,
 lifecycle receipts, ledgers, run states, and stability reports remain validation-compatible. The
 legacy direct `run`

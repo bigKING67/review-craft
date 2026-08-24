@@ -1051,6 +1051,90 @@ def _assert_disjoint_paths(
         )
 
 
+def _assert_path_outside_root(
+    path: Path,
+    root: Path,
+    *,
+    path_label: str,
+    root_label: str,
+) -> None:
+    root = root.resolve(strict=True)
+    expanded = path.expanduser()
+    lexical = Path(os.path.abspath(expanded))
+    resolved = expanded.resolve()
+    for candidate in {lexical, resolved}:
+        if candidate == root or root in candidate.parents:
+            raise RealRepositoryError(
+                f"{path_label} must be outside {root_label}: {path}"
+            )
+
+
+def _assert_execution_artifact_boundary(
+    args: argparse.Namespace,
+    *,
+    workspace_root: Path,
+    run_dir: Path,
+    budget_ledger: Path | None = None,
+) -> None:
+    workspace_root = workspace_root.resolve(strict=True)
+    _assert_disjoint_paths(
+        workspace_root,
+        ROOT,
+        first_label="evaluator workspace root",
+        second_label="Review Craft source root",
+    )
+    _assert_path_outside_root(
+        run_dir,
+        workspace_root,
+        path_label="campaign run directory",
+        root_label="evaluator workspace root",
+    )
+    _assert_disjoint_paths(
+        workspace_root,
+        run_dir.resolve(),
+        first_label="evaluator workspace root",
+        second_label="campaign run directory",
+    )
+    if budget_ledger is not None:
+        _assert_path_outside_root(
+            budget_ledger,
+            workspace_root,
+            path_label="campaign budget ledger",
+            root_label="evaluator workspace root",
+        )
+    for attribute, label in (
+        ("suite", "oracle suite"),
+        ("blind_suite", "blind suite"),
+        ("materialization", "materialization receipt"),
+        ("adapter_config", "adapter configuration"),
+        ("plan", "campaign plan"),
+        ("skill_root", "skill root"),
+        ("evidence_root", "evidence root"),
+    ):
+        value = getattr(args, attribute, None)
+        if value:
+            _assert_path_outside_root(
+                Path(value),
+                workspace_root,
+                path_label=label,
+                root_label="evaluator workspace root",
+            )
+
+
+def _resolve_campaign_run_directory(value: str) -> Path:
+    input_path = Path(value).expanduser()
+    if input_path.is_symlink():
+        raise RealRepositoryError(
+            f"campaign run directory must not be a symlink: {input_path}"
+        )
+    resolved = input_path.resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise RealRepositoryError(
+            f"campaign run directory must be a directory: {resolved}"
+        )
+    return resolved
+
+
 def _prepare_empty_directory(path: Path, *, label: str) -> None:
     if path.exists() and not path.is_dir():
         raise RealRepositoryError(f"{label} must be a directory: {path}")
@@ -2448,18 +2532,20 @@ def _verify_plan_workspaces(
             "evaluator repositories directory must contain only materialized checkouts; "
             f"found: {rendered}"
         )
-    roots: dict[str, Path] = {}
-    for repository_id in plan["selection"]["repositories"]:
+    selected_ids = plan["selection"]["repositories"]
+    for repository_id in selected_ids:
         if repository_id not in materialized:
             raise RealRepositoryError(
                 f"selected repository is not materialized: {repository_id}"
             )
+    all_roots: dict[str, Path] = {}
+    for repository_id in expected_entries:
         repository = repositories[repository_id]
         receipt_row = materialized[repository_id]
         checkout = workspace_root / receipt_row["checkout"]
-        if checkout.is_symlink():
+        if checkout.is_symlink() or not checkout.is_dir():
             raise RealRepositoryError(
-                f"materialized checkout must not be a symlink: {checkout}"
+                f"materialized checkout must be a real directory: {checkout}"
             )
         repository_root = checkout.resolve(strict=True)
         try:
@@ -2469,8 +2555,8 @@ def _verify_plan_workspaces(
                 f"materialized checkout escapes evaluator repositories root: {repository_root}"
             ) from error
         _assert_live_materialization(repository, receipt_row, repository_root)
-        roots[repository_id] = repository_root
-    return roots
+        all_roots[repository_id] = repository_root
+    return {repository_id: all_roots[repository_id] for repository_id in selected_ids}
 
 
 def _resume_or_initialize_run(
@@ -2639,12 +2725,20 @@ def _reserve_campaign_budget_shard(
 
 
 def command_run_campaign_plan(args: argparse.Namespace) -> int:
+    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
+    run_dir = _resolve_campaign_run_directory(args.run_dir)
     ledger_input = Path(args.budget_ledger).expanduser()
     if ledger_input.is_symlink():
         raise RealRepositoryError(
             f"campaign budget ledger must not be a symlink: {ledger_input}"
         )
     ledger_path = ledger_input.resolve()
+    _assert_execution_artifact_boundary(
+        args,
+        workspace_root=workspace_root,
+        run_dir=run_dir,
+        budget_ledger=ledger_path,
+    )
     ledger_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     with exclusive_file_lock(
         ledger_path.parent,
@@ -2670,12 +2764,19 @@ def _command_run_campaign_plan_locked(
         )
     receipt, adapter_config = _load_materialization_and_adapter_config(args, suite)
     workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
+    run_dir = _resolve_campaign_run_directory(args.run_dir)
     materialization_path = Path(args.materialization).expanduser().resolve(strict=True)
     _assert_disjoint_paths(
         workspace_root,
         materialization_path.parent,
         first_label="evaluator workspace root",
         second_label="materialization coordinator root",
+    )
+    _assert_execution_artifact_boundary(
+        args,
+        workspace_root=workspace_root,
+        run_dir=run_dir,
+        budget_ledger=ledger_path,
     )
     repository_roots = _verify_plan_workspaces(
         plan=plan,
@@ -2702,7 +2803,6 @@ def _command_run_campaign_plan_locked(
         plan=plan,
         resume=args.resume,
     )
-    run_dir = Path(args.run_dir).expanduser().resolve()
     _reserve_campaign_budget_shard(
         args=args,
         plan=plan,
@@ -3082,6 +3182,13 @@ def command_merge_campaign_runs(args: argparse.Namespace) -> int:
 
 
 def command_run_campaign(args: argparse.Namespace) -> int:
+    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
+    run_dir = _resolve_campaign_run_directory(args.run_dir)
+    _assert_execution_artifact_boundary(
+        args,
+        workspace_root=workspace_root,
+        run_dir=run_dir,
+    )
     suite = read_json(Path(args.suite).expanduser().resolve(strict=True))
     suite_errors = validate_suite(suite)
     if suite_errors:
@@ -3091,7 +3198,6 @@ def command_run_campaign(args: argparse.Namespace) -> int:
     if blind_errors:
         raise RealRepositoryError("invalid blind suite: " + "; ".join(blind_errors))
     receipt, adapter_config = _load_materialization_and_adapter_config(args, suite)
-    workspace_root = Path(args.workspace_root).expanduser().resolve(strict=True)
     materialization_path = Path(args.materialization).expanduser().resolve(strict=True)
     _assert_disjoint_paths(
         workspace_root,
@@ -3114,7 +3220,6 @@ def command_run_campaign(args: argparse.Namespace) -> int:
         workspace_root=workspace_root,
     )
     descriptions, _model_configurations = _describe_campaign_adapters(adapter_config)
-    run_dir = Path(args.run_dir).expanduser().resolve()
     if run_dir.exists() and any(run_dir.iterdir()):
         raise RealRepositoryError(f"run directory must be empty: {run_dir}")
     run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
