@@ -22,7 +22,11 @@
         "review-craft.eval-adapter.v3",
         "review-craft.eval-adapter.v4",
         "review-craft.eval-adapter.v5",
-        "review-craft.eval-adapter.v6"
+        "review-craft.eval-adapter.v6",
+        "review-craft.eval-adapter.v7",
+        "review-craft.eval-adapter.v8",
+        "review-craft.eval-adapter.v9",
+        "review-craft.eval-adapter.v10"
       ]
     },
     "name": {
@@ -63,7 +67,11 @@
         "baseUrl": {"type": ["string", "null"]},
         "wireApi": {"enum": ["responses", "chat"]},
         "requiresOpenAIAuth": {"type": "boolean"},
-        "supportsWebsockets": {"type": "boolean"}
+        "supportsWebsockets": {"type": "boolean"},
+        "requestMaxRetries": {"type": "integer", "minimum": 0},
+        "streamMaxRetries": {"type": "integer", "minimum": 0},
+        "streamIdleTimeoutMs": {"type": "integer", "minimum": 1},
+        "websocketConnectTimeoutMs": {"type": "integer", "minimum": 1}
       }
     },
     "isolation": {
@@ -193,6 +201,140 @@
         }
       ]
     },
+    "toolBudgetControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "transport",
+        "repositoryLimitEnvironmentVariable",
+        "skillBootstrapLimitEnvironmentVariable",
+        "budgetExitCode",
+        "finalizationGraceSeconds"
+      ],
+      "properties": {
+        "protocol": {
+          "enum": [
+            "review-craft.eval-tool-budget-control.v1",
+            "review-craft.eval-tool-budget-control.v2",
+            "review-craft.eval-tool-budget-control.v3"
+          ]
+        },
+        "transport": {"const": "ENV_VALUE"},
+        "repositoryLimitEnvironmentVariable": {
+          "const": "REVIEW_CRAFT_EVAL_REPOSITORY_TOOL_CALL_LIMIT"
+        },
+        "skillBootstrapLimitEnvironmentVariable": {
+          "const": "REVIEW_CRAFT_EVAL_SKILL_BOOTSTRAP_TOOL_CALL_LIMIT"
+        },
+        "observationEvent": {"const": "item.started"},
+        "semantics": {"const": "EARLY_TERMINATION_NOT_PRE_EXECUTION_BLOCK"},
+        "enforcementEvent": {"const": "PreToolUse"},
+        "commandEnforcement": {"const": "PRE_EXECUTION_BLOCK"},
+        "nonCommandEnforcement": {"const": "ITEM_STARTED_EARLY_TERMINATION"},
+        "hookDecision": {"const": "block"},
+        "hookTrustMode": {"const": "AUTOMATION_BYPASS"},
+        "stateTransport": {"const": "ADAPTER_MANAGED_PATH"},
+        "skillBootstrapPrerequisite": {
+          "const": "REQUIRED_WHEN_LIMIT_POSITIVE"
+        },
+        "prerequisiteEnforcement": {
+          "const": "RECOVERABLE_PRE_EXECUTION_BLOCK"
+        },
+        "maxRecoverablePrerequisiteBlocks": {"const": 1},
+        "prerequisiteFailureKind": {
+          "const": "SKILL_BOOTSTRAP_REQUIRED"
+        },
+        "bootstrapCommandPolicy": {
+          "const": "DEDICATED_BOUND_SKILL_READ_V1"
+        },
+        "hookConfigurationSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "hookImplementationSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "budgetExitCode": {"const": 125},
+        "finalizationGraceSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "protocol": {"const": "review-craft.eval-tool-budget-control.v1"}
+            },
+            "required": ["protocol"]
+          },
+          "then": {
+            "required": ["observationEvent", "semantics"],
+            "not": {
+              "anyOf": [
+                {"required": ["enforcementEvent"]},
+                {"required": ["commandEnforcement"]},
+                {"required": ["nonCommandEnforcement"]},
+                {"required": ["hookDecision"]},
+                {"required": ["hookTrustMode"]},
+                {"required": ["stateTransport"]},
+                {"required": ["hookConfigurationSha256"]},
+                {"required": ["hookImplementationSha256"]}
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "enforcementEvent",
+              "commandEnforcement",
+              "nonCommandEnforcement",
+              "hookDecision",
+              "hookTrustMode",
+              "stateTransport",
+              "hookConfigurationSha256",
+              "hookImplementationSha256"
+            ],
+            "not": {
+              "anyOf": [
+                {"required": ["observationEvent"]},
+                {"required": ["semantics"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "protocol": {"const": "review-craft.eval-tool-budget-control.v3"}
+            },
+            "required": ["protocol"]
+          },
+          "then": {
+            "required": [
+              "skillBootstrapPrerequisite",
+              "prerequisiteEnforcement",
+              "maxRecoverablePrerequisiteBlocks",
+              "prerequisiteFailureKind",
+              "bootstrapCommandPolicy"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {"required": ["skillBootstrapPrerequisite"]},
+                {"required": ["prerequisiteEnforcement"]},
+                {"required": ["maxRecoverablePrerequisiteBlocks"]},
+                {"required": ["prerequisiteFailureKind"]},
+                {"required": ["bootstrapCommandPolicy"]}
+              ]
+            }
+          }
+        }
+      ]
+    },
     "isolationPreparation": {
       "type": "object",
       "additionalProperties": false,
@@ -288,6 +430,114 @@
         "required": ["usage", "toolTrace", "progress", "isolationReceipt", "capabilities"],
         "properties": {
           "isolation": {"required": ["homeMatchesCodexHome"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"schema": {"const": "review-craft.eval-adapter.v7"}},
+        "required": ["schema"]
+      },
+      "then": {
+        "required": [
+          "usage",
+          "toolTrace",
+          "progress",
+          "isolationReceipt",
+          "timeoutControl",
+          "toolBudgetControl",
+          "capabilities"
+        ],
+        "properties": {
+          "isolation": {"required": ["homeMatchesCodexHome"]},
+          "toolBudgetControl": {
+            "properties": {
+              "protocol": {"const": "review-craft.eval-tool-budget-control.v1"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"schema": {"const": "review-craft.eval-adapter.v8"}},
+        "required": ["schema"]
+      },
+      "then": {
+        "required": [
+          "usage",
+          "toolTrace",
+          "progress",
+          "isolationReceipt",
+          "timeoutControl",
+          "toolBudgetControl",
+          "capabilities"
+        ],
+        "properties": {
+          "isolation": {"required": ["homeMatchesCodexHome"]},
+          "toolBudgetControl": {
+            "properties": {
+              "protocol": {"const": "review-craft.eval-tool-budget-control.v2"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"schema": {"const": "review-craft.eval-adapter.v9"}},
+        "required": ["schema"]
+      },
+      "then": {
+        "required": [
+          "usage",
+          "toolTrace",
+          "progress",
+          "isolationReceipt",
+          "timeoutControl",
+          "toolBudgetControl",
+          "capabilities"
+        ],
+        "properties": {
+          "isolation": {"required": ["homeMatchesCodexHome"]},
+          "toolBudgetControl": {
+            "properties": {
+              "protocol": {"const": "review-craft.eval-tool-budget-control.v3"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"schema": {"const": "review-craft.eval-adapter.v10"}},
+        "required": ["schema"]
+      },
+      "then": {
+        "required": [
+          "usage",
+          "toolTrace",
+          "progress",
+          "isolationReceipt",
+          "timeoutControl",
+          "toolBudgetControl",
+          "capabilities"
+        ],
+        "properties": {
+          "provider": {
+            "required": [
+              "requestMaxRetries",
+              "streamMaxRetries",
+              "streamIdleTimeoutMs",
+              "websocketConnectTimeoutMs"
+            ]
+          },
+          "isolation": {"required": ["homeMatchesCodexHome"]},
+          "toolBudgetControl": {
+            "properties": {
+              "protocol": {"const": "review-craft.eval-tool-budget-control.v3"}
+            }
+          }
         }
       }
     }

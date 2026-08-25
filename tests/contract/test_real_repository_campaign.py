@@ -13,6 +13,7 @@ from unittest.mock import patch
 from tests.support import ROOT
 
 sys.path.insert(0, str(ROOT / "scripts"))
+adapter_runtime = importlib.import_module("codex_eval_adapter")
 campaign_runtime = importlib.import_module("real_repository_campaign")
 contracts = importlib.import_module("real_repository_contracts")
 runner = importlib.import_module("real_repository_benchmark")
@@ -75,7 +76,68 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
             "evidenceKind": "REAL_HOST",
             "provider": {"name": "fixture-provider"},
             "isolation": {"fixture": model},
+            "toolTrace": {
+                "protocol": "review-craft.eval-tool-trace.v1",
+                "transport": "ENV_PATH",
+                "environmentVariable": "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT",
+            },
+            "toolBudgetControl": {
+                "protocol": "review-craft.eval-tool-budget-control.v3",
+                "transport": "ENV_VALUE",
+                "repositoryLimitEnvironmentVariable": (
+                    runner.REPOSITORY_TOOL_CALL_LIMIT_ENV
+                ),
+                "skillBootstrapLimitEnvironmentVariable": (
+                    runner.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV
+                ),
+                "enforcementEvent": "PreToolUse",
+                "commandEnforcement": "PRE_EXECUTION_BLOCK",
+                "nonCommandEnforcement": "ITEM_STARTED_EARLY_TERMINATION",
+                "hookDecision": "block",
+                "hookTrustMode": "AUTOMATION_BYPASS",
+                "stateTransport": "ADAPTER_MANAGED_PATH",
+                "skillBootstrapPrerequisite": "REQUIRED_WHEN_LIMIT_POSITIVE",
+                "prerequisiteEnforcement": "RECOVERABLE_PRE_EXECUTION_BLOCK",
+                "maxRecoverablePrerequisiteBlocks": 1,
+                "prerequisiteFailureKind": "SKILL_BOOTSTRAP_REQUIRED",
+                "bootstrapCommandPolicy": "DEDICATED_BOUND_SKILL_READ_V1",
+                "hookConfigurationSha256": "1" * 64,
+                "hookImplementationSha256": "2" * 64,
+                "budgetExitCode": runner.TOOL_BUDGET_EXIT_CODE,
+                "finalizationGraceSeconds": 30,
+            },
         }
+
+    def test_skill_bootstrap_classifier_requires_literal_bounded_reader(self) -> None:
+        self.assertEqual(
+            adapter_runtime.classify_skill_bootstrap_command(
+                "sed -n '1,120p' $SKILL/SKILL.md"
+            ),
+            adapter_runtime.SKILL_BOOTSTRAP_ENTRYPOINT,
+        )
+        self.assertEqual(
+            adapter_runtime.classify_skill_bootstrap_command(
+                "rg -n '^## ' ${SKILL}/SKILL.md | head -n 110"
+            ),
+            adapter_runtime.SKILL_BOOTSTRAP_ENTRYPOINT,
+        )
+        self.assertEqual(
+            adapter_runtime.classify_skill_bootstrap_command(
+                "head -n 110 $SKILL/references/workflow.md"
+            ),
+            adapter_runtime.SKILL_BOOTSTRAP_REFERENCE,
+        )
+        for command in (
+            "rg -n '^## ' $SKILL/SKILL.md",
+            "./head -n 110 $SKILL/SKILL.md",
+            "sed -n '1,120p' $SKILL/SKILL.md | ./head -n 110",
+            "head -n 110 $SKILL/references/*.md",
+            "head -n 110 $SKILL/references/${REFERENCE}.md",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(
+                    adapter_runtime.classify_skill_bootstrap_command(command)
+                )
 
     def _plan(
         self,
@@ -579,6 +641,26 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
         )
         self.assertGreaterEqual(budgets["hardReportedTokenCeiling"], 800_000)
 
+    def test_core_budget_keeps_global_headroom_without_relaxing_cell_limits(
+        self,
+    ) -> None:
+        budgets = campaign_runtime.PURPOSE_POLICY_V1["purposes"]["CORE_ITERATION"][
+            "budgets"
+        ]
+
+        # A bounded eight-call live run used 1,773,156 tokens after six of eight shards.
+        self.assertEqual(budgets["hardReportedTokenCeiling"], 3_000_000)
+        self.assertEqual(
+            budgets["hardReportedInputTokenCeilingPerSample"], 300_000
+        )
+        self.assertEqual(budgets["hardReportedTokenCeilingPerSample"], 350_000)
+        self.assertEqual(
+            budgets["hardReportedInputTokenCeilingPerRepositoryShard"], 400_000
+        )
+        self.assertEqual(
+            budgets["hardReportedTokenCeilingPerRepositoryShard"], 450_000
+        )
+
     def test_purpose_policy_rejects_matrix_model_and_budget_tampering(self) -> None:
         mutations = (
             ("repositories", lambda plan: plan["selection"]["repositories"].append("x")),
@@ -605,6 +687,44 @@ class RealRepositoryCampaignHardeningTests(unittest.TestCase):
                         plan, self.suite, self.blind
                     )
                 )
+
+    def test_purpose_execution_requires_bound_current_adapter_controls(self) -> None:
+        plan = self._purpose_plan("CANARY")
+        for field in ("toolBudgetControlSha256", "toolTraceProtocol"):
+            with self.subTest(field=field):
+                missing = copy.deepcopy(plan)
+                del missing["modelConfigurations"][0][field]
+                campaign_runtime.seal(missing)
+                self.assertTrue(
+                    campaign_runtime.validate_campaign_plan(
+                        missing, self.suite, self.blind
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        "requires bound pre-execution tool budget control and tool trace"
+                        in error
+                        for error in campaign_runtime.validate_campaign_plan_execution_safety(
+                            missing
+                        )
+                    )
+                )
+
+        missing_control = copy.deepcopy(self.descriptions)
+        del missing_control["fixture-standard"]["toolBudgetControl"]
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "lacks required pre-execution tool budget control",
+        ):
+            runner._validate_purpose_adapter_controls(plan, missing_control)
+
+        missing_trace = copy.deepcopy(self.descriptions)
+        del missing_trace["fixture-standard"]["toolTrace"]
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "lacks required tool trace",
+        ):
+            runner._validate_purpose_adapter_controls(plan, missing_trace)
 
     def test_execution_authorization_is_bound_to_exact_plan_hash(self) -> None:
         canary = self._purpose_plan("CANARY")

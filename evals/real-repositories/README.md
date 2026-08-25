@@ -20,6 +20,11 @@ preservation decision itself was refuted. This convention is repeated in every t
 so disposition labels do not depend on which side of the comparison a reviewer informally calls
 the candidate.
 
+Across all probe types, `FALSIFIED` requires affirmative counter-evidence. Missing measurement,
+runtime, platform, or other evidence needed to decide a claim is an evidence gap and must remain
+`BLOCKED`, with `MEASURE`, `DEFER`, or `DOCUMENT` used as the next decision where appropriate.
+Absence of evidence is never treated as refutation.
+
 `evals/specs/real-repositories.json` is the oracle-bearing suite. Never pass that file to a
 review treatment. Generate or use `current/blind-suite.json`, which excludes upstream fix
 identities, expected dispositions, decisions, rationales, and other answer-bearing data.
@@ -214,12 +219,16 @@ uv run --locked python scripts/real_repository_benchmark.py validate-quality-rel
   --receipt <promotion-receipt.json>
 ```
 
-Purpose policy fixes a 300-second first-item deadline, a 900-second overall sample deadline,
+Purpose policy fixes a 300-second first-semantic-item deadline, a 900-second overall sample deadline,
 120/240-second inactivity warning/diagnostic thresholds, and fail-closed cumulative timeout,
-unknown-usage, artifact-invalid, recovered-stall, token, and wall-time limits. A first-item timeout
-is recorded as `BEFORE_FIRST_ITEM`; a later overall timeout is `AFTER_FIRST_ITEM`. The runner
-preserves the original timed-out sample and its lifecycle evidence. Diagnostic reruns are new
-artifacts and never replace a predecessor. Prompted output invariants are not hidden
+unknown-usage, artifact-invalid, recovered-stall, token, and wall-time limits. Control-plane error
+or warning items do not satisfy the first-item deadline. REAL_HOST adapter descriptions bind
+Codex provider retry and transport timeout controls. Progress receipts also record whether the
+WebSocket transport was connecting, connected, failed, or fell back to HTTPS, so a startup stall
+is not reduced to a live process with no request-stage evidence. A first-item timeout is recorded
+as `BEFORE_FIRST_ITEM`; a later overall timeout is `AFTER_FIRST_ITEM`. The runner preserves the
+original timed-out sample and its lifecycle evidence. Diagnostic reruns are new artifacts and
+never replace a predecessor. Prompted output invariants are not hidden
 post-processing rules:
 `BLOCKED` probes must use null severity, and every reported location must stay inside the
 declared benchmark scope.
@@ -265,9 +274,69 @@ fails before provider work or run-artifact creation.
 Campaign-plan v1 remains backward-readable for historical validation only. It cannot be started,
 resumed, or implicitly upgraded. Purpose v2 rejects repository, treatment, model-count,
 repetition, timeout, or budget deviations rather than treating them as flexible CLI overrides.
-Every treatment also receives the
-same bounded-output instruction: inspect size first, prefer targeted matches and line windows,
-and keep a single command below roughly 200 lines or 32 KiB.
+Every treatment receives the same repository-evidence budget: plan evidence before the first read,
+use at most 8 repository-analysis tool calls, keep their combined returned output below roughly
+80 KiB, and keep each command below roughly 120 lines or 16 KiB. Evidence Loop additionally gets
+at most 2 dedicated Skill-bootstrap calls and 32 KiB of bootstrap output so loading the mounted
+entrypoint does not silently consume repository evidence capacity; those calls and tokens still
+count in the campaign cost comparison. Bootstrap must inspect the Skill heading index and only the
+needed sections instead of dumping the whole entrypoint; its optional second call is available for
+one needed entrypoint window or one genuinely required reference. Its prompt applies the bounded fast path independently to the
+fixed probes and does not activate canonical artifacts or references merely because several probe
+rows exist. The prompt allocates repository calls before exploration: one scope map, up to
+five probe evidence bundles, one competing-candidate or uncertainty pass, and one reserved
+verification. Slots are ceilings rather than required calls, and overlapping implementation/test
+evidence should be collected once and reused. The operational target is at most 110 lines per
+command, leaving margin below the 120-line contract. Combined shell commands must cap the entire
+group; caps on individual subcommands do not bound their combined output.
+
+Adapter v9 binds `review-craft.eval-tool-budget-control.v3` into the model configuration. The
+runner passes the sealed repository and bootstrap call limits to the adapter. For shell commands,
+the adapter installs one content-bound `PreToolUse` hook in the isolated Codex home, serializes
+counter updates through a cross-process lock, and returns `decision: block` before a command whose
+category has exhausted its limit can execute. The Codex invocation explicitly enables hooks and
+uses the automation-only hook-trust bypass for this adapter-owned configuration; target repositories
+cannot supply or replace the hook. Its implementation hash binds both the adapter hook and the
+shared bootstrap classifier used by pre-run and post-run enforcement. Skill treatments receive an adapter-owned `SKILL` environment
+binding and must read `$SKILL/SKILL.md` (the equivalent `${SKILL}/SKILL.md` shell form is also
+metered as bootstrap); a relative `SKILL.md` remains a repository command and is not trusted as the
+mounted entrypoint. Bootstrap classification is fail-closed: only one literal `sed`, `rg`, `head`,
+or `tail` invocation whose sole file target is the entrypoint or a Markdown file below
+`$SKILL/references` is eligible. `rg` requires one final `| head -n N` output cap; that cap is
+optional for the intrinsically bounded readers. Merely mentioning
+`$SKILL`, reading a reference before the entrypoint, using another file operand, or composing a
+bootstrap read with another shell command remains a repository command and cannot satisfy the
+prerequisite. The model configuration binds this policy as
+`DEDICATED_BOUND_SKILL_READ_V1`. When a positive Skill-bootstrap allowance is present, the
+first repository command attempted before a dedicated bound `SKILL.md` read is blocked before
+execution without terminating the session. The model gets exactly one recovery opportunity to
+perform the bootstrap; a second repository attempt before bootstrap fails closed as
+`SKILL_BOOTSTRAP_REQUIRED`. Progress records both the recoverable block and the eventual prerequisite
+state. A Codex pre-execution block is a hook event, not a completed host tool call, so it remains in
+progress evidence but is absent from both the completed tool trace and `usage.toolCalls`. Post-run
+validation requires the completed trace to begin with the recovered Skill bootstrap rather than
+inventing or subtracting an unexecuted repository command. Budget exhaustion remains terminal: the
+adapter then terminates the process tree and returns the
+dedicated tool-budget exit code, which becomes `ARTIFACT_INVALID`, while preserving partial
+progress and completed tool-trace evidence. Codex currently dispatches this pre-execution contract
+for shell-like tools only. Any other observable tool type remains fail-closed through JSONL
+`item.started` early termination and is reported separately as `UNMETERED_TOOL`, not mislabeled as
+pre-execution enforcement. Post-run validation still rejects completed samples whose usage and tool
+trace disagree, whose command output is unmetered, or whose observable call, line, or byte limit is
+exceeded. A treatment that reaches the limit must finalize with explicit `BLOCKED` or `NOT_RAISED`
+outcomes rather than continue expanding context.
+
+Purpose plan v2 requires every selected model configuration to bind both the current tool-budget
+control and `review-craft.eval-tool-trace.v1`. Planning and execution revalidate the selected live
+adapter descriptions before budget-ledger reservation or sample work. Older adapter descriptions
+and campaign-plan v1 remain readable for historical validation, but cannot silently downgrade a
+current purpose run to post-execution-only enforcement.
+
+CORE keeps its 300,000 input / 350,000 total per-sample ceilings and 400,000 input / 450,000 total
+per-shard ceilings. Its global total-token ceiling is 3,000,000 so a full eight-shard run can
+complete under those bounded local safety limits. The per-sample ceilings and 450,000 shard-total
+ceiling remain unchanged. Other purpose budgets remain independently fixed and require their own
+live calibration evidence before adjustment.
 
 Each sample commits an atomic `checkpoint.json` marker containing the exact content-bound run
 state before replacing the `campaign.json` and `run-state.json` mirrors. Any uncommitted sample

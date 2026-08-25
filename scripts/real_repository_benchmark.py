@@ -14,11 +14,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from codex_eval_adapter import (
+    SKILL_BOOTSTRAP_ENTRYPOINT,
+    classify_skill_bootstrap_command,
+)
 from eval_output_safety import (
     contains_sensitive_output as _contains_sensitive_output,
 )
 from eval_output_safety import redact_output as _redact_output
 from real_repository_campaign import (
+    EXPLORATION_BUDGETS,
+    EXPLORATION_MAX_COMMAND_OUTPUT_BYTES,
+    EXPLORATION_MAX_COMMAND_OUTPUT_LINES,
     budget_ledger_artifact_invalid_samples,
     budget_ledger_recovered_inactivity_samples_by_model_profile,
     budget_ledger_timed_out_samples_by_model_profile,
@@ -109,9 +116,17 @@ INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 FIRST_ITEM_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_FIRST_ITEM_TIMEOUT_SECONDS"
 SAMPLE_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
+REPOSITORY_TOOL_CALL_LIMIT_ENV = (
+    "REVIEW_CRAFT_EVAL_REPOSITORY_TOOL_CALL_LIMIT"
+)
+SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV = (
+    "REVIEW_CRAFT_EVAL_SKILL_BOOTSTRAP_TOOL_CALL_LIMIT"
+)
 LEGACY_TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v1"
 TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v2"
+TOOL_BUDGET_CONTROL_PROTOCOL = "review-craft.eval-tool-budget-control.v3"
 TIMEOUT_EXIT_CODE = 124
+TOOL_BUDGET_EXIT_CODE = 125
 EVALUATOR_WORKSPACE_TOP_LEVEL = ("repositories",)
 sys.path.insert(0, str(RUNTIME_LIB))
 
@@ -176,6 +191,7 @@ def _adapter_outcome(
     repository: dict[str, Any],
     timeout_seconds: int,
     managed_timeout_exit_code: int | None = None,
+    managed_tool_budget_exit_code: int | None = None,
 ) -> tuple[str, str | None, str | None]:
     if completed.timed_out or (
         managed_timeout_exit_code is not None
@@ -185,6 +201,15 @@ def _adapter_outcome(
             "TIMED_OUT",
             f"adapter timed out after {timeout_seconds} seconds",
             "TIMEOUT",
+        )
+    if (
+        managed_tool_budget_exit_code is not None
+        and completed.returncode == managed_tool_budget_exit_code
+    ):
+        return (
+            "FAILED",
+            "adapter enforced the tool-call budget and terminated the sample",
+            "ARTIFACT_INVALID",
         )
     if completed.returncode != 0:
         return (
@@ -206,6 +231,23 @@ def _adapter_outcome(
             "ARTIFACT_INVALID",
         )
     return "COMPLETED", None, None
+
+
+def _timeout_failure_reason(
+    lifecycle: dict[str, Any],
+    *,
+    sample_timeout_seconds: int,
+    first_item_timeout_seconds: int | None,
+) -> str:
+    if lifecycle.get("timeoutPhase") == "BEFORE_FIRST_ITEM":
+        limit = first_item_timeout_seconds or sample_timeout_seconds
+        return f"adapter received no semantic item within {limit} seconds"
+    if lifecycle.get("timeoutPhase") == "AFTER_FIRST_ITEM":
+        return (
+            "adapter reached the "
+            f"{sample_timeout_seconds}-second sample timeout after the first semantic item"
+        )
+    return f"adapter timed out after {sample_timeout_seconds} seconds"
 
 
 def _validate_adapter_command(command: list[str]) -> None:
@@ -256,6 +298,7 @@ def _model_configuration(adapter_id: str, description: dict[str, Any]) -> dict[s
         "hostVersion": description["version"],
         "evidenceKind": description["evidenceKind"],
         "providerName": description["provider"]["name"],
+        "providerConfigurationSha256": sha256_json(description["provider"]),
         "isolationSha256": sha256_json(description["isolation"]),
     }
     isolation_receipt = description.get("isolationReceipt")
@@ -264,6 +307,14 @@ def _model_configuration(adapter_id: str, description: dict[str, Any]) -> dict[s
     timeout_control = description.get("timeoutControl")
     if isinstance(timeout_control, dict):
         configuration["timeoutControlSha256"] = sha256_json(timeout_control)
+    tool_budget_control = description.get("toolBudgetControl")
+    if isinstance(tool_budget_control, dict):
+        configuration["toolBudgetControlSha256"] = sha256_json(
+            tool_budget_control
+        )
+    tool_trace = description.get("toolTrace")
+    if isinstance(tool_trace, dict):
+        configuration["toolTraceProtocol"] = tool_trace.get("protocol")
     return configuration
 
 
@@ -317,6 +368,85 @@ def _adapter_evidence_args(treatment: str, evidence_root: Path) -> list[str]:
     )
 
 
+def _adapter_tool_budget_control(
+    description: dict[str, Any], treatment: str, *, required: bool = False
+) -> tuple[dict[str, str], int | None]:
+    if treatment not in EXPLORATION_BUDGETS:
+        return {}, None
+    control = description.get("toolBudgetControl")
+    if control is None:
+        if required:
+            raise RealRepositoryError(
+                "purpose campaign adapter lacks required pre-execution tool budget control"
+            )
+        return {}, None
+    if (
+        not isinstance(control, dict)
+        or control.get("protocol") != TOOL_BUDGET_CONTROL_PROTOCOL
+    ):
+        raise RealRepositoryError("adapter tool budget control is invalid")
+    repository_env = control.get("repositoryLimitEnvironmentVariable")
+    bootstrap_env = control.get("skillBootstrapLimitEnvironmentVariable")
+    exit_code = control.get("budgetExitCode")
+    if (
+        repository_env != REPOSITORY_TOOL_CALL_LIMIT_ENV
+        or bootstrap_env != SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV
+        or exit_code != TOOL_BUDGET_EXIT_CODE
+        or control.get("enforcementEvent") != "PreToolUse"
+        or control.get("commandEnforcement") != "PRE_EXECUTION_BLOCK"
+        or control.get("nonCommandEnforcement")
+        != "ITEM_STARTED_EARLY_TERMINATION"
+        or control.get("hookDecision") != "block"
+        or control.get("hookTrustMode") != "AUTOMATION_BYPASS"
+        or control.get("stateTransport") != "ADAPTER_MANAGED_PATH"
+        or control.get("skillBootstrapPrerequisite")
+        != "REQUIRED_WHEN_LIMIT_POSITIVE"
+        or control.get("prerequisiteEnforcement")
+        != "RECOVERABLE_PRE_EXECUTION_BLOCK"
+        or control.get("maxRecoverablePrerequisiteBlocks") != 1
+        or control.get("prerequisiteFailureKind")
+        != "SKILL_BOOTSTRAP_REQUIRED"
+        or control.get("bootstrapCommandPolicy")
+        != "DEDICATED_BOUND_SKILL_READ_V1"
+        or not isinstance(control.get("hookConfigurationSha256"), str)
+        or not isinstance(control.get("hookImplementationSha256"), str)
+    ):
+        raise RealRepositoryError("adapter tool budget control contract differs")
+    budget = EXPLORATION_BUDGETS[treatment]
+    return (
+        {
+            repository_env: str(budget["maxRepositoryToolCalls"]),
+            bootstrap_env: str(budget["maxSkillBootstrapToolCalls"]),
+        },
+        exit_code,
+    )
+
+
+def _validate_purpose_adapter_controls(
+    plan: dict[str, Any], descriptions: dict[str, dict[str, Any]]
+) -> None:
+    for adapter_id in plan["selection"]["modelConfigurations"]:
+        description = descriptions.get(adapter_id)
+        if description is None:
+            raise RealRepositoryError(
+                f"purpose campaign adapter description is missing: {adapter_id}"
+            )
+        tool_trace = description.get("toolTrace")
+        if (
+            not isinstance(tool_trace, dict)
+            or tool_trace.get("protocol") != "review-craft.eval-tool-trace.v1"
+        ):
+            raise RealRepositoryError(
+                f"purpose campaign adapter lacks required tool trace: {adapter_id}"
+            )
+        for treatment in plan["selection"]["treatments"]:
+            _adapter_tool_budget_control(
+                description,
+                treatment,
+                required=True,
+            )
+
+
 def _repository_state(repository_root: Path) -> dict[str, str]:
     return {
         "head": run_git("rev-parse", "HEAD", cwd=repository_root),
@@ -346,6 +476,117 @@ def _usage_projection(
         "totalTokens": payload.get("totalTokens"),
         "toolCalls": tool_total,
     }
+
+
+def _exploration_limit_errors(
+    *,
+    treatment: str,
+    usage: dict[str, int | None],
+    tool_trace: dict[str, Any] | None,
+    skill_bootstrap_prerequisite_blocks: int = 0,
+) -> list[str]:
+    if not isinstance(tool_trace, dict):
+        return ["tool trace is unavailable"]
+    items = tool_trace.get("items")
+    if not isinstance(items, list):
+        return ["tool trace items are unavailable"]
+
+    errors: list[str] = []
+    reported_tool_calls = usage.get("toolCalls")
+    if reported_tool_calls != len(items):
+        errors.append(
+            "reported tool call count does not match the completed tool trace"
+        )
+
+    setup_items: list[dict[str, Any]] = []
+    entrypoint_items: list[dict[str, Any]] = []
+    repository_items: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("type") != "commandExecution":
+            errors.append(
+                f"tool trace item {item.get('sequence')} has unmetered type {item.get('type')}"
+            )
+            continue
+        command = item.get("command")
+        output_bytes = item.get("outputBytes")
+        output_lines = item.get("outputLines")
+        if not isinstance(command, str):
+            errors.append(f"tool trace item {item.get('sequence')} has no command")
+            continue
+        if not isinstance(output_bytes, int) or not isinstance(output_lines, int):
+            errors.append(
+                f"tool trace item {item.get('sequence')} lacks output byte/line metrics"
+            )
+            continue
+        if output_bytes > EXPLORATION_MAX_COMMAND_OUTPUT_BYTES:
+            errors.append(
+                f"tool trace item {item.get('sequence')} exceeds the per-command byte limit"
+            )
+        if output_lines > EXPLORATION_MAX_COMMAND_OUTPUT_LINES:
+            errors.append(
+                f"tool trace item {item.get('sequence')} exceeds the per-command line limit"
+            )
+        bootstrap_kind = classify_skill_bootstrap_command(command)
+        if bootstrap_kind is None:
+            repository_items.append(item)
+        else:
+            setup_items.append(item)
+            if bootstrap_kind == SKILL_BOOTSTRAP_ENTRYPOINT:
+                entrypoint_items.append(item)
+
+    if (
+        isinstance(skill_bootstrap_prerequisite_blocks, bool)
+        or not isinstance(skill_bootstrap_prerequisite_blocks, int)
+        or not 0 <= skill_bootstrap_prerequisite_blocks <= 1
+    ):
+        errors.append("Skill bootstrap prerequisite block count is invalid")
+        skill_bootstrap_prerequisite_blocks = 0
+    if skill_bootstrap_prerequisite_blocks:
+        first_entrypoint_sequence = min(
+            (item["sequence"] for item in entrypoint_items),
+            default=None,
+        )
+        if first_entrypoint_sequence is None:
+            errors.append(
+                "Skill bootstrap prerequisite recovery did not produce a completed bootstrap trace"
+            )
+        elif any(
+            item["sequence"] < first_entrypoint_sequence for item in repository_items
+        ):
+            errors.append(
+                "pre-execution Skill bootstrap block leaked into the completed tool trace"
+            )
+
+    budget = EXPLORATION_BUDGETS[treatment]
+    setup_limit = budget["maxSkillBootstrapToolCalls"]
+    if treatment == "REVIEW_CRAFT_EVIDENCE_LOOP":
+        if not entrypoint_items:
+            errors.append(
+                "Review Craft treatment did not record a dedicated SKILL.md entrypoint read"
+            )
+        else:
+            entrypoint_sequence = min(
+                item["sequence"] for item in entrypoint_items
+            )
+            if any(
+                item["sequence"] < entrypoint_sequence
+                for item in (*repository_items, *setup_items)
+            ):
+                errors.append(
+                    "Review Craft treatment did not bootstrap SKILL.md before other reads"
+                )
+    if len(setup_items) > setup_limit:
+        errors.append("Skill bootstrap tool call budget exceeded")
+    if len(repository_items) > budget["maxRepositoryToolCalls"]:
+        errors.append("repository-analysis tool call budget exceeded")
+
+    setup_bytes = sum(item["outputBytes"] for item in setup_items)
+    repository_bytes = sum(item["outputBytes"] for item in repository_items)
+    if setup_bytes > budget["maxSkillBootstrapOutputBytes"]:
+        errors.append("Skill bootstrap output budget exceeded")
+    if repository_bytes > budget["maxRepositoryOutputBytes"]:
+        errors.append("repository-analysis output budget exceeded")
+    return errors
 
 
 def _isolation_receipt_matches(payload: Any) -> bool:
@@ -424,6 +665,11 @@ def _unavailable_progress(started_at: str, reason: str) -> dict[str, Any]:
         "maximumPreItemInactivitySeconds": None,
         "diagnosticCapturedAt": None,
         "processAliveWhenDiagnosticCaptured": None,
+        "providerTransportState": "NOT_OBSERVED",
+        "providerTransportStartedAt": None,
+        "providerTransportConnectedAt": None,
+        "providerTransportFailedAt": None,
+        "providerTransportFallbackAt": None,
         "terminationReason": None,
         "timeoutPhase": None,
         "processTreeCleanup": "NOT_VERIFIED",
@@ -868,6 +1114,7 @@ def _run_sample(
     first_item_timeout_seconds: int | None = None,
     inactivity_warning_seconds: int | None = None,
     inactivity_diagnostic_seconds: int | None = None,
+    require_tool_budget_control: bool = False,
 ) -> dict[str, Any]:
     sample_id = (
         f"{repository['id']}--{treatment.lower().replace('_', '-')}--{adapter['id']}--r{repetition}"
@@ -919,6 +1166,7 @@ def _run_sample(
     stderr = b""
     completed: ProcessResult | None = None
     managed_timeout_exit_code: int | None = None
+    managed_tool_budget_exit_code: int | None = None
     timeout_observed = False
     try:
         inactivity_env = {}
@@ -944,6 +1192,13 @@ def _run_sample(
                 first_item_timeout_seconds,
             )
         )
+        tool_budget_env, managed_tool_budget_exit_code = (
+            _adapter_tool_budget_control(
+                description,
+                treatment,
+                required=require_tool_budget_control,
+            )
+        )
         completed = run_process(
             command,
             cwd=ROOT,
@@ -956,6 +1211,7 @@ def _run_sample(
                 **isolation_env,
                 **inactivity_env,
                 **timeout_env,
+                **tool_budget_env,
             },
         )
         stdout = completed.stdout
@@ -966,6 +1222,7 @@ def _run_sample(
             repository=repository,
             timeout_seconds=timeout_seconds,
             managed_timeout_exit_code=managed_timeout_exit_code,
+            managed_tool_budget_exit_code=managed_tool_budget_exit_code,
         )
         timeout_observed = completed.timed_out or (
             managed_timeout_exit_code is not None
@@ -1009,12 +1266,38 @@ def _run_sample(
         completed=completed,
         timed_out=timeout_observed,
     )
+    if status == "TIMED_OUT":
+        failure_reason = _timeout_failure_reason(
+            lifecycle,
+            sample_timeout_seconds=timeout_seconds,
+            first_item_timeout_seconds=first_item_timeout_seconds,
+        )
     status, failure_reason, failure_class = _process_cleanup_outcome(
         lifecycle,
         status=status,
         failure_reason=failure_reason,
         failure_class=failure_class,
     )
+    tool_trace_contract = description.get("toolTrace")
+    enforce_exploration_limits = (
+        isinstance(tool_trace_contract, dict)
+        and tool_trace_contract.get("protocol") == "review-craft.eval-tool-trace.v1"
+    )
+    if status == "COMPLETED" and enforce_exploration_limits:
+        exploration_errors = _exploration_limit_errors(
+            treatment=treatment,
+            usage=usage,
+            tool_trace=tool_trace_payload,
+            skill_bootstrap_prerequisite_blocks=lifecycle.get(
+                "skillBootstrapPrerequisiteBlocks", 0
+            ),
+        )
+        if exploration_errors:
+            status = "FAILED"
+            failure_reason = "exploration limits failed: " + "; ".join(
+                exploration_errors
+            )
+            failure_class = "ARTIFACT_INVALID"
     if isolation_required:
         isolation_valid = False
         isolation_candidate = None
@@ -2537,7 +2820,7 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         blind,
         receipt,
         adapter_config,
-        _descriptions,
+        descriptions,
         model_configurations,
     ) = _load_campaign_plan_context(args)
     plan = build_purpose_campaign_plan(
@@ -2549,6 +2832,7 @@ def command_plan_campaign(args: argparse.Namespace) -> int:
         campaign_id=args.campaign_id,
         campaign_purpose=args.purpose,
     )
+    _validate_purpose_adapter_controls(plan, descriptions)
     output = Path(args.output).expanduser().resolve()
     if output.exists():
         raise RealRepositoryError(f"campaign plan output already exists: {output}")
@@ -3034,6 +3318,7 @@ def _command_run_campaign_plan_locked(
         raise RealRepositoryError(
             "campaign plan input binding failed: " + "; ".join(binding_errors)
         )
+    _validate_purpose_adapter_controls(plan, descriptions)
 
     shard_id = args.shard or "ALL"
     scheduled = selected_plan_samples(plan, shard_id)
@@ -3144,6 +3429,7 @@ def _command_run_campaign_plan_locked(
             inactivity_diagnostic_seconds=budgets.get(
                 "inactivityDiagnosticSeconds"
             ),
+            require_tool_budget_control=True,
         )
         sample_errors = validate_sample_against_plan(sample, plan_sample, models)
         if sample_errors:

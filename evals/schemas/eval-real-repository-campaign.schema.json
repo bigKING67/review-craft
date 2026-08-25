@@ -27,9 +27,15 @@
         "hostVersion": {"type": "string", "minLength": 1},
         "evidenceKind": {"const": "REAL_HOST"},
         "providerName": {"type": "string", "minLength": 1},
+        "providerConfigurationSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "isolationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "isolationReceiptProtocol": {"const": "review-craft.eval-isolation-receipt.v1"},
-        "timeoutControlSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "timeoutControlSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "toolBudgetControlSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "toolTraceProtocol": {"const": "review-craft.eval-tool-trace.v1"}
       }
     }
   },
@@ -151,7 +157,18 @@
           "campaignPlanContentSha256",
           "campaignPurpose",
           "plannedSampleIds"
-        ]
+        ],
+        "properties": {
+          "samples": {
+            "items": {
+              "properties": {
+                "modelConfiguration": {
+                  "required": ["toolBudgetControlSha256", "toolTraceProtocol"]
+                }
+              }
+            }
+          }
+        }
       },
       "else": {
         "not": {

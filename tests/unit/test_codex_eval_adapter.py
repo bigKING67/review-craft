@@ -23,7 +23,7 @@ import codex_eval_adapter as adapter
 
 class CodexEvalAdapterTests(unittest.TestCase):
     def test_adapter_version_identifies_the_three_arm_protocol(self) -> None:
-        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.4")
+        self.assertEqual(adapter.ADAPTER_VERSION, "0.6.13")
         self.assertEqual(adapter.USAGE_COLLECTOR["version"], adapter.ADAPTER_VERSION)
         self.assertEqual(
             adapter.ABLATION_TREATMENTS,
@@ -57,8 +57,22 @@ class CodexEvalAdapterTests(unittest.TestCase):
             )
         self.assertEqual(status, 0)
         description = json.loads(print_mock.call_args.args[0])
-        self.assertEqual(description["adapterVersion"], "0.6.4")
-        self.assertEqual(description["schema"], "review-craft.eval-adapter.v6")
+        self.assertEqual(description["adapterVersion"], "0.6.13")
+        self.assertEqual(description["schema"], "review-craft.eval-adapter.v10")
+        self.assertEqual(
+            description["provider"],
+            {
+                "name": "openai",
+                "baseUrl": None,
+                "wireApi": "responses",
+                "requiresOpenAIAuth": True,
+                "supportsWebsockets": True,
+                "requestMaxRetries": 0,
+                "streamMaxRetries": 0,
+                "streamIdleTimeoutMs": 120_000,
+                "websocketConnectTimeoutMs": 10_000,
+            },
+        )
         self.assertEqual(
             description["progress"],
             {
@@ -83,6 +97,38 @@ class CodexEvalAdapterTests(unittest.TestCase):
                 "environmentVariable": adapter.SAMPLE_TIMEOUT_ENV,
                 "firstItemEnvironmentVariable": adapter.FIRST_ITEM_TIMEOUT_ENV,
                 "timeoutExitCode": 124,
+                "finalizationGraceSeconds": 30,
+            },
+        )
+        self.assertEqual(
+            description["toolBudgetControl"],
+            {
+                "protocol": "review-craft.eval-tool-budget-control.v3",
+                "transport": "ENV_VALUE",
+                "repositoryLimitEnvironmentVariable": (
+                    adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV
+                ),
+                "skillBootstrapLimitEnvironmentVariable": (
+                    adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV
+                ),
+                "enforcementEvent": "PreToolUse",
+                "commandEnforcement": "PRE_EXECUTION_BLOCK",
+                "nonCommandEnforcement": "ITEM_STARTED_EARLY_TERMINATION",
+                "hookDecision": "block",
+                "hookTrustMode": "AUTOMATION_BYPASS",
+                "stateTransport": "ADAPTER_MANAGED_PATH",
+                "skillBootstrapPrerequisite": "REQUIRED_WHEN_LIMIT_POSITIVE",
+                "prerequisiteEnforcement": "RECOVERABLE_PRE_EXECUTION_BLOCK",
+                "maxRecoverablePrerequisiteBlocks": 1,
+                "prerequisiteFailureKind": "SKILL_BOOTSTRAP_REQUIRED",
+                "bootstrapCommandPolicy": "DEDICATED_BOUND_SKILL_READ_V1",
+                "hookConfigurationSha256": (
+                    adapter.tool_budget_hook_configuration_sha256()
+                ),
+                "hookImplementationSha256": (
+                    adapter.tool_budget_hook_implementation_sha256()
+                ),
+                "budgetExitCode": 125,
                 "finalizationGraceSeconds": 30,
             },
         )
@@ -125,8 +171,23 @@ class CodexEvalAdapterTests(unittest.TestCase):
             provider=adapter.provider_metadata(args),
         )
         self.assertIn("--json", command)
+        self.assertNotIn("--dangerously-bypass-hook-trust", command)
         sandbox_index = command.index("--sandbox")
         self.assertEqual(command[sandbox_index + 1], "read-only")
+
+        guarded_command = adapter.build_codex_command(
+            executable="codex",
+            args=args,
+            fixture_root=Path("/tmp/fixture"),
+            skill_root=Path("/tmp/skill"),
+            evidence_root=None,
+            output_schema=Path("/tmp/output.schema.json"),
+            output_file=Path("/tmp/output.json"),
+            provider=adapter.provider_metadata(args),
+            enable_tool_budget_hook=True,
+        )
+        self.assertIn("--dangerously-bypass-hook-trust", guarded_command)
+        self.assertIn("hooks", guarded_command)
 
         args.operation = "repair"
         repair_command = adapter.build_codex_command(
@@ -658,6 +719,696 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(final["inactivityState"], "RECOVERED_DIAGNOSTIC")
             self.assertGreaterEqual(final["maximumPreItemInactivitySeconds"], 2)
 
+    def test_codex_process_records_provider_websocket_transport_progress(self) -> None:
+        child = "\n".join(
+            (
+                "import json, sys",
+                "sys.stdin.read()",
+                "print('connecting to websocket: ws://127.0.0.1:8317/v1/responses', "
+                "file=sys.stderr, flush=True)",
+                "print('successfully connected to websocket: '",
+                "      'ws://127.0.0.1:8317/v1/responses, headers: '",
+                "      '{\"sec-websocket-accept\": \"handshake-proof\"}', "
+                "      file=sys.stderr, flush=True)",
+                "print(json.dumps({'type': 'thread.started'}), flush=True)",
+                "print(json.dumps({'type': 'turn.started'}), flush=True)",
+                "print(json.dumps({'type': 'item.completed', 'item': "
+                "{'id': 'reason-1', 'type': 'reasoning', 'text': 'ready'}}), "
+                "flush=True)",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            progress_path = Path(directory) / "progress.json"
+            stderr = io.StringIO()
+            with (
+                patch.dict(
+                    os.environ,
+                    {adapter.PROGRESS_OUTPUT_ENV: str(progress_path)},
+                ),
+                patch.object(adapter.sys, "stderr", stderr),
+            ):
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                    replacements={},
+                )
+            self.assertEqual(status, 0)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                progress["providerTransportState"], "WEBSOCKET_CONNECTED"
+            )
+            self.assertIsNotNone(progress["providerTransportStartedAt"])
+            self.assertIsNotNone(progress["providerTransportConnectedAt"])
+            self.assertIsNone(progress["providerTransportFailedAt"])
+            self.assertIsNone(progress["providerTransportFallbackAt"])
+            self.assertIn("[REDACTED_HANDSHAKE_PROOF]", stderr.getvalue())
+            self.assertNotIn("handshake-proof", stderr.getvalue())
+
+    def test_codex_process_records_websocket_failure_and_https_fallback(self) -> None:
+        child = "\n".join(
+            (
+                "import json, sys",
+                "sys.stdin.read()",
+                "print('connecting to websocket: ws://127.0.0.1:8317/v1/responses', "
+                "file=sys.stderr, flush=True)",
+                "print('failed to connect to websocket: connection reset', "
+                "file=sys.stderr, flush=True)",
+                "print('Falling back from WebSockets to HTTPS transport.', "
+                "file=sys.stderr, flush=True)",
+                "print(json.dumps({'type': 'thread.started'}), flush=True)",
+                "print(json.dumps({'type': 'turn.started'}), flush=True)",
+                "print(json.dumps({'type': 'item.completed', 'item': "
+                "{'id': 'reason-1', 'type': 'reasoning', 'text': 'ready'}}), "
+                "flush=True)",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            progress_path = Path(directory) / "progress.json"
+            with patch.dict(
+                os.environ,
+                {adapter.PROGRESS_OUTPUT_ENV: str(progress_path)},
+            ):
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                    replacements={},
+                )
+            self.assertEqual(status, 0)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["providerTransportState"], "HTTPS_FALLBACK")
+            self.assertIsNotNone(progress["providerTransportStartedAt"])
+            self.assertIsNone(progress["providerTransportConnectedAt"])
+            self.assertIsNotNone(progress["providerTransportFailedAt"])
+            self.assertIsNotNone(progress["providerTransportFallbackAt"])
+
+    def test_pre_execution_tool_budget_hook_approves_then_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill_root = root / "skill"
+            skill_root.mkdir()
+            state_path = root / "state.json"
+            limits = {
+                "repositoryToolCallLimit": 1,
+                "skillBootstrapToolCallLimit": 1,
+            }
+            adapter.initialize_tool_budget_state(state_path, limits)
+
+            environment = {
+                "HOME": str(root),
+                "CODEX_HOME": str(root),
+                adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "1",
+                adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "1",
+                adapter.TOOL_BUDGET_STATE_ENV: str(state_path),
+                adapter.TOOL_BUDGET_SKILL_ROOT_ENV: str(skill_root),
+            }
+
+            def invoke(command: str) -> dict:
+                stdout = io.StringIO()
+                payload = {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "exec_command",
+                    "tool_input": {"command": command},
+                }
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(adapter.sys, "stdin", io.StringIO(json.dumps(payload))),
+                    patch.object(adapter.sys, "stdout", stdout),
+                ):
+                    self.assertEqual(adapter.run_tool_budget_hook(), 0)
+                return json.loads(stdout.getvalue())
+
+            prerequisite = invoke("rg first .")
+            self.assertEqual(prerequisite["decision"], "block")
+            self.assertIn("$SKILL/SKILL.md", prerequisite["reason"])
+            self.assertEqual(
+                invoke("sed -n '1,40p' $SKILL/SKILL.md"),
+                {"decision": "approve"},
+            )
+            self.assertEqual(invoke("rg first ."), {"decision": "approve"})
+            blocked_command = "rg second ."
+            blocked = invoke(blocked_command)
+            self.assertEqual(blocked["decision"], "block")
+            self.assertIn("before execution", blocked["reason"])
+
+            state = adapter.read_tool_budget_state(state_path, limits)
+            self.assertEqual(state["status"], "BLOCKED")
+            self.assertEqual(state["repositoryToolCallsApproved"], 1)
+            self.assertEqual(state["skillBootstrapToolCallsApproved"], 1)
+            self.assertEqual(state["preExecutionCommandsBlocked"], 2)
+            self.assertEqual(state["skillBootstrapPrerequisiteState"], "SATISFIED")
+            self.assertEqual(state["skillBootstrapPrerequisiteBlocks"], 1)
+            self.assertEqual(state["blockedKind"], "REPOSITORY_CALLS")
+            self.assertEqual(
+                state["blockedCommandSha256"],
+                hashlib.sha256(blocked_command.encode("utf-8")).hexdigest(),
+            )
+
+    def test_skill_bootstrap_classifier_accepts_strict_host_shell_wrapper(
+        self,
+    ) -> None:
+        command = r'''/bin/zsh -lc "sed -n '1,110p' \""'$SKILL/SKILL.md" | head -n 110' '''.strip()
+        self.assertEqual(
+            adapter.classify_skill_bootstrap_command(command),
+            adapter.SKILL_BOOTSTRAP_ENTRYPOINT,
+        )
+        self.assertIsNone(
+            adapter.classify_skill_bootstrap_command(
+                "/bin/zsh -lc 'sed -n \"1,110p\" \"$SKILL/SKILL.md\"; "
+                "rg -n probe . | head -n 10'"
+            )
+        )
+        self.assertIsNone(
+            adapter.classify_skill_bootstrap_command(
+                "/bin/zsh -c 'sed -n \"1,110p\" \"$SKILL/SKILL.md\" "
+                "| head -n 110'"
+            )
+        )
+
+    def test_skill_bootstrap_prerequisite_allows_one_recovery_then_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill_root = root / "skill"
+            skill_root.mkdir()
+            state_path = root / "state.json"
+            limits = {
+                "repositoryToolCallLimit": 8,
+                "skillBootstrapToolCallLimit": 2,
+            }
+            adapter.initialize_tool_budget_state(state_path, limits)
+            environment = {
+                "HOME": str(root),
+                "CODEX_HOME": str(root),
+                adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "8",
+                adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "2",
+                adapter.TOOL_BUDGET_STATE_ENV: str(state_path),
+                adapter.TOOL_BUDGET_SKILL_ROOT_ENV: str(skill_root),
+            }
+
+            def invoke(command: str) -> dict:
+                stdout = io.StringIO()
+                payload = {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "exec_command",
+                    "tool_input": {"command": command},
+                }
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(adapter.sys, "stdin", io.StringIO(json.dumps(payload))),
+                    patch.object(adapter.sys, "stdout", stdout),
+                ):
+                    self.assertEqual(adapter.run_tool_budget_hook(), 0)
+                return json.loads(stdout.getvalue())
+
+            first = invoke("rg first .")
+            self.assertEqual(first["decision"], "block")
+            state = adapter.read_tool_budget_state(state_path, limits)
+            self.assertEqual(state["status"], "ACTIVE")
+            self.assertEqual(state["skillBootstrapPrerequisiteState"], "RECOVERY_USED")
+            self.assertEqual(state["preExecutionCommandsBlocked"], 1)
+
+            second_command = "rg second ."
+            second = invoke(second_command)
+            self.assertEqual(second["decision"], "block")
+            self.assertIn("one recovery opportunity", second["reason"])
+            state = adapter.read_tool_budget_state(state_path, limits)
+            self.assertEqual(state["status"], "BLOCKED")
+            self.assertEqual(state["skillBootstrapPrerequisiteState"], "FAILED")
+            self.assertEqual(state["blockedKind"], "SKILL_BOOTSTRAP_REQUIRED")
+            self.assertEqual(state["preExecutionCommandsBlocked"], 2)
+            self.assertEqual(
+                state["blockedCommandSha256"],
+                hashlib.sha256(second_command.encode("utf-8")).hexdigest(),
+            )
+
+    def test_skill_bootstrap_prerequisite_rejects_mixed_and_reference_only_reads(
+        self,
+    ) -> None:
+        commands = (
+            "printf '%s' '$SKILL' >/dev/null; rg -n probe . | head -n 10",
+            "sed -n '1,40p' $SKILL/SKILL.md; rg -n probe . | head -n 10",
+            "sed -n '1,40p' $SKILL/references/workflow.md",
+            "./head -n 40 $SKILL/SKILL.md",
+            "rg -n '^## ' $SKILL/SKILL.md",
+            "head -n 40 $SKILL/references/*.md",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                skill_root = root / "skill"
+                skill_root.mkdir()
+                (skill_root / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+                references = skill_root / "references"
+                references.mkdir()
+                (references / "workflow.md").write_text(
+                    "# Workflow\n", encoding="utf-8"
+                )
+                state_path = root / "state.json"
+                limits = {
+                    "repositoryToolCallLimit": 8,
+                    "skillBootstrapToolCallLimit": 2,
+                }
+                adapter.initialize_tool_budget_state(state_path, limits)
+                environment = {
+                    "HOME": str(root),
+                    "CODEX_HOME": str(root),
+                    adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "8",
+                    adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "2",
+                    adapter.TOOL_BUDGET_STATE_ENV: str(state_path),
+                    adapter.TOOL_BUDGET_SKILL_ROOT_ENV: str(skill_root),
+                }
+                payload = {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "exec_command",
+                    "tool_input": {"command": command},
+                }
+                stdout = io.StringIO()
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch.object(adapter.sys, "stdin", io.StringIO(json.dumps(payload))),
+                    patch.object(adapter.sys, "stdout", stdout),
+                ):
+                    self.assertEqual(adapter.run_tool_budget_hook(), 0)
+                self.assertEqual(json.loads(stdout.getvalue())["decision"], "block")
+                state = adapter.read_tool_budget_state(state_path, limits)
+                self.assertEqual(state["skillBootstrapPrerequisiteState"], "RECOVERY_USED")
+                self.assertEqual(state["repositoryToolCallsApproved"], 0)
+                self.assertEqual(state["skillBootstrapToolCallsApproved"], 0)
+
+    def test_tool_budget_hook_installation_is_scoped_and_content_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            hook_path = adapter.install_tool_budget_hook(home)
+            payload = json.loads(hook_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload, adapter.tool_budget_hook_configuration())
+            handler = payload["hooks"]["PreToolUse"][0]["hooks"][0]
+            self.assertIn("--tool-budget-hook", handler["command"])
+            self.assertEqual(handler["timeout"], 10)
+            adapter.remove_tool_budget_hook(hook_path)
+            self.assertFalse(hook_path.exists())
+
+    def test_tool_budget_hook_implementation_hash_binds_shared_classifier(self) -> None:
+        digest = hashlib.sha256()
+        for path in (
+            ROOT / "scripts/codex_eval_adapter.py",
+            ROOT / "scripts/real_repository_campaign.py",
+        ):
+            label = path.relative_to(ROOT).as_posix().encode("utf-8")
+            data = path.read_bytes()
+            digest.update(len(label).to_bytes(8, "big"))
+            digest.update(label)
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+
+        self.assertEqual(
+            adapter.tool_budget_hook_implementation_sha256(),
+            digest.hexdigest(),
+        )
+        self.assertNotEqual(
+            adapter.tool_budget_hook_implementation_sha256(),
+            hashlib.sha256(
+                (ROOT / "scripts/codex_eval_adapter.py").read_bytes()
+            ).hexdigest(),
+        )
+
+    def test_main_installs_pre_execution_hook_only_for_the_guarded_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture_root = root / "fixture"
+            skill_root = root / "skill"
+            fixture_root.mkdir()
+            skill_root.mkdir()
+            prompt = root / "prompt.md"
+            output_schema = root / "output.schema.json"
+            prompt.write_text("review\n", encoding="utf-8")
+            output_schema.write_text("{}\n", encoding="utf-8")
+            output_file = root / "output.json"
+            isolation = {
+                "homeMatchesCodexHome": True,
+                "ignoreUserConfig": True,
+                "ignoreRules": True,
+                "allowCodexHomeExtensions": False,
+                "codexHomeSystemFileCount": 0,
+                "codexHomeSystemTreeSha256": hashlib.sha256(b"[]").hexdigest(),
+                "codexHomeExtensionFileCount": 0,
+                "codexHomeExtensionTreeSha256": hashlib.sha256(b"[]").hexdigest(),
+            }
+            environment = {
+                "HOME": str(root),
+                "CODEX_HOME": str(root),
+                adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "8",
+                adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "2",
+            }
+
+            def guarded_run(command: list[str], **kwargs: object) -> int:
+                self.assertIn("--dangerously-bypass-hook-trust", command)
+                self.assertTrue((root / "hooks.json").is_file())
+                state_path = kwargs["tool_budget_state_path"]
+                self.assertIsInstance(state_path, Path)
+                assert isinstance(state_path, Path)
+                self.assertTrue(state_path.is_file())
+                command_env = kwargs["command_env"]
+                self.assertIsInstance(command_env, dict)
+                assert isinstance(command_env, dict)
+                self.assertEqual(command_env[adapter.TOOL_BUDGET_STATE_ENV], str(state_path))
+                self.assertEqual(
+                    command_env[adapter.TOOL_BUDGET_SKILL_ROOT_ENV],
+                    str(skill_root.resolve()),
+                )
+                self.assertEqual(command_env["SKILL"], str(skill_root.resolve()))
+                self.assertEqual(
+                    command_env["RUST_LOG"], adapter.CODEX_TRANSPORT_LOG_FILTER
+                )
+                return 0
+
+            argv = [
+                "--model",
+                "gpt-test",
+                "--reasoning",
+                "high",
+                "--fixture-root",
+                str(fixture_root),
+                "--skill-root",
+                str(skill_root),
+                "--prompt-file",
+                str(prompt),
+                "--output-schema",
+                str(output_schema),
+                "--output-file",
+                str(output_file),
+                "--treatment",
+                "REVIEW_CRAFT",
+                "--case-id",
+                "fixture-case",
+            ]
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(adapter, "codex_home_extension_state", return_value=isolation),
+                patch.object(adapter.shutil, "which", return_value="/usr/bin/codex"),
+                patch.object(adapter, "run_codex_process", side_effect=guarded_run),
+            ):
+                self.assertEqual(adapter.main(argv), 0)
+
+            self.assertFalse((root / "hooks.json").exists())
+            self.assertEqual(list(root.glob(".review-craft-tool-budget-state-*.json")), [])
+
+    def test_codex_process_terminates_after_pre_execution_hook_blocks(self) -> None:
+        events = [
+            {"type": "thread.started"},
+            {"type": "turn.started"},
+            *[
+                {
+                    "type": "item.started",
+                    "item": {
+                        "id": f"command-{index}",
+                        "type": "command_execution",
+                        "command": f"rg probe-{index}",
+                        "status": "in_progress",
+                    },
+                }
+                for index in range(1, 3)
+            ],
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            usage_path = root / "usage.json"
+            trace_path = root / "tool-trace.json"
+            progress_path = root / "progress.json"
+            state_path = root / "state.json"
+            limits = {
+                "repositoryToolCallLimit": 2,
+                "skillBootstrapToolCallLimit": 0,
+            }
+            adapter.initialize_tool_budget_state(state_path, limits)
+            blocked_state = adapter._new_tool_budget_state(limits)
+            blocked_state.update(
+                {
+                    "status": "BLOCKED",
+                    "repositoryToolCallsApproved": 2,
+                    "blockedAt": "2026-08-25T00:00:00Z",
+                    "blockedKind": "REPOSITORY_CALLS",
+                    "blockedCommandSha256": hashlib.sha256(b"rg blocked").hexdigest(),
+                }
+            )
+            child = "\n".join(
+                (
+                    "import json, os, pathlib, sys, time",
+                    "sys.stdin.read()",
+                    *[
+                        f"print(json.dumps({event!r}), flush=True)"
+                        for event in events
+                    ],
+                    f"state = {blocked_state!r}",
+                    "path = pathlib.Path(os.environ['REVIEW_CRAFT_EVAL_TOOL_BUDGET_STATE'])",
+                    "temporary = path.with_name('.state.tmp')",
+                    "temporary.write_text(json.dumps(state) + '\\n', encoding='utf-8')",
+                    "os.replace(temporary, path)",
+                    "time.sleep(30)",
+                )
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        adapter.USAGE_OUTPUT_ENV: str(usage_path),
+                        adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
+                        adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                        adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "2",
+                        adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "0",
+                        adapter.TOOL_BUDGET_STATE_ENV: str(state_path),
+                    },
+                ),
+                patch.object(adapter.sys, "stdout", io.StringIO()),
+                patch.object(adapter.sys, "stderr", io.StringIO()),
+            ):
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env={
+                        **os.environ,
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                        adapter.TOOL_BUDGET_STATE_ENV: str(state_path),
+                    },
+                    replacements={},
+                    skill_root=root / "skill",
+                    tool_budget_state_path=state_path,
+                )
+
+            self.assertEqual(status, adapter.TOOL_BUDGET_EXIT_CODE)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["terminationReason"], "TOOL_BUDGET")
+            self.assertEqual(progress["toolBudgetState"], "EXCEEDED")
+            self.assertEqual(progress["toolBudgetExceededKind"], "REPOSITORY_CALLS")
+            self.assertEqual(progress["repositoryToolCallsStarted"], 2)
+            self.assertEqual(progress["skillBootstrapToolCallsStarted"], 0)
+            self.assertEqual(progress["repositoryToolCallsApproved"], 2)
+            self.assertEqual(progress["skillBootstrapToolCallsApproved"], 0)
+            self.assertIsNotNone(progress["toolBudgetExceededAt"])
+            self.assertNotEqual(progress["processTreeCleanup"], "FAILED")
+            self.assertEqual(
+                json.loads(trace_path.read_text(encoding="utf-8"))["items"], []
+            )
+
+    def test_completed_command_without_hook_approval_fails_closed(self) -> None:
+        events = [
+            {"type": "thread.started"},
+            {"type": "turn.started"},
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "command-1",
+                    "type": "command_execution",
+                    "command": "rg probe",
+                    "status": "in_progress",
+                },
+            },
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "command-1",
+                    "type": "command_execution",
+                    "command": "rg probe",
+                    "status": "completed",
+                    "aggregated_output": "result\n",
+                    "exit_code": 0,
+                },
+            },
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 1,
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 1,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            usage_path = root / "usage.json"
+            trace_path = root / "tool-trace.json"
+            progress_path = root / "progress.json"
+            state_path = root / "state.json"
+            limits = {
+                "repositoryToolCallLimit": 2,
+                "skillBootstrapToolCallLimit": 0,
+            }
+            adapter.initialize_tool_budget_state(state_path, limits)
+            child = "\n".join(
+                (
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    *[f"print(json.dumps({event!r}), flush=True)" for event in events],
+                )
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        adapter.USAGE_OUTPUT_ENV: str(usage_path),
+                        adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
+                        adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                        adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "2",
+                        adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "0",
+                    },
+                ),
+                patch.object(adapter.sys, "stdout", io.StringIO()),
+                patch.object(adapter.sys, "stderr", io.StringIO()),
+            ):
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                    replacements={},
+                    skill_root=root / "skill",
+                    tool_budget_state_path=state_path,
+                )
+
+            self.assertEqual(status, adapter.TOOL_BUDGET_EXIT_CODE)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["terminationReason"], "TOOL_BUDGET")
+            self.assertEqual(progress["toolBudgetExceededKind"], "CONTROL_FAILURE")
+            self.assertEqual(progress["repositoryToolCallsStarted"], 1)
+            self.assertEqual(progress["repositoryToolCallsApproved"], 0)
+
+    def test_recoverable_prerequisite_block_reconciles_without_control_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill_root = root / "skill"
+            skill_root.mkdir()
+            (skill_root / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+            blocked_command = "rg blocked ."
+            bootstrap_command = f"sed -n '1,80p' {skill_root / 'SKILL.md'}"
+            approved_command = "rg approved ."
+            events = [
+                {"type": "thread.started"},
+                {"type": "turn.started"},
+            ]
+            for index, (command, status, exit_code) in enumerate(
+                (
+                    (blocked_command, "failed", 1),
+                    (bootstrap_command, "completed", 0),
+                    (approved_command, "completed", 0),
+                ),
+                start=1,
+            ):
+                item = {
+                    "id": f"command-{index}",
+                    "type": "command_execution",
+                    "command": command,
+                    "status": "in_progress",
+                }
+                events.append({"type": "item.started", "item": dict(item)})
+                item.update(
+                    {
+                        "status": status,
+                        "aggregated_output": "result\n",
+                        "exit_code": exit_code,
+                    }
+                )
+                events.append({"type": "item.completed", "item": item})
+            events.append(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 1,
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 1,
+                        "reasoning_output_tokens": 0,
+                    },
+                }
+            )
+            usage_path = root / "usage.json"
+            trace_path = root / "tool-trace.json"
+            progress_path = root / "progress.json"
+            state_path = root / "state.json"
+            limits = {
+                "repositoryToolCallLimit": 1,
+                "skillBootstrapToolCallLimit": 1,
+            }
+            state = adapter._new_tool_budget_state(limits)
+            state.update(
+                {
+                    "repositoryToolCallsApproved": 1,
+                    "skillBootstrapToolCallsApproved": 1,
+                    "preExecutionCommandsBlocked": 1,
+                    "skillBootstrapPrerequisiteState": "SATISFIED",
+                    "skillBootstrapPrerequisiteBlocks": 1,
+                    "skillBootstrapPrerequisiteBlockedAt": (
+                        "2026-08-25T00:00:00Z"
+                    ),
+                    "skillBootstrapPrerequisiteBlockedCommandSha256": (
+                        hashlib.sha256(blocked_command.encode("utf-8")).hexdigest()
+                    ),
+                }
+            )
+            adapter._write_json_sidecar(state_path, state)
+            child = "\n".join(
+                (
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    *[f"print(json.dumps({event!r}), flush=True)" for event in events],
+                )
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        adapter.USAGE_OUTPUT_ENV: str(usage_path),
+                        adapter.TOOL_TRACE_OUTPUT_ENV: str(trace_path),
+                        adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                        adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "1",
+                        adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "1",
+                    },
+                ),
+                patch.object(adapter.sys, "stdout", io.StringIO()),
+                patch.object(adapter.sys, "stderr", io.StringIO()),
+            ):
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                    replacements={str(skill_root): "$SKILL"},
+                    skill_root=skill_root,
+                    tool_budget_state_path=state_path,
+                )
+
+            self.assertEqual(status, 0)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["toolBudgetState"], "ACTIVE")
+            self.assertEqual(progress["skillBootstrapPrerequisiteState"], "SATISFIED")
+            self.assertEqual(progress["skillBootstrapPrerequisiteBlocks"], 1)
+            self.assertEqual(progress["preExecutionCommandsBlocked"], 1)
+            self.assertEqual(progress["repositoryToolCallsStarted"], 2)
+            self.assertEqual(progress["repositoryToolCallsApproved"], 1)
+            self.assertEqual(progress["skillBootstrapToolCallsStarted"], 1)
+            self.assertEqual(progress["skillBootstrapToolCallsApproved"], 1)
+
     def test_inactivity_thresholds_fail_closed(self) -> None:
         with (
             patch.dict(
@@ -685,6 +1436,31 @@ class CodexEvalAdapterTests(unittest.TestCase):
             ):
                 adapter.sample_timeout_seconds()
 
+    def test_tool_budget_limits_fail_closed(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(adapter.tool_budget_limits())
+        with patch.dict(
+            os.environ,
+            {adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "8"},
+            clear=True,
+        ), self.assertRaisesRegex(adapter.AdapterError, "configured together"):
+            adapter.tool_budget_limits()
+        with patch.dict(
+            os.environ,
+            {
+                adapter.REPOSITORY_TOOL_CALL_LIMIT_ENV: "8",
+                adapter.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "2",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                adapter.tool_budget_limits(),
+                {
+                    "repositoryToolCallLimit": 8,
+                    "skillBootstrapToolCallLimit": 2,
+                },
+            )
+
     def test_explicit_provider_is_validated_and_rendered_as_codex_config(self) -> None:
         args = adapter.parse_args(
             [
@@ -711,6 +1487,30 @@ class CodexEvalAdapterTests(unittest.TestCase):
             rendered,
         )
         self.assertIn("model_providers.local_proxy.supports_websockets=true", rendered)
+        self.assertIn("model_providers.local_proxy.request_max_retries=0", rendered)
+        self.assertIn("model_providers.local_proxy.stream_max_retries=0", rendered)
+        self.assertIn(
+            "model_providers.local_proxy.stream_idle_timeout_ms=120000",
+            rendered,
+        )
+        self.assertIn(
+            "model_providers.local_proxy.websocket_connect_timeout_ms=10000",
+            rendered,
+        )
+
+    def test_provider_transport_controls_reject_invalid_values(self) -> None:
+        args = adapter.parse_args(
+            [
+                "--model",
+                "gpt-test",
+                "--reasoning",
+                "high",
+                "--provider-stream-idle-timeout-ms",
+                "0",
+            ]
+        )
+        with self.assertRaisesRegex(adapter.AdapterError, "transport retry and timeout"):
+            adapter.provider_metadata(args)
 
     def test_provider_base_url_rejects_credentials(self) -> None:
         args = adapter.parse_args(
@@ -1063,6 +1863,50 @@ class CodexEvalAdapterTests(unittest.TestCase):
             self.assertEqual(progress["processTreeCleanup"], "CONFIRMED")
             self.assertIsNotNone(progress["firstItemAt"])
 
+    def test_control_plane_error_items_do_not_satisfy_first_item_deadline(self) -> None:
+        child = "\n".join(
+            (
+                "import json, sys, time",
+                "sys.stdin.read()",
+                "print(json.dumps({'type': 'thread.started'}), flush=True)",
+                "print(json.dumps({'type': 'item.completed', 'item': "
+                "{'id': 'warning-1', 'type': 'error', 'message': 'hook warning'}}), "
+                "flush=True)",
+                "print(json.dumps({'type': 'turn.started'}), flush=True)",
+                "time.sleep(60)",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            progress_path = home / "progress.json"
+            environment = {
+                **os.environ,
+                "HOME": str(home),
+                "CODEX_HOME": str(home),
+                adapter.PROGRESS_OUTPUT_ENV: str(progress_path),
+                adapter.FIRST_ITEM_TIMEOUT_ENV: "1",
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                pre = adapter.codex_home_extension_state(allow_extensions=False)
+                status = adapter.run_codex_process(
+                    [sys.executable, "-c", child],
+                    prompt="review\n",
+                    command_env=environment,
+                    replacements={},
+                    pre_run_isolation=pre,
+                    timeout_seconds=5,
+                )
+            self.assertEqual(status, adapter.TIMEOUT_EXIT_CODE)
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(progress["timeoutPhase"], "BEFORE_FIRST_ITEM")
+            self.assertEqual(progress["terminationReason"], "TIMEOUT")
+            self.assertEqual(progress["processTreeCleanup"], "CONFIRMED")
+            self.assertIsNone(progress["firstItemAt"])
+            self.assertEqual(progress["itemEventCount"], 1)
+            self.assertEqual(progress["semanticProgressEventCount"], 0)
+            self.assertIsNone(progress["lastSemanticProgressAt"])
+            self.assertIsNone(progress["lastSemanticProgressType"])
+
     def test_tool_trace_normalizes_paths_and_hashes_without_raw_output(self) -> None:
         output = "verification result\n"
         events = [
@@ -1095,6 +1939,7 @@ class CodexEvalAdapterTests(unittest.TestCase):
         )
         self.assertEqual(trace["items"][0]["exitCode"], 7)
         self.assertEqual(trace["items"][0]["outputBytes"], len(output.encode("utf-8")))
+        self.assertEqual(trace["items"][0]["outputLines"], 1)
         self.assertEqual(
             trace["items"][0]["outputSha256"],
             hashlib.sha256(output.encode("utf-8")).hexdigest(),

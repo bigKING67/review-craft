@@ -477,23 +477,41 @@ def main() -> int:
     if tool_trace_output:
         verification = args.treatment == "REVIEW_CRAFT_EVIDENCE_LOOP"
         case_id = args.case_id or fixture.name
+        empty_output_sha256 = hashlib.sha256(b"").hexdigest()
+        first_command = (
+            "sed -n '1,120p' $SKILL/SKILL.md"
+            if verification
+            else "rg --files | head -n 1"
+        )
+        second_command = (
+            f"python3 $EVIDENCE/verify_case.py --case {case_id} --target ."
+            if verification
+            else "sed -n '1,20p' README.md"
+        )
         trace = {
             "schema": "review-craft.eval-tool-trace.v1",
-            "items": (
-                [
-                    {
-                        "sequence": 0,
-                        "type": "commandExecution",
-                        "status": "completed",
-                        "command": f"python3 $EVIDENCE/verify_case.py --case {case_id} --target .",
-                        "exitCode": 0,
-                        "outputBytes": 2,
-                        "outputSha256": hashlib.sha256(b"{} ").hexdigest(),
-                    }
-                ]
-                if verification
-                else []
-            ),
+            "items": [
+                {
+                    "sequence": 0,
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": first_command,
+                    "exitCode": 0,
+                    "outputBytes": 0,
+                    "outputLines": 0,
+                    "outputSha256": empty_output_sha256,
+                },
+                {
+                    "sequence": 1,
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": second_command,
+                    "exitCode": 0,
+                    "outputBytes": 0,
+                    "outputLines": 0,
+                    "outputSha256": empty_output_sha256,
+                },
+            ],
         }
         Path(tool_trace_output).write_text(
             json.dumps(trace, sort_keys=True) + "\n", encoding="utf-8"

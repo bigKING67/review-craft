@@ -656,12 +656,60 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                     "A BLOCKED probe must use severity null.", normalized_prompt
                 )
                 self.assertIn(
+                    "FALSIFIED requires affirmative counter-evidence that refutes the "
+                    "candidate",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "missing evidence prevents a decision, use BLOCKED with MEASURE, "
+                    "DEFER, or DOCUMENT as appropriate, never FALSIFIED",
+                    normalized_prompt,
+                )
+                self.assertIn(
                     "Every probe, evidence, and additional-finding location must be "
                     "inside the declared scope.",
                     normalized_prompt,
                 )
                 self.assertIn(
-                    "keep each command below roughly 200 output lines or 32 KiB",
+                    "These are execution limits, not suggestions:",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "at most 8 repository-analysis tool calls",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "slot 1 maps the declared scope; slots 2-6 collect one bounded "
+                    "evidence bundle for each probe",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "slot 8 is reserved for one necessary verification",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "80 KiB",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "Keep each command below 120 output lines or 16 KiB, and "
+                    "target at most 110 lines",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "wrap the entire group and apply one final `| head -n 110`",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "Explicitly cap every search or read command before running it",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "use BLOCKED or NOT_RAISED rather than exceeding the limit",
+                    normalized_prompt,
+                )
+                self.assertIn(
+                    "compare plausible candidates in the relevant input-to-effect path",
                     normalized_prompt,
                 )
                 self.assertIn(
@@ -674,6 +722,194 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                     "replacement proposal is unsupported.",
                     normalized_prompt,
                 )
+
+    def test_review_craft_prompt_separates_skill_bootstrap_from_repository_budget(
+        self,
+    ) -> None:
+        prompt = runner._render_benchmark_prompt(
+            "REVIEW_CRAFT_EVIDENCE_LOOP", self.suite["repositories"][0]
+        ).decode("utf-8")
+        normalized = " ".join(prompt.split())
+        self.assertIn("bounded review fast path independently to each fixed probe", normalized)
+        self.assertIn("at most 2 dedicated tool calls", normalized)
+        self.assertIn("roughly 32 KiB combined output", normalized)
+        self.assertIn("inspect the SKILL.md heading index", normalized)
+        self.assertIn("do not dump the whole entrypoint", normalized)
+        self.assertIn(
+            "one needed entrypoint window or one genuinely required reference",
+            normalized,
+        )
+        self.assertIn("Do not mix bootstrap reads with repository reads", normalized)
+        self.assertIn("harness validates the completed tool trace", normalized)
+
+    def test_exploration_limits_validate_trace_budget_and_usage_binding(self) -> None:
+        def item(
+            sequence: int,
+            command: str,
+            *,
+            lines: int = 1,
+            size: int = 1,
+        ) -> dict:
+            return {
+                "sequence": sequence,
+                "type": "commandExecution",
+                "status": "completed",
+                "command": command,
+                "exitCode": 0,
+                "outputBytes": size,
+                "outputLines": lines,
+                "outputSha256": "0" * 64,
+            }
+
+        valid_items = [item(0, "sed -n '1,120p' $SKILL/SKILL.md")]
+        valid_items.extend(item(index, "rg -n x . | head") for index in range(1, 9))
+        valid_trace = {
+            "schema": "review-craft.eval-tool-trace.v1",
+            "items": valid_items,
+        }
+        self.assertEqual(
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 9},
+                tool_trace=valid_trace,
+            ),
+            [],
+        )
+
+        progressive_items = [
+            item(0, "rg -n '^#' $SKILL/SKILL.md | head -n 110"),
+            item(1, "sed -n '52,136p' $SKILL/SKILL.md"),
+        ]
+        progressive_items.extend(
+            item(index, "rg -n x . | head") for index in range(2, 9)
+        )
+        self.assertEqual(
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 9},
+                tool_trace={
+                    "schema": "review-craft.eval-tool-trace.v1",
+                    "items": progressive_items,
+                },
+            ),
+            [],
+        )
+
+        wrapped_items = [
+            item(
+                0,
+                r'''/bin/zsh -lc "sed -n '1,110p' \""'$SKILL/SKILL.md" | head -n 110' '''.strip(),
+                lines=110,
+                size=6773,
+            )
+        ]
+        wrapped_items.extend(
+            item(index, "rg -n x . | head") for index in range(1, 9)
+        )
+        self.assertEqual(
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 9},
+                tool_trace={
+                    "schema": "review-craft.eval-tool-trace.v1",
+                    "items": wrapped_items,
+                },
+            ),
+            [],
+        )
+
+        mixed_trace = {
+            "schema": "review-craft.eval-tool-trace.v1",
+            "items": [
+                item(
+                    0,
+                    "printf '%s' '$SKILL' >/dev/null; "
+                    "rg -n probe . | head -n 10",
+                )
+            ],
+        }
+        self.assertIn(
+            "Review Craft treatment did not record a dedicated SKILL.md entrypoint read",
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 1},
+                tool_trace=mixed_trace,
+            ),
+        )
+
+        reference_only_trace = {
+            "schema": "review-craft.eval-tool-trace.v1",
+            "items": [
+                item(0, "sed -n '1,40p' $SKILL/references/workflow.md")
+            ],
+        }
+        self.assertIn(
+            "Review Craft treatment did not record a dedicated SKILL.md entrypoint read",
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 1},
+                tool_trace=reference_only_trace,
+            ),
+        )
+
+        recovered_items = [item(0, "sed -n '1,120p' ${SKILL}/SKILL.md")]
+        recovered_items.extend(
+            item(index, "rg -n x . | head") for index in range(1, 9)
+        )
+        recovered_trace = {
+            "schema": "review-craft.eval-tool-trace.v1",
+            "items": recovered_items,
+        }
+        self.assertEqual(
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 9},
+                tool_trace=recovered_trace,
+                skill_bootstrap_prerequisite_blocks=1,
+            ),
+            [],
+        )
+
+        leaked_items = [
+            item(0, "rg -n x . | head"),
+            item(1, "sed -n '1,120p' $SKILL/SKILL.md"),
+        ]
+        leaked_items.extend(
+            item(index, "rg -n x . | head") for index in range(2, 9)
+        )
+        self.assertIn(
+            "pre-execution Skill bootstrap block leaked into the completed tool trace",
+            runner._exploration_limit_errors(
+                treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+                usage={"toolCalls": 9},
+                tool_trace={
+                    "schema": "review-craft.eval-tool-trace.v1",
+                    "items": leaked_items,
+                },
+                skill_bootstrap_prerequisite_blocks=1,
+            ),
+        )
+
+        excessive = copy.deepcopy(valid_trace)
+        excessive["items"].append(item(9, "rg -n y . | head"))
+        errors = runner._exploration_limit_errors(
+            treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+            usage={"toolCalls": 10},
+            tool_trace=excessive,
+        )
+        self.assertIn("repository-analysis tool call budget exceeded", errors)
+
+        unmetered = copy.deepcopy(valid_trace)
+        del unmetered["items"][1]["outputLines"]
+        errors = runner._exploration_limit_errors(
+            treatment="REVIEW_CRAFT_EVIDENCE_LOOP",
+            usage={"toolCalls": 8},
+            tool_trace=unmetered,
+        )
+        self.assertTrue(
+            any("lacks output byte/line metrics" in error for error in errors)
+        )
+        self.assertTrue(any("does not match" in error for error in errors))
 
     def test_host_output_requires_complete_probe_coverage_and_honest_score(self) -> None:
         repository = self.suite["repositories"][0]
@@ -870,6 +1106,93 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
         self.assertEqual(usage["inputTokens"], 100)
         self.assertEqual(usage["totalTokens"], 125)
 
+    def test_adapter_tool_budget_control_binds_limits_and_exit_outcome(self) -> None:
+        control = {
+            "protocol": "review-craft.eval-tool-budget-control.v3",
+            "transport": "ENV_VALUE",
+            "repositoryLimitEnvironmentVariable": (
+                runner.REPOSITORY_TOOL_CALL_LIMIT_ENV
+            ),
+            "skillBootstrapLimitEnvironmentVariable": (
+                runner.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV
+            ),
+            "enforcementEvent": "PreToolUse",
+            "commandEnforcement": "PRE_EXECUTION_BLOCK",
+            "nonCommandEnforcement": "ITEM_STARTED_EARLY_TERMINATION",
+            "hookDecision": "block",
+            "hookTrustMode": "AUTOMATION_BYPASS",
+            "stateTransport": "ADAPTER_MANAGED_PATH",
+            "skillBootstrapPrerequisite": "REQUIRED_WHEN_LIMIT_POSITIVE",
+            "prerequisiteEnforcement": "RECOVERABLE_PRE_EXECUTION_BLOCK",
+            "maxRecoverablePrerequisiteBlocks": 1,
+            "prerequisiteFailureKind": "SKILL_BOOTSTRAP_REQUIRED",
+            "bootstrapCommandPolicy": "DEDICATED_BOUND_SKILL_READ_V1",
+            "hookConfigurationSha256": "1" * 64,
+            "hookImplementationSha256": "2" * 64,
+            "budgetExitCode": runner.TOOL_BUDGET_EXIT_CODE,
+            "finalizationGraceSeconds": 30,
+        }
+        description = {
+            "name": "fixture-adapter",
+            "adapterVersion": "fixture-v1",
+            "version": "fixture-host-v1",
+            "model": "fixture-model",
+            "reasoning": "medium",
+            "evidenceKind": "REAL_HOST",
+            "provider": {"name": "fixture-provider"},
+            "isolation": {"fixture": True},
+            "toolBudgetControl": control,
+        }
+        environment, exit_code = runner._adapter_tool_budget_control(
+            description, "REVIEW_CRAFT_EVIDENCE_LOOP"
+        )
+        self.assertEqual(
+            environment,
+            {
+                runner.REPOSITORY_TOOL_CALL_LIMIT_ENV: "8",
+                runner.SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV: "2",
+            },
+        )
+        self.assertEqual(exit_code, runner.TOOL_BUDGET_EXIT_CODE)
+        self.assertEqual(
+            runner._model_configuration("fixture", description)[
+                "toolBudgetControlSha256"
+            ],
+            runner.sha256_json(control),
+        )
+        self.assertEqual(
+            runner._model_configuration("fixture", description)[
+                "providerConfigurationSha256"
+            ],
+            runner.sha256_json(description["provider"]),
+        )
+        with self.assertRaisesRegex(
+            contracts.RealRepositoryError,
+            "lacks required pre-execution tool budget control",
+        ):
+            runner._adapter_tool_budget_control(
+                {}, "REVIEW_CRAFT_EVIDENCE_LOOP", required=True
+            )
+        self.assertEqual(
+            runner._adapter_outcome(
+                runner.ProcessResult(
+                    runner.TOOL_BUDGET_EXIT_CODE,
+                    b"",
+                    b"",
+                    False,
+                ),
+                output_path=Path("missing-output.json"),
+                repository=self.suite["repositories"][0],
+                timeout_seconds=7,
+                managed_tool_budget_exit_code=runner.TOOL_BUDGET_EXIT_CODE,
+            ),
+            (
+                "FAILED",
+                "adapter enforced the tool-call budget and terminated the sample",
+                "ARTIFACT_INVALID",
+            ),
+        )
+
     def test_failed_process_tree_cleanup_has_a_distinct_failure_class(self) -> None:
         lifecycle = {"processTreeCleanup": "FAILED"}
         self.assertEqual(
@@ -893,6 +1216,27 @@ class RealRepositoryBenchmarkTests(unittest.TestCase):
                 failure_class="TIMEOUT",
             ),
             ("TIMED_OUT", "adapter timed out", "TIMEOUT"),
+        )
+
+    def test_timeout_failure_reason_preserves_actual_trigger(self) -> None:
+        self.assertEqual(
+            runner._timeout_failure_reason(
+                {"timeoutPhase": "BEFORE_FIRST_ITEM"},
+                sample_timeout_seconds=900,
+                first_item_timeout_seconds=300,
+            ),
+            "adapter received no semantic item within 300 seconds",
+        )
+        self.assertEqual(
+            runner._timeout_failure_reason(
+                {"timeoutPhase": "AFTER_FIRST_ITEM"},
+                sample_timeout_seconds=900,
+                first_item_timeout_seconds=300,
+            ),
+            (
+                "adapter reached the 900-second sample timeout after the first "
+                "semantic item"
+            ),
         )
 
     def test_only_evidence_loop_receives_oracle_free_verifier_boundary(self) -> None:

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -15,7 +16,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -23,14 +24,29 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_LIB = ROOT / "skills/review-craft/lib"
 sys.path.insert(0, str(RUNTIME_LIB))
 
+from review_craft.locking import exclusive_file_lock  # noqa: E402
 from review_craft.process_lifecycle import (  # noqa: E402
     finalize_process_tree,
     open_process_tree,
     terminate_process_tree,
 )
 
-ADAPTER_VERSION = "0.6.4"
+ADAPTER_VERSION = "0.6.13"
 PROVIDER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+PROVIDER_REQUEST_MAX_RETRIES = 0
+PROVIDER_STREAM_MAX_RETRIES = 0
+PROVIDER_STREAM_IDLE_TIMEOUT_MS = 120_000
+PROVIDER_WEBSOCKET_CONNECT_TIMEOUT_MS = 10_000
+CODEX_TRANSPORT_LOG_FILTER = (
+    "codex_api=debug,codex_api::responses_websocket_timing=off"
+)
+WEBSOCKET_CONNECTING = "connecting to websocket:"
+WEBSOCKET_CONNECTED = "successfully connected to websocket:"
+WEBSOCKET_CONNECT_FAILED = "failed to connect to websocket:"
+WEBSOCKET_HTTPS_FALLBACK = "Falling back from WebSockets to HTTPS transport."
+WEBSOCKET_ACCEPT_PATTERN = re.compile(
+    r'("sec-websocket-accept"\s*:\s*)"[^"]*"', re.IGNORECASE
+)
 USAGE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_USAGE_OUTPUT"
 TOOL_TRACE_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_TOOL_TRACE_OUTPUT"
 PROGRESS_OUTPUT_ENV = "REVIEW_CRAFT_EVAL_PROGRESS_OUTPUT"
@@ -40,17 +56,235 @@ INACTIVITY_WARNING_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_WARNING_SECONDS"
 INACTIVITY_DIAGNOSTIC_ENV = "REVIEW_CRAFT_EVAL_INACTIVITY_DIAGNOSTIC_SECONDS"
 FIRST_ITEM_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_FIRST_ITEM_TIMEOUT_SECONDS"
 SAMPLE_TIMEOUT_ENV = "REVIEW_CRAFT_EVAL_SAMPLE_TIMEOUT_SECONDS"
+REPOSITORY_TOOL_CALL_LIMIT_ENV = (
+    "REVIEW_CRAFT_EVAL_REPOSITORY_TOOL_CALL_LIMIT"
+)
+SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV = (
+    "REVIEW_CRAFT_EVAL_SKILL_BOOTSTRAP_TOOL_CALL_LIMIT"
+)
+TOOL_BUDGET_STATE_ENV = "REVIEW_CRAFT_EVAL_TOOL_BUDGET_STATE"
+TOOL_BUDGET_SKILL_ROOT_ENV = "REVIEW_CRAFT_EVAL_TOOL_BUDGET_SKILL_ROOT"
+TOOL_BUDGET_STATE_PROTOCOL = "review-craft.eval-tool-budget-state.v2"
+TOOL_BUDGET_CONTROL_PROTOCOL = "review-craft.eval-tool-budget-control.v3"
 TIMEOUT_CONTROL_PROTOCOL = "review-craft.eval-timeout-control.v2"
 TIMEOUT_EXIT_CODE = 124
+TOOL_BUDGET_EXIT_CODE = 125
 TIMEOUT_FINALIZATION_GRACE_SECONDS = 30
 PROCESS_TERMINATION_GRACE_SECONDS = 5
 INACTIVITY_POLL_SECONDS = 0.25
 TIMEOUT_RACE_SETTLE_SECONDS = 0.1
+TOOL_BUDGET_HOOK_TIMEOUT_SECONDS = 10
+MAX_RECOVERABLE_BOOTSTRAP_PREREQUISITE_BLOCKS = 1
+TOOL_BUDGET_HOOK_LOCK = ".review-craft-eval-tool-budget-hook.lock"
 USAGE_COLLECTOR = {
     "name": "codex-cli",
     "version": ADAPTER_VERSION,
     "format": "codex-exec-jsonl-v1",
 }
+SKILL_BOOTSTRAP_MAX_OUTPUT_LINES = 120
+SKILL_BOOTSTRAP_ENTRYPOINT = "ENTRYPOINT"
+SKILL_BOOTSTRAP_REFERENCE = "REFERENCE"
+
+_SKILL_PATH_PREFIXES = ("$SKILL/", "${SKILL}/")
+_BOOTSTRAP_READERS = {"head", "rg", "sed", "tail"}
+_BOOTSTRAP_SHELL_WRAPPERS = {
+    "sh",
+    "bash",
+    "zsh",
+    "/bin/sh",
+    "/bin/bash",
+    "/bin/zsh",
+}
+_RG_FLAGS = {
+    "-F",
+    "-i",
+    "-n",
+    "--fixed-strings",
+    "--heading",
+    "--ignore-case",
+    "--line-number",
+    "--no-heading",
+}
+_RG_INTEGER_OPTIONS = {
+    "-A",
+    "-B",
+    "-C",
+    "-m",
+    "--after-context",
+    "--before-context",
+    "--context",
+    "--max-count",
+}
+
+
+def _skill_bootstrap_target_kind(
+    target: str, skill_root: Path | None
+) -> str | None:
+    relative: str | None = None
+    for prefix in _SKILL_PATH_PREFIXES:
+        if target.startswith(prefix):
+            relative = target[len(prefix) :]
+            break
+    if relative is None and skill_root is not None:
+        candidate = Path(target).expanduser()
+        if candidate.is_absolute():
+            try:
+                relative = candidate.resolve(strict=True).relative_to(
+                    skill_root.resolve(strict=True)
+                ).as_posix()
+            except (OSError, ValueError):
+                return None
+    if relative is None:
+        return None
+    if any(character in relative for character in "*?[]{}$"):
+        return None
+    path = PurePosixPath(relative)
+    if path.is_absolute() or not path.parts or any(
+        part in {".", ".."} for part in path.parts
+    ):
+        return None
+    if path.as_posix() == "SKILL.md":
+        return SKILL_BOOTSTRAP_ENTRYPOINT
+    if (
+        len(path.parts) >= 2
+        and path.parts[0] == "references"
+        and path.suffix == ".md"
+    ):
+        return SKILL_BOOTSTRAP_REFERENCE
+    return None
+
+
+def _bounded_skill_output_count(value: str) -> bool:
+    return (
+        value.isdigit()
+        and 1 <= int(value) <= SKILL_BOOTSTRAP_MAX_OUTPUT_LINES
+    )
+
+
+def _is_bounded_rg_read(arguments: list[str]) -> bool:
+    patterns = 0
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in _RG_FLAGS:
+            index += 1
+            continue
+        if argument in _RG_INTEGER_OPTIONS:
+            if (
+                index + 1 >= len(arguments)
+                or not _bounded_skill_output_count(arguments[index + 1])
+            ):
+                return False
+            index += 2
+            continue
+        if argument.startswith("--context=") or argument.startswith("--max-count="):
+            if not _bounded_skill_output_count(argument.split("=", 1)[1]):
+                return False
+            index += 1
+            continue
+        if argument in {"-e", "--regexp"}:
+            if index + 1 >= len(arguments):
+                return False
+            patterns += 1
+            index += 2
+            continue
+        if argument.startswith("-"):
+            return False
+        patterns += 1
+        index += 1
+    return patterns == 1
+
+
+def classify_skill_bootstrap_command(
+    command: str, *, skill_root: Path | None = None
+) -> str | None:
+    """Recognize one bounded Skill-only read and reject ambiguous shell composition."""
+    if (
+        not command
+        or "\n" in command
+        or "\r" in command
+        or "$(" in command
+        or "`" in command
+    ):
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if (
+        len(tokens) == 3
+        and tokens[0] in _BOOTSTRAP_SHELL_WRAPPERS
+        and tokens[1] == "-lc"
+    ):
+        # Codex can preserve its strict login-shell wrapper in the completed trace
+        # even though PreToolUse receives the inner command. Re-parse only that one
+        # exact wrapper so hook enforcement and post-run validation classify alike.
+        command = tokens[2]
+        if not command or "\n" in command or "\r" in command:
+            return None
+        try:
+            lexer = shlex.shlex(
+                command, posix=True, punctuation_chars="|&;()<>"
+            )
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
+        except ValueError:
+            return None
+    if not tokens or any(
+        token != "|" and token and all(character in "|&;()<>" for character in token)
+        for token in tokens
+    ):
+        return None
+    if tokens.count("|") > 1:
+        return None
+    if "|" in tokens:
+        has_output_filter = True
+        separator = tokens.index("|")
+        primary = tokens[:separator]
+        output_filter = tokens[separator + 1 :]
+        if (
+            len(output_filter) != 3
+            or output_filter[0] != "head"
+            or output_filter[1] != "-n"
+            or not _bounded_skill_output_count(output_filter[2])
+        ):
+            return None
+    else:
+        has_output_filter = False
+        primary = tokens
+    if len(primary) < 2:
+        return None
+    reader = primary[0]
+    if reader not in _BOOTSTRAP_READERS:
+        return None
+    target_kind = _skill_bootstrap_target_kind(primary[-1], skill_root)
+    if target_kind is None:
+        return None
+    arguments = primary[1:-1]
+    if reader == "sed":
+        if len(arguments) != 2 or arguments[0] != "-n":
+            return None
+        match = re.fullmatch(r"([1-9][0-9]*)(?:,([1-9][0-9]*))?p", arguments[1])
+        if match is None:
+            return None
+        start = int(match.group(1))
+        end = int(match.group(2) or match.group(1))
+        if end < start or end - start + 1 > SKILL_BOOTSTRAP_MAX_OUTPUT_LINES:
+            return None
+    elif reader == "rg":
+        if not has_output_filter or not _is_bounded_rg_read(arguments):
+            return None
+    elif (
+        len(arguments) != 2
+        or arguments[0] != "-n"
+        or not _bounded_skill_output_count(arguments[1])
+    ):
+        return None
+    return target_kind
 EVENT_TYPES = {
     "thread.started",
     "turn.started",
@@ -72,6 +306,7 @@ ITEM_TYPES = {
     "todo_list",
     "error",
 }
+SEMANTIC_ITEM_TYPES = ITEM_TYPES - {"error"}
 TOOL_ITEM_TYPES = {
     "command_execution": "commandExecution",
     "file_change": "fileChange",
@@ -146,6 +381,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--provider-supports-websockets",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+    parser.add_argument(
+        "--provider-request-max-retries",
+        type=int,
+        default=PROVIDER_REQUEST_MAX_RETRIES,
+    )
+    parser.add_argument(
+        "--provider-stream-max-retries",
+        type=int,
+        default=PROVIDER_STREAM_MAX_RETRIES,
+    )
+    parser.add_argument(
+        "--provider-stream-idle-timeout-ms",
+        type=int,
+        default=PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+    )
+    parser.add_argument(
+        "--provider-websocket-connect-timeout-ms",
+        type=int,
+        default=PROVIDER_WEBSOCKET_CONNECT_TIMEOUT_MS,
     )
     parser.add_argument("--allow-codex-home-extensions", action="store_true")
     parser.add_argument("--describe", action="store_true")
@@ -271,12 +526,16 @@ def parse_tool_trace(value: str, replacements: dict[str, str]) -> dict[str, Any]
             output = str(item.get("aggregated_output") or "").encode(
                 "utf-8", errors="surrogateescape"
             )
+            output_lines = output.count(b"\n")
+            if output and not output.endswith(b"\n"):
+                output_lines += 1
             exit_code = item.get("exit_code")
             row.update(
                 {
                     "command": command or "<unknown>",
                     "exitCode": exit_code if isinstance(exit_code, int) else None,
                     "outputBytes": len(output),
+                    "outputLines": output_lines,
                     "outputSha256": hashlib.sha256(output).hexdigest(),
                 }
             )
@@ -334,7 +593,9 @@ def write_isolation_output(payload: dict[str, Any]) -> None:
     _write_json_sidecar(path, payload)
 
 
-def new_progress_receipt(started_at: str) -> dict[str, Any]:
+def new_progress_receipt(
+    started_at: str, tool_budget: dict[str, int] | None = None
+) -> dict[str, Any]:
     return {
         "schema": "review-craft.eval-progress.v1",
         "availability": "UNAVAILABLE",
@@ -362,11 +623,479 @@ def new_progress_receipt(started_at: str) -> dict[str, Any]:
         "maximumPreItemInactivitySeconds": None,
         "diagnosticCapturedAt": None,
         "processAliveWhenDiagnosticCaptured": None,
+        "providerTransportState": "NOT_OBSERVED",
+        "providerTransportStartedAt": None,
+        "providerTransportConnectedAt": None,
+        "providerTransportFailedAt": None,
+        "providerTransportFallbackAt": None,
         "terminationReason": None,
         "timeoutPhase": None,
+        "toolBudgetState": "ACTIVE" if tool_budget is not None else "NOT_CONFIGURED",
+        "repositoryToolCallsStarted": 0,
+        "skillBootstrapToolCallsStarted": 0,
+        "repositoryToolCallsApproved": 0,
+        "skillBootstrapToolCallsApproved": 0,
+        "preExecutionCommandsBlocked": 0,
+        "skillBootstrapPrerequisiteState": (
+            "REQUIRED"
+            if tool_budget is not None
+            and tool_budget["skillBootstrapToolCallLimit"] > 0
+            else "NOT_REQUIRED"
+        ),
+        "skillBootstrapPrerequisiteBlocks": 0,
+        "skillBootstrapPrerequisiteBlockedAt": None,
+        "skillBootstrapPrerequisiteBlockedCommandSha256": None,
+        "toolBudgetExceededAt": None,
+        "toolBudgetExceededKind": None,
         "processTreeCleanup": "NOT_VERIFIED",
         "unavailableReason": "HOST_OUTPUT_EMPTY",
     }
+
+
+def tool_budget_limits() -> dict[str, int] | None:
+    raw_repository = os.environ.get(REPOSITORY_TOOL_CALL_LIMIT_ENV)
+    raw_bootstrap = os.environ.get(SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV)
+    if raw_repository is None and raw_bootstrap is None:
+        return None
+    if raw_repository is None or raw_bootstrap is None:
+        raise AdapterError("tool budget limits must be configured together")
+    try:
+        repository_limit = int(raw_repository)
+        bootstrap_limit = int(raw_bootstrap)
+    except ValueError as error:
+        raise AdapterError("tool budget limits must be integers") from error
+    if repository_limit < 1 or bootstrap_limit < 0:
+        raise AdapterError(
+            "repository tool limit must be positive and bootstrap limit non-negative"
+        )
+    return {
+        "repositoryToolCallLimit": repository_limit,
+        "skillBootstrapToolCallLimit": bootstrap_limit,
+    }
+
+
+def _tool_budget_hook_command() -> str:
+    argv = [sys.executable, str(Path(__file__).resolve()), "--tool-budget-hook"]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def tool_budget_hook_configuration() -> dict[str, Any]:
+    return {
+        "description": "Review Craft pre-execution evaluation tool budget",
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": _tool_budget_hook_command(),
+                            "statusMessage": "Checking evaluation tool budget",
+                            "timeout": TOOL_BUDGET_HOOK_TIMEOUT_SECONDS,
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+
+def tool_budget_hook_configuration_sha256() -> str:
+    return hashlib.sha256(
+        _canonical_bytes(tool_budget_hook_configuration())
+    ).hexdigest()
+
+
+def tool_budget_hook_implementation_sha256() -> str:
+    digest = hashlib.sha256()
+    for path in (
+        Path(__file__).resolve(),
+        ROOT / "scripts/real_repository_campaign.py",
+    ):
+        label = path.relative_to(ROOT).as_posix().encode("utf-8")
+        data = path.read_bytes()
+        digest.update(len(label).to_bytes(8, "big"))
+        digest.update(label)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def _tool_budget_state_path() -> Path:
+    raw_state = os.environ.get(TOOL_BUDGET_STATE_ENV)
+    raw_home = os.environ.get("CODEX_HOME")
+    if raw_state is None or raw_home is None:
+        raise AdapterError("pre-execution tool budget state is not configured")
+    home = Path(raw_home).expanduser().resolve(strict=True)
+    state = Path(raw_state).expanduser()
+    if state.is_symlink():
+        raise AdapterError("pre-execution tool budget state must not be a symlink")
+    if state.parent.resolve(strict=True) != home:
+        raise AdapterError("pre-execution tool budget state must stay inside CODEX_HOME")
+    return state
+
+
+def _new_tool_budget_state(limits: dict[str, int]) -> dict[str, Any]:
+    return {
+        "schema": TOOL_BUDGET_STATE_PROTOCOL,
+        "status": "ACTIVE",
+        **limits,
+        "repositoryToolCallsApproved": 0,
+        "skillBootstrapToolCallsApproved": 0,
+        "preExecutionCommandsBlocked": 0,
+        "skillBootstrapPrerequisiteState": (
+            "REQUIRED"
+            if limits["skillBootstrapToolCallLimit"] > 0
+            else "NOT_REQUIRED"
+        ),
+        "skillBootstrapPrerequisiteBlocks": 0,
+        "skillBootstrapPrerequisiteBlockedAt": None,
+        "skillBootstrapPrerequisiteBlockedCommandSha256": None,
+        "blockedAt": None,
+        "blockedKind": None,
+        "blockedCommandSha256": None,
+    }
+
+
+def _validate_tool_budget_state(
+    payload: Any, limits: dict[str, int]
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise AdapterError("pre-execution tool budget state must be an object")
+    required = {
+        "schema",
+        "status",
+        "repositoryToolCallLimit",
+        "skillBootstrapToolCallLimit",
+        "repositoryToolCallsApproved",
+        "skillBootstrapToolCallsApproved",
+        "preExecutionCommandsBlocked",
+        "skillBootstrapPrerequisiteState",
+        "skillBootstrapPrerequisiteBlocks",
+        "skillBootstrapPrerequisiteBlockedAt",
+        "skillBootstrapPrerequisiteBlockedCommandSha256",
+        "blockedAt",
+        "blockedKind",
+        "blockedCommandSha256",
+    }
+    if set(payload) != required or payload.get("schema") != TOOL_BUDGET_STATE_PROTOCOL:
+        raise AdapterError("pre-execution tool budget state has an invalid shape")
+    if payload.get("status") not in {"ACTIVE", "BLOCKED"}:
+        raise AdapterError("pre-execution tool budget state has an invalid status")
+    for key in (
+        "repositoryToolCallLimit",
+        "skillBootstrapToolCallLimit",
+        "repositoryToolCallsApproved",
+        "skillBootstrapToolCallsApproved",
+        "preExecutionCommandsBlocked",
+        "skillBootstrapPrerequisiteBlocks",
+    ):
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise AdapterError("pre-execution tool budget state has invalid counters")
+    if any(payload[key] != value for key, value in limits.items()):
+        raise AdapterError("pre-execution tool budget state limit mismatch")
+    if payload["repositoryToolCallsApproved"] > limits["repositoryToolCallLimit"]:
+        raise AdapterError("repository tool budget state exceeded its sealed limit")
+    if (
+        payload["skillBootstrapToolCallsApproved"]
+        > limits["skillBootstrapToolCallLimit"]
+    ):
+        raise AdapterError("Skill bootstrap budget state exceeded its sealed limit")
+    prerequisite_state = payload.get("skillBootstrapPrerequisiteState")
+    if prerequisite_state not in {
+        "NOT_REQUIRED",
+        "REQUIRED",
+        "RECOVERY_USED",
+        "SATISFIED",
+        "FAILED",
+    }:
+        raise AdapterError("Skill bootstrap prerequisite state is invalid")
+    prerequisite_blocks = payload["skillBootstrapPrerequisiteBlocks"]
+    if prerequisite_blocks > MAX_RECOVERABLE_BOOTSTRAP_PREREQUISITE_BLOCKS:
+        raise AdapterError("Skill bootstrap prerequisite recovery limit exceeded")
+    prerequisite_metadata = (
+        payload.get("skillBootstrapPrerequisiteBlockedAt"),
+        payload.get("skillBootstrapPrerequisiteBlockedCommandSha256"),
+    )
+    if prerequisite_blocks:
+        blocked_at, blocked_digest = prerequisite_metadata
+        if not isinstance(blocked_at, str):
+            raise AdapterError("Skill bootstrap prerequisite block time is missing")
+        if (
+            not isinstance(blocked_digest, str)
+            or re.fullmatch(r"[a-f0-9]{64}", blocked_digest) is None
+        ):
+            raise AdapterError("Skill bootstrap prerequisite command digest is invalid")
+    elif any(value is not None for value in prerequisite_metadata):
+        raise AdapterError("Skill bootstrap prerequisite metadata has no block")
+    bootstrap_limit = limits["skillBootstrapToolCallLimit"]
+    bootstrap_approved = payload["skillBootstrapToolCallsApproved"]
+    if bootstrap_limit == 0:
+        if prerequisite_state != "NOT_REQUIRED" or prerequisite_blocks:
+            raise AdapterError("unexpected Skill bootstrap prerequisite state")
+    elif prerequisite_state == "NOT_REQUIRED":
+        raise AdapterError("required Skill bootstrap prerequisite is disabled")
+    if prerequisite_state in {"REQUIRED", "RECOVERY_USED", "FAILED"} and bootstrap_approved:
+        raise AdapterError("unsatisfied Skill bootstrap prerequisite has approvals")
+    if prerequisite_state == "REQUIRED" and prerequisite_blocks:
+        raise AdapterError("unused Skill bootstrap recovery contains a block")
+    if prerequisite_state == "RECOVERY_USED" and prerequisite_blocks != 1:
+        raise AdapterError("Skill bootstrap recovery state is inconsistent")
+    if prerequisite_state == "SATISFIED" and bootstrap_approved < 1:
+        raise AdapterError("satisfied Skill bootstrap prerequisite has no approval")
+    if prerequisite_state == "FAILED" and (
+        payload.get("status") != "BLOCKED"
+        or payload.get("blockedKind") != "SKILL_BOOTSTRAP_REQUIRED"
+    ):
+        raise AdapterError("failed Skill bootstrap prerequisite lacks terminal block")
+    if payload["preExecutionCommandsBlocked"] < prerequisite_blocks:
+        raise AdapterError("pre-execution block count is below prerequisite blocks")
+    if payload["status"] == "BLOCKED":
+        if payload.get("blockedKind") not in {
+            "REPOSITORY_CALLS",
+            "SKILL_BOOTSTRAP_CALLS",
+            "SKILL_BOOTSTRAP_REQUIRED",
+            "CONTROL_FAILURE",
+        }:
+            raise AdapterError("pre-execution tool budget block kind is invalid")
+        if not isinstance(payload.get("blockedAt"), str):
+            raise AdapterError("pre-execution tool budget block time is missing")
+        digest = payload.get("blockedCommandSha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
+            raise AdapterError("pre-execution tool budget command digest is invalid")
+    elif any(
+        payload.get(key) is not None
+        for key in ("blockedAt", "blockedKind", "blockedCommandSha256")
+    ):
+        raise AdapterError("active pre-execution tool budget state contains block data")
+    return payload
+
+
+def initialize_tool_budget_state(path: Path, limits: dict[str, int]) -> None:
+    if path.exists() or path.is_symlink():
+        raise AdapterError("pre-execution tool budget state already exists")
+    _write_json_sidecar(path, _new_tool_budget_state(limits))
+
+
+def read_tool_budget_state(path: Path, limits: dict[str, int]) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AdapterError("pre-execution tool budget state is unreadable") from error
+    return _validate_tool_budget_state(payload, limits)
+
+
+def _tool_budget_state_lock_name(path: Path) -> str:
+    return f".{path.name}.lock"
+
+
+def _block_tool_budget_control_failure(path: Path, limits: dict[str, int]) -> None:
+    with (
+        contextlib.suppress(AdapterError, OSError, TimeoutError, ValueError),
+        exclusive_file_lock(
+            path.parent,
+            name=_tool_budget_state_lock_name(path),
+            wait_seconds=2,
+            timeout_message="timed out waiting for the tool budget state lock",
+        ),
+    ):
+        payload = read_tool_budget_state(path, limits)
+        if payload["status"] != "BLOCKED":
+            payload.update(
+                {
+                    "status": "BLOCKED",
+                    "blockedAt": utc_now(),
+                    "blockedKind": "CONTROL_FAILURE",
+                    "blockedCommandSha256": hashlib.sha256(b"").hexdigest(),
+                }
+            )
+            _write_json_sidecar(path, payload)
+
+
+def run_tool_budget_hook() -> int:
+    limits = tool_budget_limits()
+    if limits is None:
+        print(json.dumps({"decision": "approve"}, sort_keys=True))
+        return 0
+    state_path = _tool_budget_state_path()
+    try:
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict) or payload.get("hook_event_name") != "PreToolUse":
+            raise AdapterError("tool budget hook received an invalid event")
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str) or not command:
+            raise AdapterError("tool budget hook received an unmetered command")
+        skill_root = os.environ.get(TOOL_BUDGET_SKILL_ROOT_ENV)
+        if not skill_root:
+            raise AdapterError("tool budget Skill root is not configured")
+        bootstrap_kind = classify_skill_bootstrap_command(
+            command,
+            skill_root=Path(skill_root),
+        )
+        is_bootstrap = bootstrap_kind is not None
+        is_entrypoint = bootstrap_kind == SKILL_BOOTSTRAP_ENTRYPOINT
+        command_sha256 = hashlib.sha256(
+            command.encode("utf-8", errors="surrogateescape")
+        ).hexdigest()
+        with exclusive_file_lock(
+            state_path.parent,
+            name=_tool_budget_state_lock_name(state_path),
+            wait_seconds=5,
+            timeout_message="timed out waiting for the tool budget state lock",
+        ):
+            state = read_tool_budget_state(state_path, limits)
+            if state["status"] == "BLOCKED":
+                state["preExecutionCommandsBlocked"] += 1
+                _write_json_sidecar(state_path, state)
+                effective_kind = state["blockedKind"] or "CONTROL_FAILURE"
+                reason = (
+                    "Review Craft blocked this command before execution because the "
+                    f"{effective_kind.lower().replace('_', ' ')} budget is exhausted."
+                )
+                print(
+                    json.dumps(
+                        {"decision": "block", "reason": reason},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+
+            prerequisite_state = state["skillBootstrapPrerequisiteState"]
+            if not is_entrypoint and prerequisite_state == "REQUIRED":
+                state.update(
+                    {
+                        "skillBootstrapPrerequisiteState": "RECOVERY_USED",
+                        "skillBootstrapPrerequisiteBlocks": 1,
+                        "skillBootstrapPrerequisiteBlockedAt": utc_now(),
+                        "skillBootstrapPrerequisiteBlockedCommandSha256": command_sha256,
+                    }
+                )
+                state["preExecutionCommandsBlocked"] += 1
+                _write_json_sidecar(state_path, state)
+                print(
+                    json.dumps(
+                        {
+                            "decision": "block",
+                            "reason": (
+                                "Review Craft blocked this repository command before "
+                                "execution. Your next command must read the bound "
+                                "$SKILL/SKILL.md entrypoint without touching repository "
+                                "files; do not use a relative SKILL.md path."
+                            ),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if not is_entrypoint and prerequisite_state == "RECOVERY_USED":
+                state.update(
+                    {
+                        "status": "BLOCKED",
+                        "skillBootstrapPrerequisiteState": "FAILED",
+                        "blockedAt": utc_now(),
+                        "blockedKind": "SKILL_BOOTSTRAP_REQUIRED",
+                        "blockedCommandSha256": command_sha256,
+                    }
+                )
+                state["preExecutionCommandsBlocked"] += 1
+                _write_json_sidecar(state_path, state)
+                print(
+                    json.dumps(
+                        {
+                            "decision": "block",
+                            "reason": (
+                                "Review Craft blocked this repository command before "
+                                "execution because the required SKILL.md bootstrap was "
+                                "not completed after one recovery opportunity."
+                            ),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+
+            counter = (
+                "skillBootstrapToolCallsApproved"
+                if is_bootstrap
+                else "repositoryToolCallsApproved"
+            )
+            limit = (
+                limits["skillBootstrapToolCallLimit"]
+                if is_bootstrap
+                else limits["repositoryToolCallLimit"]
+            )
+            blocked_kind = (
+                "SKILL_BOOTSTRAP_CALLS" if is_bootstrap else "REPOSITORY_CALLS"
+            )
+            if state[counter] >= limit:
+                state.update(
+                    {
+                        "status": "BLOCKED",
+                        "blockedAt": utc_now(),
+                        "blockedKind": blocked_kind,
+                        "blockedCommandSha256": command_sha256,
+                    }
+                )
+                state["preExecutionCommandsBlocked"] += 1
+                _write_json_sidecar(state_path, state)
+                reason = (
+                    "Review Craft blocked this command before execution because the "
+                    f"{blocked_kind.lower().replace('_', ' ')} budget is exhausted."
+                )
+                print(
+                    json.dumps(
+                        {"decision": "block", "reason": reason},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            state[counter] += 1
+            if is_entrypoint and state["skillBootstrapPrerequisiteState"] != "NOT_REQUIRED":
+                state["skillBootstrapPrerequisiteState"] = "SATISFIED"
+            _write_json_sidecar(state_path, state)
+        print(json.dumps({"decision": "approve"}, sort_keys=True))
+        return 0
+    except (
+        AdapterError,
+        OSError,
+        TimeoutError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
+        _block_tool_budget_control_failure(state_path, limits)
+        print(f"Review Craft tool budget control failed closed: {error}", file=sys.stderr)
+        return 2
+
+
+def install_tool_budget_hook(home: Path) -> Path:
+    hook_path = home / "hooks.json"
+    if hook_path.is_symlink():
+        raise AdapterError("isolated Codex hook configuration must not be a symlink")
+    expected = tool_budget_hook_configuration()
+    if hook_path.exists():
+        try:
+            current = json.loads(hook_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise AdapterError("isolated Codex hook configuration is invalid") from error
+        if current != expected:
+            raise AdapterError("isolated Codex home already contains a different hooks.json")
+        return hook_path
+    _write_json_sidecar(hook_path, expected)
+    return hook_path
+
+
+def remove_tool_budget_hook(hook_path: Path) -> None:
+    if not hook_path.exists() or hook_path.is_symlink():
+        return
+    with contextlib.suppress(OSError, json.JSONDecodeError):
+        if json.loads(hook_path.read_text(encoding="utf-8")) == tool_budget_hook_configuration():
+            hook_path.unlink()
 
 
 def inactivity_thresholds() -> tuple[int | None, int | None]:
@@ -843,12 +1572,31 @@ def provider_metadata(args: argparse.Namespace) -> dict[str, Any]:
         base_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
     elif args.provider_name != "openai":
         raise AdapterError("a non-default provider requires --provider-base-url")
+    transport_values = {
+        "requestMaxRetries": args.provider_request_max_retries,
+        "streamMaxRetries": args.provider_stream_max_retries,
+        "streamIdleTimeoutMs": args.provider_stream_idle_timeout_ms,
+        "websocketConnectTimeoutMs": args.provider_websocket_connect_timeout_ms,
+    }
+    if (
+        any(
+            type(value) is not int or value < 0
+            for key, value in transport_values.items()
+            if key in {"requestMaxRetries", "streamMaxRetries"}
+        )
+        or type(transport_values["streamIdleTimeoutMs"]) is not int
+        or transport_values["streamIdleTimeoutMs"] < 1
+        or type(transport_values["websocketConnectTimeoutMs"]) is not int
+        or transport_values["websocketConnectTimeoutMs"] < 1
+    ):
+        raise AdapterError("provider transport retry and timeout controls are invalid")
     return {
         "name": args.provider_name,
         "baseUrl": base_url,
         "wireApi": args.provider_wire_api,
         "requiresOpenAIAuth": args.provider_requires_openai_auth,
         "supportsWebsockets": args.provider_supports_websockets,
+        **transport_values,
     }
 
 
@@ -857,21 +1605,40 @@ def _toml_string(value: str) -> str:
 
 
 def provider_config_args(provider: dict[str, Any]) -> list[str]:
-    if provider["baseUrl"] is None:
-        return []
     name = provider["name"]
     values = {
-        "model_provider": _toml_string(name),
-        f"model_providers.{name}.name": _toml_string(name),
-        f"model_providers.{name}.base_url": _toml_string(provider["baseUrl"]),
-        f"model_providers.{name}.wire_api": _toml_string(provider["wireApi"]),
-        f"model_providers.{name}.requires_openai_auth": str(
-            provider["requiresOpenAIAuth"]
-        ).lower(),
-        f"model_providers.{name}.supports_websockets": str(
-            provider["supportsWebsockets"]
-        ).lower(),
+        f"model_providers.{name}.request_max_retries": str(
+            provider["requestMaxRetries"]
+        ),
+        f"model_providers.{name}.stream_max_retries": str(
+            provider["streamMaxRetries"]
+        ),
+        f"model_providers.{name}.stream_idle_timeout_ms": str(
+            provider["streamIdleTimeoutMs"]
+        ),
+        f"model_providers.{name}.websocket_connect_timeout_ms": str(
+            provider["websocketConnectTimeoutMs"]
+        ),
     }
+    if provider["baseUrl"] is not None:
+        values.update(
+            {
+                "model_provider": _toml_string(name),
+                f"model_providers.{name}.name": _toml_string(name),
+                f"model_providers.{name}.base_url": _toml_string(
+                    provider["baseUrl"]
+                ),
+                f"model_providers.{name}.wire_api": _toml_string(
+                    provider["wireApi"]
+                ),
+                f"model_providers.{name}.requires_openai_auth": str(
+                    provider["requiresOpenAIAuth"]
+                ).lower(),
+                f"model_providers.{name}.supports_websockets": str(
+                    provider["supportsWebsockets"]
+                ).lower(),
+            }
+        )
     return [item for key, value in values.items() for item in ("--config", f"{key}={value}")]
 
 
@@ -935,6 +1702,7 @@ def build_codex_command(
     output_schema: Path,
     output_file: Path,
     provider: dict[str, Any],
+    enable_tool_budget_hook: bool = False,
 ) -> list[str]:
     command = [
         executable,
@@ -961,6 +1729,13 @@ def build_codex_command(
         str(output_file),
         "-",
     ]
+    if enable_tool_budget_hook:
+        insertion = command.index("--sandbox")
+        command[insertion:insertion] = [
+            "--enable",
+            "hooks",
+            "--dangerously-bypass-hook-trust",
+        ]
     if args.treatment in SKILL_TREATMENTS:
         insertion = command.index("--model")
         command[insertion:insertion] = ["--add-dir", str(skill_root)]
@@ -978,11 +1753,18 @@ def run_codex_process(
     replacements: dict[str, str],
     pre_run_isolation: dict[str, Any] | None = None,
     timeout_seconds: int | None = None,
+    skill_root: Path | None = None,
+    tool_budget_state_path: Path | None = None,
 ) -> int:
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     reader_errors: list[BaseException] = []
-    progress = new_progress_receipt(utc_now())
+    tool_budget = tool_budget_limits()
+    if (tool_budget is None) != (tool_budget_state_path is None):
+        raise AdapterError(
+            "pre-execution tool budget limits and state must be configured together"
+        )
+    progress = new_progress_receipt(utc_now(), tool_budget)
     progress_started = time.monotonic()
     turn_started: float | None = None
     progress_invalid = False
@@ -1002,12 +1784,54 @@ def run_codex_process(
     sidecar_lock = threading.Lock()
     monitor_stop = threading.Event()
     first_item_observed = threading.Event()
+    tool_budget_exceeded = threading.Event()
+    started_tool_ids: set[str] = set()
     isolation_receipt: dict[str, Any] | None = None
     if os.environ.get(ISOLATION_OUTPUT_ENV) is not None:
         if pre_run_isolation is None:
             pre_run_isolation = codex_home_extension_state(allow_extensions=False)
         isolation_receipt = new_isolation_receipt(pre_run_isolation)
         write_isolation_output(isolation_receipt)
+
+    def sync_tool_budget_state() -> None:
+        if tool_budget is None or tool_budget_state_path is None:
+            return
+        try:
+            state = read_tool_budget_state(tool_budget_state_path, tool_budget)
+        except AdapterError:
+            with progress_lock:
+                progress["toolBudgetState"] = "EXCEEDED"
+                progress["toolBudgetExceededAt"] = utc_now()
+                progress["toolBudgetExceededKind"] = "CONTROL_FAILURE"
+                tool_budget_exceeded.set()
+            return
+        with progress_lock:
+            progress["repositoryToolCallsApproved"] = state[
+                "repositoryToolCallsApproved"
+            ]
+            progress["skillBootstrapToolCallsApproved"] = state[
+                "skillBootstrapToolCallsApproved"
+            ]
+            progress["preExecutionCommandsBlocked"] = state[
+                "preExecutionCommandsBlocked"
+            ]
+            progress["skillBootstrapPrerequisiteState"] = state[
+                "skillBootstrapPrerequisiteState"
+            ]
+            progress["skillBootstrapPrerequisiteBlocks"] = state[
+                "skillBootstrapPrerequisiteBlocks"
+            ]
+            progress["skillBootstrapPrerequisiteBlockedAt"] = state[
+                "skillBootstrapPrerequisiteBlockedAt"
+            ]
+            progress["skillBootstrapPrerequisiteBlockedCommandSha256"] = state[
+                "skillBootstrapPrerequisiteBlockedCommandSha256"
+            ]
+            if state["status"] == "BLOCKED":
+                progress["toolBudgetState"] = "EXCEEDED"
+                progress["toolBudgetExceededAt"] = state["blockedAt"]
+                progress["toolBudgetExceededKind"] = state["blockedKind"]
+                tool_budget_exceeded.set()
 
     def record_progress(line: str) -> None:
         nonlocal progress_invalid, turn_started
@@ -1044,25 +1868,59 @@ def run_codex_process(
                 turn_started = observed_monotonic
             if event_type.startswith("item."):
                 progress["itemEventCount"] += 1
-                progress["semanticProgressEventCount"] += 1
-                progress["lastSemanticProgressAt"] = observed_at
                 item = event.get("item") if isinstance(event, dict) else None
                 item_type = item.get("type") if isinstance(item, dict) else None
-                progress["lastSemanticProgressType"] = (
-                    f"{event_type}:{item_type}" if isinstance(item_type, str) else event_type
-                )
+                item_id = item.get("id") if isinstance(item, dict) else None
+                semantic_item = item_type in SEMANTIC_ITEM_TYPES
+                if semantic_item:
+                    progress["semanticProgressEventCount"] += 1
+                    progress["lastSemanticProgressAt"] = observed_at
+                if (
+                    tool_budget is not None
+                    and event_type == "item.started"
+                    and isinstance(item_id, str)
+                    and item_id not in started_tool_ids
+                    and item_type in TOOL_ITEM_TYPES
+                ):
+                    started_tool_ids.add(item_id)
+                    if item_type != "command_execution":
+                        progress["toolBudgetState"] = "EXCEEDED"
+                        progress["toolBudgetExceededAt"] = observed_at
+                        progress["toolBudgetExceededKind"] = "UNMETERED_TOOL"
+                        tool_budget_exceeded.set()
+                    else:
+                        command = str(item.get("command") or "")
+                        is_bootstrap = (
+                            classify_skill_bootstrap_command(
+                                command,
+                                skill_root=skill_root,
+                            )
+                            is not None
+                        )
+                        counter = (
+                            "skillBootstrapToolCallsStarted"
+                            if is_bootstrap
+                            else "repositoryToolCallsStarted"
+                        )
+                        progress[counter] += 1
                 baseline = turn_started or progress_started
-                if progress["firstItemAt"] is None:
-                    elapsed = max(0.0, round(observed_monotonic - baseline, 3))
-                    progress["firstItemAt"] = observed_at
-                    progress["timeToFirstItemSeconds"] = elapsed
-                    progress["maximumPreItemInactivitySeconds"] = elapsed
-                    progress["inactivityAgeSeconds"] = 0.0
-                    first_item_observed.set()
-                    if progress["inactivityState"] == "DIAGNOSTIC":
-                        progress["inactivityState"] = "RECOVERED_DIAGNOSTIC"
-                    elif progress["inactivityState"] == "WARNING":
-                        progress["inactivityState"] = "RECOVERED_WARNING"
+                if semantic_item:
+                    progress["lastSemanticProgressType"] = (
+                        f"{event_type}:{item_type}"
+                        if isinstance(item_type, str)
+                        else event_type
+                    )
+                    if progress["firstItemAt"] is None:
+                        elapsed = max(0.0, round(observed_monotonic - baseline, 3))
+                        progress["firstItemAt"] = observed_at
+                        progress["timeToFirstItemSeconds"] = elapsed
+                        progress["maximumPreItemInactivitySeconds"] = elapsed
+                        progress["inactivityAgeSeconds"] = 0.0
+                        first_item_observed.set()
+                        if progress["inactivityState"] == "DIAGNOSTIC":
+                            progress["inactivityState"] = "RECOVERED_DIAGNOSTIC"
+                        elif progress["inactivityState"] == "WARNING":
+                            progress["inactivityState"] = "RECOVERED_WARNING"
                 if (
                     item_type in TOOL_ITEM_TYPES
                     and progress["firstToolCallAt"] is None
@@ -1071,6 +1929,30 @@ def run_codex_process(
                     progress["timeToFirstToolCallSeconds"] = max(
                         0.0, round(observed_monotonic - baseline, 3)
                     )
+
+    def record_transport_progress(line: str) -> bool:
+        observed_at = utc_now()
+        state: str | None = None
+        timestamp_field: str | None = None
+        if WEBSOCKET_CONNECTED in line:
+            state = "WEBSOCKET_CONNECTED"
+            timestamp_field = "providerTransportConnectedAt"
+        elif WEBSOCKET_CONNECT_FAILED in line:
+            state = "WEBSOCKET_CONNECT_FAILED"
+            timestamp_field = "providerTransportFailedAt"
+        elif WEBSOCKET_HTTPS_FALLBACK in line:
+            state = "HTTPS_FALLBACK"
+            timestamp_field = "providerTransportFallbackAt"
+        elif WEBSOCKET_CONNECTING in line:
+            state = "WEBSOCKET_CONNECTING"
+            timestamp_field = "providerTransportStartedAt"
+        if state is None or timestamp_field is None:
+            return False
+        with progress_lock:
+            progress["providerTransportState"] = state
+            if progress[timestamp_field] is None:
+                progress[timestamp_field] = observed_at
+        return True
 
     def progress_snapshot() -> dict[str, Any]:
         with progress_lock:
@@ -1112,21 +1994,38 @@ def run_codex_process(
             if persist:
                 persist_progress()
 
+    def monitor_tool_budget() -> None:
+        if tool_budget_state_path is None:
+            return
+        while not monitor_stop.wait(INACTIVITY_POLL_SECONDS):
+            sync_tool_budget_state()
+            if tool_budget_exceeded.is_set():
+                persist_progress()
+                return
+
     def drain(
         stream: Any,
         sink: Any,
         chunks: list[str],
         *,
-        persist: bool,
+        observation: str | None,
     ) -> None:
         try:
             for line in iter(stream.readline, ""):
+                if observation == "PROVIDER_TRANSPORT":
+                    line = WEBSOCKET_ACCEPT_PATTERN.sub(
+                        r'\1"[REDACTED_HANDSHAKE_PROOF]"', line
+                    )
                 chunks.append(line)
                 sink.write(line)
                 sink.flush()
-                if persist:
+                if observation == "HOST_EVENTS":
                     record_progress(line)
                     persist_stdout()
+                elif observation == "PROVIDER_TRANSPORT" and record_transport_progress(
+                    line
+                ):
+                    persist_progress()
         except BaseException as error:  # pragma: no cover - defensive thread boundary.
             reader_errors.append(error)
         finally:
@@ -1167,19 +2066,21 @@ def run_codex_process(
     stdout_thread = threading.Thread(
         target=drain,
         args=(process.stdout, sys.stdout, stdout_lines),
-        kwargs={"persist": True},
+        kwargs={"observation": "HOST_EVENTS"},
         daemon=True,
     )
     stderr_thread = threading.Thread(
         target=drain,
         args=(process.stderr, sys.stderr, stderr_lines),
-        kwargs={"persist": False},
+        kwargs={"observation": "PROVIDER_TRANSPORT"},
         daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()
     monitor_thread = threading.Thread(target=monitor_inactivity, daemon=True)
     monitor_thread.start()
+    tool_budget_thread = threading.Thread(target=monitor_tool_budget, daemon=True)
+    tool_budget_thread.start()
     try:
         process.stdin.write(prompt)
         process.stdin.flush()
@@ -1196,9 +2097,15 @@ def run_codex_process(
     ) -> str:
         monitor_stop.set()
         monitor_thread.join(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+        tool_budget_thread.join(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
         stdout_thread.join(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
         stderr_thread.join(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
-        if monitor_thread.is_alive() or stdout_thread.is_alive() or stderr_thread.is_alive():
+        if (
+            monitor_thread.is_alive()
+            or tool_budget_thread.is_alive()
+            or stdout_thread.is_alive()
+            or stderr_thread.is_alive()
+        ):
             cleanup = "FAILED"
         if isolation_receipt is not None:
             try:
@@ -1237,15 +2144,45 @@ def run_codex_process(
             progress["terminationReason"] = termination_reason
             progress["timeoutPhase"] = timeout_phase
             progress["processTreeCleanup"] = cleanup
+        sync_tool_budget_state()
+        if tool_budget is not None:
+            completed_trace = parse_tool_trace("".join(stdout_lines), replacements)
+            executed_commands = sum(
+                1
+                for item in completed_trace["items"]
+                if item["type"] == "commandExecution"
+                and isinstance(item.get("exitCode"), int)
+            )
+            with progress_lock:
+                approved_commands = (
+                    progress["repositoryToolCallsApproved"]
+                    + progress["skillBootstrapToolCallsApproved"]
+                )
+                accounted_commands = (
+                    approved_commands + progress["preExecutionCommandsBlocked"]
+                )
+                if executed_commands > accounted_commands:
+                    progress["toolBudgetState"] = "EXCEEDED"
+                    progress["toolBudgetExceededAt"] = utc_now()
+                    progress["toolBudgetExceededKind"] = "CONTROL_FAILURE"
+                    tool_budget_exceeded.set()
         persist_stdout()
         return cleanup
 
     timed_out = False
+    budget_exceeded = False
     timeout_phase: str | None = None
     try:
         while True:
+            if tool_budget_exceeded.is_set():
+                budget_exceeded = True
+                break
             observed_returncode = process.poll()
             if observed_returncode is not None:
+                sync_tool_budget_state()
+                if tool_budget_exceeded.wait(TIMEOUT_RACE_SETTLE_SECONDS):
+                    budget_exceeded = True
+                    break
                 returncode = observed_returncode
                 break
             elapsed = time.monotonic() - progress_started
@@ -1276,7 +2213,15 @@ def run_codex_process(
                 break
             time.sleep(0.05)
 
-        if timed_out:
+        if budget_exceeded:
+            cleanup = _terminate_codex_process_tree(process)
+            returncode = TOOL_BUDGET_EXIT_CODE
+            finalize_execution(
+                termination_reason="TOOL_BUDGET",
+                timeout_phase=None,
+                cleanup=cleanup,
+            )
+        elif timed_out:
             cleanup = _terminate_codex_process_tree(process)
             returncode = TIMEOUT_EXIT_CODE
             finalize_execution(
@@ -1291,6 +2236,12 @@ def run_codex_process(
                 timeout_phase=None,
                 cleanup=cleanup,
             )
+            if tool_budget_exceeded.is_set():
+                returncode = TOOL_BUDGET_EXIT_CODE
+                with progress_lock:
+                    progress["terminationReason"] = "TOOL_BUDGET"
+                    progress["timeoutPhase"] = None
+                persist_progress()
     except BaseException as error:
         cleanup = _terminate_codex_process_tree(process)
         reason = "INTERRUPTED" if isinstance(error, (KeyboardInterrupt, SystemExit)) else "ERROR"
@@ -1313,7 +2264,10 @@ def run_codex_process(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    effective_argv = sys.argv[1:] if argv is None else argv
+    if effective_argv == ["--tool-budget-hook"]:
+        return run_tool_budget_hook()
+    args = parse_args(effective_argv)
     if args.describe and args.prepare_isolation:
         raise AdapterError("--describe and --prepare-isolation are mutually exclusive")
     provider = provider_metadata(args)
@@ -1345,7 +2299,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema": "review-craft.eval-adapter.v6",
+                    "schema": "review-craft.eval-adapter.v10",
                     "name": "codex-cli",
                     "version": codex_version(),
                     "model": args.model,
@@ -1380,6 +2334,41 @@ def main(argv: list[str] | None = None) -> int:
                         "environmentVariable": SAMPLE_TIMEOUT_ENV,
                         "firstItemEnvironmentVariable": FIRST_ITEM_TIMEOUT_ENV,
                         "timeoutExitCode": TIMEOUT_EXIT_CODE,
+                        "finalizationGraceSeconds": TIMEOUT_FINALIZATION_GRACE_SECONDS,
+                    },
+                    "toolBudgetControl": {
+                        "protocol": TOOL_BUDGET_CONTROL_PROTOCOL,
+                        "transport": "ENV_VALUE",
+                        "repositoryLimitEnvironmentVariable": (
+                            REPOSITORY_TOOL_CALL_LIMIT_ENV
+                        ),
+                        "skillBootstrapLimitEnvironmentVariable": (
+                            SKILL_BOOTSTRAP_TOOL_CALL_LIMIT_ENV
+                        ),
+                        "enforcementEvent": "PreToolUse",
+                        "commandEnforcement": "PRE_EXECUTION_BLOCK",
+                        "nonCommandEnforcement": "ITEM_STARTED_EARLY_TERMINATION",
+                        "hookDecision": "block",
+                        "hookTrustMode": "AUTOMATION_BYPASS",
+                        "stateTransport": "ADAPTER_MANAGED_PATH",
+                        "skillBootstrapPrerequisite": (
+                            "REQUIRED_WHEN_LIMIT_POSITIVE"
+                        ),
+                        "prerequisiteEnforcement": (
+                            "RECOVERABLE_PRE_EXECUTION_BLOCK"
+                        ),
+                        "maxRecoverablePrerequisiteBlocks": (
+                            MAX_RECOVERABLE_BOOTSTRAP_PREREQUISITE_BLOCKS
+                        ),
+                        "prerequisiteFailureKind": "SKILL_BOOTSTRAP_REQUIRED",
+                        "bootstrapCommandPolicy": "DEDICATED_BOUND_SKILL_READ_V1",
+                        "hookConfigurationSha256": (
+                            tool_budget_hook_configuration_sha256()
+                        ),
+                        "hookImplementationSha256": (
+                            tool_budget_hook_implementation_sha256()
+                        ),
+                        "budgetExitCode": TOOL_BUDGET_EXIT_CODE,
                         "finalizationGraceSeconds": TIMEOUT_FINALIZATION_GRACE_SECONDS,
                     },
                     "isolationPreparation": {
@@ -1442,6 +2431,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.workspace_marker or args.workspace_key or args.round_number is not None:
         raise AdapterError("review operation must not receive a repair workspace marker")
     prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    limits = tool_budget_limits()
     command = build_codex_command(
         executable=executable,
         args=args,
@@ -1451,8 +2441,15 @@ def main(argv: list[str] | None = None) -> int:
         output_schema=Path(args.output_schema).resolve(strict=True),
         output_file=Path(args.output_file).resolve(),
         provider=provider,
+        enable_tool_budget_hook=limits is not None,
     )
-    command_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    command_env = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUST_LOG": CODEX_TRANSPORT_LOG_FILTER,
+    }
+    if args.treatment in SKILL_TREATMENTS:
+        command_env["SKILL"] = str(skill_root)
     if evidence_root is not None:
         command_env["REVIEW_CRAFT_EVAL_EVIDENCE_ROOT"] = str(evidence_root)
     replacements = {
@@ -1461,19 +2458,54 @@ def main(argv: list[str] | None = None) -> int:
     }
     if evidence_root is not None:
         replacements[str(evidence_root)] = "$EVIDENCE"
-    return run_codex_process(
-        command,
-        prompt=prompt,
-        command_env=command_env,
-        replacements=replacements,
-        pre_run_isolation=isolation,
-        timeout_seconds=sample_timeout_seconds(),
-    )
+    configured_timeout = sample_timeout_seconds()
+
+    if limits is None:
+        return run_codex_process(
+            command,
+            prompt=prompt,
+            command_env=command_env,
+            replacements=replacements,
+            pre_run_isolation=isolation,
+            timeout_seconds=configured_timeout,
+            skill_root=skill_root,
+        )
+
+    home = Path(os.environ["CODEX_HOME"]).expanduser().resolve(strict=True)
+    state_path = home / f".review-craft-tool-budget-state-{os.getpid()}.json"
+    wait_seconds = (configured_timeout or 900) + TIMEOUT_FINALIZATION_GRACE_SECONDS
+    with exclusive_file_lock(
+        home,
+        name=TOOL_BUDGET_HOOK_LOCK,
+        wait_seconds=wait_seconds,
+        timeout_message="timed out waiting for another isolated Codex evaluation",
+    ):
+        hook_path = install_tool_budget_hook(home)
+        initialize_tool_budget_state(state_path, limits)
+        command_env[TOOL_BUDGET_STATE_ENV] = str(state_path)
+        command_env[TOOL_BUDGET_SKILL_ROOT_ENV] = str(skill_root)
+        try:
+            return run_codex_process(
+                command,
+                prompt=prompt,
+                command_env=command_env,
+                replacements=replacements,
+                pre_run_isolation=isolation,
+                timeout_seconds=configured_timeout,
+                skill_root=skill_root,
+                tool_budget_state_path=state_path,
+            )
+        finally:
+            remove_tool_budget_hook(hook_path)
+            with contextlib.suppress(OSError):
+                state_path.unlink()
+            with contextlib.suppress(OSError):
+                (home / _tool_budget_state_lock_name(state_path)).unlink()
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (AdapterError, OSError, ValueError) as error:
+    except (AdapterError, OSError, TimeoutError, ValueError) as error:
         print(f"codex eval adapter: {error}", file=sys.stderr)
         raise SystemExit(2) from None
