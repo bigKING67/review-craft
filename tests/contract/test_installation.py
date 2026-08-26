@@ -19,16 +19,21 @@ class InstallationContractTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
         required_fragments = (
-            "## Install as a Codex or Agent Skill",
+            "## Install for Codex CLI",
             "--repo bigKING67/review-craft",
             "--path skills/review-craft",
-            f"--ref v{version}",
+            "--ref <release-tag>",
             '--dest "$HOME/.agents/skills"',
-            "## Use from a source checkout",
-            "## Use with Pi or the Codex plugin",
+            "$review-craft perform a bounded",
+            "## Install for Claude Code",
+            '"$HOME/.claude/skills/review-craft"',
+            "/review-craft perform a bounded",
+            "## Install for Pi",
             "pi install npm:@bigking67/review-craft",
+            "pi --skill ./skills/review-craft",
+            "/skill:review-craft perform a bounded",
             ".codex-plugin/plugin.json",
-            '"ready": true',
+            '{"ready": true',
             f'"version": "{version}"',
         )
         for fragment in required_fragments:

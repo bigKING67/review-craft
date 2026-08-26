@@ -91,90 +91,11 @@ REQUIRED_FILES = (
     "skills/review-craft/schemas/module-map.schema.json",
     "skills/review-craft/schemas/review-scope.schema.json",
     "skills/review-craft/scripts/review_craft.py",
-    "evals/prompts/ordinary-review.md",
-    "evals/prompts/review-craft.md",
-    "evals/prompts/risk-lens-review.md",
-    "evals/prompts/review-craft-evidence-loop.md",
-    "evals/prompts/remediation-ordinary-review.md",
-    "evals/prompts/remediation-review-craft.md",
-    "evals/prompts/remediation-repair.md",
-    "evals/schemas/eval-adapter.schema.json",
-    "evals/schemas/eval-real-repository-adapters.schema.json",
-    "evals/schemas/eval-real-repository-adjudication.schema.json",
-    "evals/schemas/eval-real-repository-adjudication-v2.schema.json",
-    "evals/schemas/eval-real-repository-adjudication-v3.schema.json",
-    "evals/schemas/eval-real-repository-adjudication-mapping.schema.json",
-    "evals/schemas/eval-real-repository-oracle-assessment.schema.json",
-    "evals/schemas/eval-real-repository-adjudication-packet.schema.json",
-    "evals/schemas/eval-real-repository-adjudication-submission.schema.json",
-    "evals/schemas/eval-real-repository-blind-suite.schema.json",
-    "evals/schemas/eval-real-repository-campaign.schema.json",
-    "evals/schemas/eval-real-repository-promotion-receipt.schema.json",
-    "evals/schemas/eval-real-repository-materialization.schema.json",
-    "evals/schemas/eval-real-repository-output.schema.json",
-    "evals/schemas/eval-real-repository-stability.schema.json",
-    "evals/schemas/eval-real-repository-stability-v2.schema.json",
-    "evals/schemas/eval-real-repository-suite.schema.json",
-    "evals/schemas/eval-ablation-adjudication-result.schema.json",
-    "evals/schemas/eval-ablation-adjudication-result-v2.schema.json",
-    "evals/schemas/eval-ablation-adjudication.schema.json",
-    "evals/schemas/eval-ablation-adjudication-v2.schema.json",
-    "evals/schemas/eval-ablation-blind-bundle.schema.json",
-    "evals/schemas/eval-ablation-blind-bundle-v2.schema.json",
-    "evals/schemas/eval-ablation-comparison.schema.json",
-    "evals/schemas/eval-ablation-comparison-v2.schema.json",
-    "evals/schemas/eval-ablation-run.schema.json",
-    "evals/schemas/eval-ablation-run-v2.schema.json",
-    "evals/schemas/eval-ablation-schedule.schema.json",
-    "evals/schemas/eval-ablation-schedule-v2.schema.json",
-    "evals/schemas/eval-ablation-snapshot.schema.json",
-    "evals/schemas/eval-ablation-snapshot-v2.schema.json",
-    "evals/schemas/eval-adjudication-result.schema.json",
-    "evals/schemas/eval-adjudication.schema.json",
-    "evals/schemas/eval-cases.schema.json",
-    "evals/schemas/eval-comparison.schema.json",
-    "evals/schemas/eval-golden-snapshot.schema.json",
-    "evals/schemas/eval-host-output.schema.json",
-    "evals/schemas/eval-progress.schema.json",
-    "evals/schemas/eval-run.schema.json",
-    "evals/schemas/eval-remediation-cases.schema.json",
-    "evals/schemas/eval-remediation-oracle.schema.json",
-    "evals/schemas/eval-remediation-repair-output.schema.json",
-    "evals/schemas/eval-remediation-review-output.schema.json",
-    "evals/schemas/eval-remediation-run.schema.json",
-    "evals/schemas/eval-routing-cases.schema.json",
-    "evals/schemas/eval-routing-output.schema.json",
-    "evals/schemas/eval-routing-result.schema.json",
-    "evals/schemas/eval-tool-trace.schema.json",
-    "evals/schemas/eval-usage.schema.json",
-    "evals/specs/self-correction-cases.json",
-    "evals/specs/remediation-safety-cases.json",
-    "evals/specs/routing-cases.json",
-    "evals/specs/real-repositories.json",
-    "evals/verifiers/verify_case.py",
-    "evals/verifiers/verify_remediation_case.py",
-    "evals/remediation-safety/README.md",
-    "evals/routing-results/README.md",
-    "evals/ablation-results/README.md",
-    "evals/real-repositories/README.md",
-    "evals/real-repositories/current/blind-suite.json",
-    "evals/real-repositories/current/materialization.json",
-    "evals/real-repositories/verifiers/README.md",
-    "evals/golden-results/705dbac-gpt-5.6-sol/README.md",
-    "evals/golden-results/705dbac-gpt-5.6-sol/snapshot.json",
-    "scripts/codex_eval_adapter.py",
     "scripts/benchmark_runtime.py",
     "scripts/complexity_budget.py",
-    "scripts/eval_contracts.py",
-    "scripts/eval_output_safety.py",
     "scripts/package_check.py",
     "scripts/package_e2e_fixture.py",
-    "scripts/real_repository_benchmark.py",
-    "scripts/real_repository_contracts.py",
     "scripts/release_gate.py",
-    "scripts/remediation_safety.py",
-    "scripts/routing_eval.py",
-    "scripts/run_evals.py",
 )
 
 FORBIDDEN_PARTS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "node_modules"}
@@ -236,7 +157,6 @@ def validate_schemas(errors: list[str]) -> None:
     schemas: dict[str, dict] = {}
     schema_roots = (
         ROOT / "skills" / "review-craft" / "schemas",
-        ROOT / "evals" / "schemas",
         ROOT / "benchmarks" / "schemas",
         ROOT / "contracts",
     )
@@ -259,78 +179,6 @@ def validate_schemas(errors: list[str]) -> None:
             for error in schema_errors:
                 location = ".".join(str(part) for part in error.path) or "<root>"
                 errors.append(f"{config_name}:{location}: {error.message}")
-    cases_schema_path = ROOT / "evals/schemas/eval-cases.schema.json"
-    if cases_schema_path.exists():
-        schema = schemas.get("eval-cases.schema.json")
-        from eval_contracts import validate_eval_suite
-        from real_repository_contracts import (
-            validate_blind_suite as validate_real_repository_blind_suite,
-        )
-        from real_repository_contracts import (
-            validate_materialization_receipt,
-        )
-        from real_repository_contracts import (
-            validate_suite as validate_real_repository_suite,
-        )
-        from remediation_safety import validate_remediation_suite
-        from routing_eval import validate_routing_suite
-
-        for cases_path in sorted((ROOT / "evals/specs").glob("*.json")):
-            cases = json.loads(cases_path.read_text(encoding="utf-8"))
-            remediation = cases.get("schema") == "review-craft.eval-remediation-cases.v1"
-            routing = cases.get("schema") == "review-craft.eval-routing-cases.v1"
-            real_repository = cases.get("schema") == "review-craft.eval-real-repository-suite.v1"
-            if remediation:
-                selected_schema = schemas.get("eval-remediation-cases.schema.json")
-                validator = validate_remediation_suite
-            elif routing:
-                selected_schema = schemas.get("eval-routing-cases.schema.json")
-                validator = validate_routing_suite
-            elif real_repository:
-                selected_schema = schemas.get("eval-real-repository-suite.schema.json")
-                validator = validate_real_repository_suite
-            else:
-                selected_schema = schema
-                validator = validate_eval_suite
-            if selected_schema is not None:
-                case_errors = sorted(
-                    Draft202012Validator(selected_schema).iter_errors(cases),
-                    key=lambda item: list(item.path),
-                )
-                for error in case_errors:
-                    location = ".".join(str(part) for part in error.path) or "<root>"
-                    errors.append(f"{cases_path.relative_to(ROOT)}:{location}: {error.message}")
-            for error in validator(cases):
-                errors.append(f"{cases_path.relative_to(ROOT)}:{error}")
-        real_suite_path = ROOT / "evals/specs/real-repositories.json"
-        blind_path = ROOT / "evals/real-repositories/current/blind-suite.json"
-        materialization_path = ROOT / "evals/real-repositories/current/materialization.json"
-        if real_suite_path.exists() and blind_path.exists() and materialization_path.exists():
-            suite = json.loads(real_suite_path.read_text(encoding="utf-8"))
-            blind = json.loads(blind_path.read_text(encoding="utf-8"))
-            receipt = json.loads(materialization_path.read_text(encoding="utf-8"))
-            for error in validate_real_repository_blind_suite(blind, suite):
-                errors.append(f"{blind_path.relative_to(ROOT)}:{error}")
-            for error in validate_materialization_receipt(receipt, suite):
-                errors.append(f"{materialization_path.relative_to(ROOT)}:{error}")
-    from eval_contracts import validate_ablation_snapshot, validate_golden_snapshot
-
-    golden_root = ROOT / "evals/golden-results"
-    for snapshot_path in sorted(golden_root.glob("*/snapshot.json")):
-        try:
-            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        for error in validate_golden_snapshot(snapshot):
-            errors.append(f"{snapshot_path.relative_to(ROOT)}:{error}")
-    ablation_root = ROOT / "evals/ablation-results"
-    for snapshot_path in sorted(ablation_root.glob("*/snapshot.json")):
-        try:
-            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        for error in validate_ablation_snapshot(snapshot):
-            errors.append(f"{snapshot_path.relative_to(ROOT)}:{error}")
 
 
 def validate_required_files(errors: list[str]) -> None:
@@ -368,10 +216,13 @@ def validate_skill(errors: list[str]) -> None:
         return
     frontmatter = text.split("---\n", 2)[1]
     keys = [line.split(":", 1)[0] for line in frontmatter.splitlines() if ":" in line]
-    if keys != ["name", "description"]:
-        errors.append(f"SKILL.md: frontmatter must contain only name and description, got {keys}")
+    expected_keys = ["name", "description"]
+    if keys != expected_keys:
+        errors.append(f"SKILL.md: frontmatter must contain {expected_keys}, got {keys}")
     if "name: review-craft" not in frontmatter:
         errors.append("SKILL.md: canonical name is missing")
+    if "context: fork" in text:
+        errors.append("SKILL.md: host-specific forked execution is not portable")
     if "[TODO" in text or "[TODO" in (ROOT / ".codex-plugin/plugin.json").read_text():
         errors.append("skill or plugin contains a TODO placeholder")
     if len(text.splitlines()) > 500:

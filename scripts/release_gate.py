@@ -30,10 +30,6 @@ BASE_COMMANDS = (
             "test_*.py",
         ],
     ),
-    (
-        "routing policy",
-        ["uv", "run", "--locked", "python", "scripts/routing_eval.py", "gate"],
-    ),
     ("source validation", ["uv", "run", "--locked", "python", "scripts/validate.py"]),
     ("lint", ["uv", "run", "--locked", "ruff", "check", "."]),
 )

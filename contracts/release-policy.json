@@ -17,7 +17,7 @@
     "skill-validation",
     "plugin-validation",
     "complexity-budget",
-    "routing-policy",
+    "skill-portability",
     "package-boundary",
     "installed-canonical-e2e",
     "installed-remediation-e2e",

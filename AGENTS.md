@@ -3,9 +3,13 @@
 ## Product boundary
 
 - `skills/review-craft/` is the only installable runtime product.
-- Keep repository governance under `scripts/`, `contracts/`, `tests/`, and `evals/`.
+- Keep repository governance under `scripts/`, `contracts/`, and `tests/`.
 - Do not duplicate inventory, validation, scoring, or report generation outside the canonical runtime.
-- Version 0.6 supports read-only `review`, `diff`, and `focus` modes plus explicitly
+- Version 0.7 keeps the portable Skill as the only product entrypoint. The bounded path
+  is the default; the deterministic runtime is optional and reserved for explicitly
+  requested canonical or high-assurance work. No workflow requires a subagent, agent
+  team, forked context, or host-specific orchestration.
+- Version 0.7 supports read-only `review`, `diff`, and `focus` modes plus explicitly
   authorized fix preparation and verification. The runtime records and validates fix
   evidence but never edits target source. It supports immutable fix-attempt lineage with
   post-command assessment plus the independent `review-craft.delivery.v2` export.
@@ -18,6 +22,10 @@
   Follow `references/protocol-lifecycle.md` for frozen legacy write and retirement windows.
   Do not document deep multi-pass, historical comparison, SARIF, MCP, or automatic source
   mutation as implemented.
+- Keep ordinary development and release gates deterministic and provider-free. Model
+  comparisons, REAL_HOST campaigns, routing matrices, ablations, adjudication, and Golden
+  claims are outside the main repository. A future research run requires a separate,
+  explicitly authorized scope and must not become a normal release gate.
 
 ## Safety and evidence
 

@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for repository-wide or high-assurance engineering review requiring explicit coverage, evidence-validated findings, proportional remediation decisions, and deterministic reporting, or for explicitly authorized canonical fix and delivery verification. Prefer normal Codex Review for quick PR, diff, or local checks. Do not use for casual or approximate scoring, visual UI/UX critique, or deep exploit validation."
+description: "Use for repository-wide or high-assurance engineering review requiring explicit coverage, evidence-validated findings, proportional remediation decisions, and deterministic reporting, or for explicitly authorized canonical fix and delivery verification. Prefer the host's native review for quick PR, diff, or local checks. Do not use for casual scoring, visual UI/UX critique, or deep exploit validation."
 ---
 
 # Review Craft
@@ -16,13 +16,15 @@ already-appropriate code.
 
 - Use the host's normal code-review workflow for a PR, commit, branch diff, or
   small working-tree change.
-- Use `design-craft` for visual UI/UX, interaction, motion, design-system, and
-  product-presentation quality.
-- Use Codex Security for threat modeling, vulnerability discovery, exploitability,
-  attack paths, PoCs, and security remediation validation.
+- Use a dedicated design workflow, such as `design-craft` when available, for visual
+  UI/UX, interaction, motion, design-system, and product-presentation quality.
+- Use the host's dedicated security workflow for threat modeling, vulnerability
+  discovery, exploitability, attack paths, PoCs, and remediation validation.
 - Review basic security posture here, but route plausible high-impact security
-  candidates to Codex Security instead of recreating a weaker security scan.
-- Version 0.6 supports read-only `review`, `diff`, and `focus` workflows plus authorized
+  candidates to that security workflow instead of recreating a weaker scan.
+- Review Craft runs inline in the current host and does not require subagents, agent
+  teams, forked context, or host-private orchestration.
+- Version 0.7 supports read-only `review`, `diff`, and `focus` workflows plus authorized
   remediation verification, immutable fix-attempt lineage, and delivery v1/v2
   attestations. Preflight creates `review-craft.run.v4` with content-bound registered
   manual artifacts; sealed run.v3 is validation-only historical data. The runtime never
@@ -103,7 +105,7 @@ Read [modes-and-profiles.md](references/modes-and-profiles.md) before `diff`, `f
 
 ## Bounded review fast path
 
-Use this path only when all of the following are true:
+This is the default path. Use it only when all of the following are true:
 
 - the requested scope is small enough to read completely and account for every file;
 - the user requests one structured finding or decision, not a canonical full review;
@@ -129,15 +131,19 @@ boundary is active:
 - canonical full-review coverage and artifact flow: `workflow.md`;
 - numeric scoring and report finalization: `scoring-and-report.md`.
 
-Exit the fast path and use the standard workflow when evidence is incomplete,
-scope grows, authority conflicts, multiple candidates require reconciliation, or
-the result could justify `DELETE` or `REWRITE`. Those decisions still require the
-full compatibility, migration, rollback, and verification gates.
+Exit the fast path when evidence is incomplete, scope grows, authority conflicts,
+multiple candidates require reconciliation, or the result could justify `DELETE` or
+`REWRITE`. Do not automatically enter the canonical workflow. If the user did not
+explicitly request canonical artifacts or high-assurance evidence, narrow the scope or
+return the evidence gap and request separate authorization. `DELETE` and `REWRITE`
+decisions still require the full compatibility, migration, rollback, and verification
+gates.
 
-## Standard workflow
+## Canonical workflow
 
-Use this workflow for canonical full reviews and whenever the bounded fast path's
-eligibility or exit conditions are not satisfied.
+Use this optional deterministic workflow only when the user explicitly requests a
+canonical full review, numeric score, `diff` or `focus` artifact, or high-assurance
+evidence. A bounded-path exit condition is not authorization to run this workflow.
 
 Read [workflow.md](references/workflow.md) before starting. It is authoritative for
 runtime resolution, preflight commands, artifact order, coverage closure, evidence
@@ -231,7 +237,8 @@ Return a concise human summary plus the report path. State:
 - commands actually run and their results;
 - remaining gaps, blocked candidates, and unverified environments.
 
-Do not say standard review fixed the repository or claim superiority over Codex Review or Codex Security from a self-score.
+Do not say a review fixed the repository or claim superiority over a host-native review
+or security workflow from a self-score.
 
 ## Supporting references
 

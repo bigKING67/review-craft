@@ -96,8 +96,8 @@ Canonical runs support `fast | standard | assured` through `assuranceLevel` or
   in canonical order.
 
 The bounded path is still lighter than canonical `fast`: it emits neither canonical
-artifacts nor a numeric score. The repository evidence-loop treatment is an eval protocol,
-not proof that an `assured` verifier ran.
+artifacts nor a numeric score. It does not imply independent verification or satisfy the
+`assured` verifier requirement.
 
 ## Run schema compatibility
 
