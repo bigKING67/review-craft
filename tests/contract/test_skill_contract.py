@@ -49,9 +49,6 @@ class SkillContractTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
         self.assertIn("does not require subagents", text)
 
-        policy = (SKILL_ROOT / "agents/openai.yaml").read_text(encoding="utf-8")
-        self.assertIn("allow_implicit_invocation: false", policy)
-
         integrations = (SKILL_ROOT / "references/integrations.md").read_text(
             encoding="utf-8"
         )
@@ -59,6 +56,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("Codex Security", integrations)
         self.assertIn("Host-native review", integrations)
         self.assertIn("Host-native security workflow", integrations)
+
+    def test_codex_implicit_routing_is_enabled(self) -> None:
+        policy = (SKILL_ROOT / "agents/openai.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("allow_implicit_invocation: true", policy)
 
     def test_all_relative_markdown_links_resolve_inside_the_skill(self) -> None:
         skill_root = SKILL_ROOT.resolve()
