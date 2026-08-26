@@ -5,14 +5,13 @@ agent understand a repository, account for review coverage, validate candidate f
 choose proportionate remediation, and preserve well-designed code instead of rewarding issue
 count.
 
-The current source tree is the **0.7.0 candidate**. It is not a release announcement. A commit,
-tag, npm publication, and host-compatibility claim each require their own evidence and
-authorization.
+The current release line is **0.7.0**. Install from the exact `v0.7.0` tag or published npm
+version rather than a moving branch.
 
 ## Product boundary
 
 - `skills/review-craft/` is the only installable product.
-- The same inline Skill contract is designed for Codex CLI, Claude Code, and Pi. It does
+- The same inline Skill contract is designed for Codex CLI, Claude Code, Pi, and Grok. It does
   not require subagents, agent teams, forked context, or a host-private orchestration API.
 - A bounded, read-only review is the default path.
 - The bundled Python runtime is optional. Use it only for an explicitly requested canonical
@@ -159,6 +158,25 @@ Invoke it explicitly:
 
 The npm manifest declares `pi.skills = ["skills/review-craft"]`. Pi/npm installation does
 not register a second copy under a Codex or Claude Skill root.
+
+## Install for Grok
+
+Grok discovers the shared `~/.agents/skills` root. If Review Craft is already installed there
+for Codex or Pi, do not create a second copy. Otherwise install the complete Skill directory
+from the exact release tag using the Codex installation command above or another trusted
+tag-pinned installer.
+
+Confirm discovery without starting a model session:
+
+```text
+grok inspect
+```
+
+Invoke it explicitly:
+
+```text
+/review-craft perform a bounded evidence-driven review of this module.
+```
 
 ## Verify the installed runtime
 
@@ -311,7 +329,7 @@ Static contracts prove package layout and standard metadata, not actual host inv
 Before publishing an unqualified compatibility claim for a release candidate:
 
 1. extract the exact same candidate package for all hosts;
-2. explicitly invoke Review Craft once in Codex, Claude Code, and Pi;
+2. explicitly invoke Review Craft once in Codex, Claude Code, Pi, and Grok;
 3. restrict each run to read/search tools and one bounded fixture;
 4. require one evidence-backed disposition and an unchanged target hash/Git state;
 5. record host version, package SHA-256, date, and `PASS` or `UNVERIFIED` outside Git.

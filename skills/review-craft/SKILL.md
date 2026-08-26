@@ -116,7 +116,7 @@ This is the default path. Use it only when all of the following are true:
 Inspect the scoped controls, source, tests, and relevant engineering context. Build
 the minimum quality model needed for the decision, then run only decisive, narrow,
 read-only validation. Return one evidence-backed finding or an evidence-backed
-`KEEP`, `DEFER`, `MEASURE`, or `DOCUMENT` disposition. A no-finding result without
+`KEEP`, `CLEAN_UP`, `DEFER`, `MEASURE`, or `DOCUMENT` disposition. A no-finding result without
 evidence supporting its disposition is incomplete.
 
 Do not run `doctor`, `preflight`, or the canonical artifact workflow by default on

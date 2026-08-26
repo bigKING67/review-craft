@@ -32,7 +32,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertLessEqual(len(metadata["description"]), 1024)
 
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for host in ("Codex CLI", "Claude Code", "Pi"):
+        for host in ("Codex CLI", "Claude Code", "Pi", "Grok"):
             self.assertIn(f"## Install for {host}", readme)
 
     def test_core_skill_has_no_forked_or_host_private_execution_dependency(self) -> None:
@@ -90,6 +90,7 @@ class SkillContractTests(unittest.TestCase):
 
         self.assertIn("default path", bounded)
         self.assertIn("evidence-backed", bounded)
+        self.assertIn("`KEEP`, `CLEAN_UP`, `DEFER`, `MEASURE`, or `DOCUMENT`", bounded)
         self.assertIn("A no-finding result without\nevidence", bounded)
         self.assertIn("Do not emit a numeric score", bounded)
         self.assertIn("Do not run `doctor`, `preflight`", bounded)
