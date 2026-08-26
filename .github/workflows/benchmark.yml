@@ -45,6 +45,7 @@ jobs:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          download-from-astral-mirror: false
           enable-cache: true
       - name: Install baseline dependencies
         working-directory: benchmark-baseline
@@ -72,7 +73,7 @@ jobs:
           --result artifacts/benchmark-pr-1k.json
           --max-regression-percent 20
           --output artifacts/benchmark-pr-comparison.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: benchmark-pr-1k
@@ -97,6 +98,7 @@ jobs:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          download-from-astral-mirror: false
           enable-cache: true
       - run: uv sync --locked --group dev
       - name: Run 1k and 10k telemetry
@@ -104,7 +106,7 @@ jobs:
           uv run --locked python scripts/benchmark_runtime.py run
           --sizes 1000,10000 --repetitions 5 --warmups 1
           --output artifacts/benchmark-nightly.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: benchmark-nightly
@@ -126,6 +128,7 @@ jobs:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          download-from-astral-mirror: false
           enable-cache: true
       - run: uv sync --locked --group dev
       - name: Run 100k telemetry
@@ -133,7 +136,7 @@ jobs:
           uv run --locked python scripts/benchmark_runtime.py run
           --sizes 100000 --repetitions 3 --warmups 1
           --output artifacts/benchmark-weekly-100k.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: benchmark-weekly-100k
