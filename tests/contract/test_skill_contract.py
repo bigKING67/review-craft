@@ -177,6 +177,24 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Copyright 2026 Cursor", notice)
         self.assertIn(cursor["reviewedRevision"], notice)
 
+    def test_alibaba_open_code_review_is_tracked_without_absorption_claim(self) -> None:
+        contract = json.loads((ROOT / "contracts/upstreams.json").read_text(encoding="utf-8"))
+        alibaba = next(
+            source
+            for source in contract["sources"]
+            if source["repository"].endswith("alibaba/open-code-review")
+        )
+        notice = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+        self.assertEqual(alibaba["status"], "tracked")
+        self.assertTrue(alibaba["watchSurfaces"])
+        self.assertNotIn("absorbedSurfaces", alibaba)
+        self.assertEqual(set(alibaba["reviewedBlobs"]), set(alibaba["sourcePaths"]))
+        self.assertIn("deterministic source-location anchoring", alibaba["watchSurfaces"])
+        self.assertIn("default test-file exclusion", alibaba["excludedSurfaces"])
+        self.assertIn("No source or text", notice)
+        self.assertIn(alibaba["reviewedRevision"], notice)
+
     def test_fix_authorization_and_source_mutation_boundary_remain_explicit(self) -> None:
         text = _skill_text()
         remediation = text.split("## Remediation workflow", 1)[1].split(

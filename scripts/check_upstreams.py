@@ -18,7 +18,7 @@ DEFAULT_CONTRACT = ROOT / "contracts/upstreams.json"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 ALLOWED_STATUSES = {"tracked", "selective_absorbed", "absorbed", "rejected"}
-SOURCE_FIELDS = {
+COMMON_SOURCE_FIELDS = {
     "id",
     "repository",
     "branch",
@@ -28,6 +28,9 @@ SOURCE_FIELDS = {
     "status",
     "sourcePaths",
     "reviewedBlobs",
+}
+SURFACE_FIELDS = {
+    "watchSurfaces",
     "absorbedSurfaces",
     "excludedSurfaces",
 }
@@ -157,11 +160,27 @@ def load_contract(path: Path) -> dict[str, Any]:
     for index, source in enumerate(sources):
         if not isinstance(source, dict):
             raise UpstreamContractError(f"sources[{index}]: expected an object")
-        unexpected = sorted(set(source) - SOURCE_FIELDS)
-        missing = sorted(SOURCE_FIELDS - set(source))
+        source_fields = set(source)
+        unexpected = sorted(source_fields - COMMON_SOURCE_FIELDS - SURFACE_FIELDS)
+        missing = sorted(COMMON_SOURCE_FIELDS - source_fields)
         if unexpected or missing:
             raise UpstreamContractError(
                 f"sources[{index}]: unexpected fields {unexpected}; missing fields {missing}"
+            )
+        status = _string(source, "status", index=index)
+        if status not in ALLOWED_STATUSES:
+            raise UpstreamContractError(f"sources[{index}].status: unsupported status {status!r}")
+        expected_surfaces = (
+            {"watchSurfaces", "excludedSurfaces"}
+            if status == "tracked"
+            else {"absorbedSurfaces", "excludedSurfaces"}
+        )
+        unexpected_surfaces = sorted((source_fields & SURFACE_FIELDS) - expected_surfaces)
+        missing_surfaces = sorted(expected_surfaces - source_fields)
+        if unexpected_surfaces or missing_surfaces:
+            raise UpstreamContractError(
+                f"sources[{index}]: unexpected surface fields {unexpected_surfaces}; "
+                f"missing surface fields {missing_surfaces} for status {status!r}"
             )
         identifier = _string(source, "id", index=index)
         if identifier in seen:
@@ -190,18 +209,16 @@ def load_contract(path: Path) -> dict[str, Any]:
                 f"sources[{index}].reviewedAt: expected YYYY-MM-DD"
             ) from error
         _string(source, "license", index=index)
-        status = _string(source, "status", index=index)
-        if status not in ALLOWED_STATUSES:
-            raise UpstreamContractError(f"sources[{index}].status: unsupported status {status!r}")
         paths = _string_list(source, "sourcePaths", index=index)
         _validate_source_paths(paths, index=index)
         _reviewed_blobs(source, paths, index=index)
-        absorbed = _string_list(source, "absorbedSurfaces", index=index)
+        active_field = "watchSurfaces" if status == "tracked" else "absorbedSurfaces"
+        active = _string_list(source, active_field, index=index)
         excluded = _string_list(source, "excludedSurfaces", index=index)
-        overlap = sorted(set(absorbed) & set(excluded))
+        overlap = sorted(set(active) & set(excluded))
         if overlap:
             raise UpstreamContractError(
-                f"sources[{index}]: absorbed and excluded surfaces overlap: {overlap}"
+                f"sources[{index}]: {active_field} and excluded surfaces overlap: {overlap}"
             )
     return payload
 

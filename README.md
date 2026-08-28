@@ -358,7 +358,9 @@ Review Craft is MIT licensed. Its engineering-review design was informed by the 
 Apache-2.0 project identified in `THIRD_PARTY_NOTICES.md`. Its simplification-proof
 guidance selectively adapts concepts from the MIT-licensed upstreams pinned there. Review
 Craft does not vendor those upstream repositories; repository-governance metadata records
-the reviewed revision, source-path Git blobs, and deliberately excluded surfaces.
+the reviewed revision, source-path Git blobs, and deliberately excluded surfaces. A
+`tracked` source records non-normative watch surfaces and makes no absorption or quality
+claim; `selective_absorbed` records only the surfaces actually adapted into Review Craft.
 Source-checkout validation checks that lock offline. From a source checkout, check for
 relevant upstream drift explicitly, outside the release gate, with:
 

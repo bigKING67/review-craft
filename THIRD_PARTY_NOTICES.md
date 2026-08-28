@@ -70,3 +70,24 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Alibaba Open Code Review
+
+Review Craft tracks selected runtime-contract surfaces from Alibaba's public Open Code
+Review project as a non-normative learning source. No source or text from the reviewed
+revision has been copied or adapted. Registration does not make its Go CLI, provider
+runtime, subagent model, default exclusions, automatic mutation behavior, filtering
+policy, or benchmark claims part of Review Craft.
+
+- Project: `alibaba/open-code-review`
+- Source: <https://github.com/alibaba/open-code-review>
+- Reviewed revision: `5d255d160f9707b05537fd933d7adb68ba999c88`
+- Watched source paths: `internal/session/manifest.go`,
+  `internal/session/resume_identity.go`, `internal/diff/resolver.go`,
+  `internal/config/rules/system_rules.go`, `internal/model/preview.go`,
+  `internal/agent/preview.go`, and `skills/open-code-review/SKILL.md`
+- License: Apache-2.0
+
+If Review Craft later incorporates specific source or text, add the applicable Apache-2.0
+license, retained notices, modified-file notice, and file-level provenance before
+distribution. Until then, this entry records only the reviewed learning boundary.

@@ -68,6 +68,49 @@
         "Cursor Task subagent orchestration",
         "harsh review rhetoric as evidence"
       ]
+    },
+    {
+      "id": "alibaba/open-code-review#review-runtime-contracts",
+      "repository": "https://github.com/alibaba/open-code-review",
+      "branch": "main",
+      "reviewedRevision": "5d255d160f9707b05537fd933d7adb68ba999c88",
+      "reviewedAt": "2026-08-28",
+      "license": "Apache-2.0",
+      "status": "tracked",
+      "sourcePaths": [
+        "internal/session/manifest.go",
+        "internal/session/resume_identity.go",
+        "internal/diff/resolver.go",
+        "internal/config/rules/system_rules.go",
+        "internal/model/preview.go",
+        "internal/agent/preview.go",
+        "skills/open-code-review/SKILL.md"
+      ],
+      "reviewedBlobs": {
+        "internal/session/manifest.go": "6a113b246aff438ba881b3112991c0086fd95661",
+        "internal/session/resume_identity.go": "e318b99dbd0fc31723618def470294add53cedfa",
+        "internal/diff/resolver.go": "8443dfd70924bf1df5028b5063980bf7142b3023",
+        "internal/config/rules/system_rules.go": "567748db16a0f15c39931d81908b12af361766db",
+        "internal/model/preview.go": "2fdba24403b9fdc27a26d06457f237a4d893e9c0",
+        "internal/agent/preview.go": "dd173c35f57eb74a9a42da33e8f4858748cf0910",
+        "skills/open-code-review/SKILL.md": "00e1a685e88e2407af38be598af965e7cba04e4f"
+      },
+      "watchSurfaces": [
+        "coverage-derived terminality and sealed denominator",
+        "content-bound review resume and lineage",
+        "deterministic source-location anchoring",
+        "preview exclusion reasons and rule provenance",
+        "public-safe failure summaries"
+      ],
+      "excludedSurfaces": [
+        "Go CLI and provider runtime dependency",
+        "LLM semantic grouping as coverage authority",
+        "mandatory subagent orchestration",
+        "default test-file exclusion",
+        "automatic target-source mutation",
+        "silent candidate filtering",
+        "self-reported benchmark claims as release evidence"
+      ]
     }
   ]
 }

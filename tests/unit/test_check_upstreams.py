@@ -87,6 +87,44 @@ class UpstreamCheckTests(unittest.TestCase):
                 ):
                     load_contract(contract_path)
 
+    def test_tracked_status_requires_watch_surfaces_without_absorption_claim(self) -> None:
+        tracked = next(
+            source for source in self.contract["sources"] if source["status"] == "tracked"
+        )
+        self.assertTrue(tracked["watchSurfaces"])
+        self.assertTrue(tracked["excludedSurfaces"])
+        self.assertNotIn("absorbedSurfaces", tracked)
+
+        for mutation in ("missing_watch", "false_absorption", "overlap"):
+            payload = self._single_source_contract()
+            source = payload["sources"][0]
+            source["status"] = "tracked"
+            source["watchSurfaces"] = ["candidate contract"]
+            source.pop("absorbedSurfaces")
+            if mutation == "missing_watch":
+                source.pop("watchSurfaces")
+            elif mutation == "false_absorption":
+                source["absorbedSurfaces"] = ["unimplemented contract"]
+            else:
+                source["excludedSurfaces"] = ["candidate contract"]
+            with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
+                contract_path = Path(directory) / "upstreams.json"
+                contract_path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(mutation=mutation), self.assertRaises(
+                    UpstreamContractError
+                ):
+                    load_contract(contract_path)
+
+    def test_absorbed_status_rejects_watch_only_metadata(self) -> None:
+        payload = self._single_source_contract()
+        source = payload["sources"][0]
+        source["watchSurfaces"] = ["candidate contract"]
+        with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
+            contract_path = Path(directory) / "upstreams.json"
+            contract_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(UpstreamContractError):
+                load_contract(contract_path)
+
     def test_remote_comparison_distinguishes_repository_and_content_drift(self) -> None:
         contract = self._single_source_contract()
         source = contract["sources"][0]
