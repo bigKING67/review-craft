@@ -35,7 +35,20 @@
         "path": {"type": "string", "minLength": 1},
         "lineStart": {"type": "integer", "minimum": 1},
         "lineEnd": {"type": "integer", "minimum": 1},
-        "role": {"type": "string", "minLength": 1}
+        "role": {"type": "string", "minLength": 1},
+        "anchor": {"$ref": "#/$defs/anchor"}
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "sourceSide", "sourceSha256", "sourceLineCount", "spanSha256"],
+      "properties": {
+        "algorithm": {"const": "sha256-raw-lines-v1"},
+        "sourceSide": {"enum": ["CURRENT", "BASE"]},
+        "sourceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sourceLineCount": {"type": "integer", "minimum": 1},
+        "spanSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       }
     },
     "evidence": {

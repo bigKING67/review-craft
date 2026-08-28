@@ -101,10 +101,16 @@ artifacts nor a numeric score. It does not imply independent verification or sat
 
 ## Run schema compatibility
 
-Version 0.6 creates `review-craft.run.v4`, adds `evidence-registry.json`, and requires
+Version 0.6 created `review-craft.run.v4`, added `evidence-registry.json`, and required
 manual artifact references to use registered `artifact:<id>` identities whose files,
-SHA-256, and byte sizes validate. Sealed run.v3 artifacts remain supported as historical
-validation input, but they do not gain run.v4 manual-artifact integrity guarantees. An
-unfinished run.v3 must be finalized with its matching v0.5 runtime or restarted with the
-current preflight. Review Craft never mutates or silently upgrades an old run in place.
-See [protocol-lifecycle.md](protocol-lifecycle.md) for frozen-write and retirement windows.
+SHA-256, and byte sizes validate. The current v0.7 runtime creates
+`review-craft.run.v5`, retains those content-bound artifact identities, and additionally
+requires every candidate and finding location to carry an exact source-side and raw-span
+anchor generated from the canonical source projection.
+
+Sealed run.v4 and run.v3 artifacts remain supported as historical validation input.
+Run.v4 retains its registered-artifact and closed-reference semantics; run.v3 does not
+gain either run.v4 integrity guarantees or run.v5 location anchors. An unfinished old run
+must be finalized with its matching runtime or restarted with current preflight. Review
+Craft never mutates or silently upgrades an old run in place. See
+[protocol-lifecycle.md](protocol-lifecycle.md) for frozen-write and retirement windows.

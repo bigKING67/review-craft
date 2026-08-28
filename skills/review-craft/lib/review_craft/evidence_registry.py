@@ -139,7 +139,7 @@ def _register_locked(
 ) -> dict[str, Any]:
     manifest = read_json(_canonical_file(run_dir, "review-manifest.json"))
     if manifest.get("schemaVersion") != SCHEMA_VERSION:
-        raise ValueError("register-evidence requires a current run.v4 review")
+        raise ValueError("register-evidence requires a current run.v5 review")
     if manifest.get("status") != "draft" or manifest.get("sealedAt") is not None:
         raise ValueError("register-evidence requires an unsealed draft review")
     if manifest.get("artifacts") != ARTIFACT_PATHS:

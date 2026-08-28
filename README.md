@@ -233,6 +233,19 @@ python3 skills/review-craft/scripts/review_craft.py \
   --focus architecture,maintainability,performance
 ```
 
+Generate every candidate location from the bound source instead of hand-authoring its
+anchor. Reuse the returned location object unchanged in the matching finding:
+
+```bash
+python3 skills/review-craft/scripts/review_craft.py \
+  anchor-location --run-dir <run-dir> --path src/example.py \
+  --line-start 10 --line-end 18 --role primary
+```
+
+The command reads source without modifying the target or run artifacts. It binds the
+exact raw-line span, source side, full source digest, and source line count without
+storing source text in the run.
+
 Run only configured evidence commands, then validate and finalize:
 
 ```bash
@@ -292,7 +305,7 @@ that authorize remote proof. GitHub Release and npm registry proof are not imple
 
 | Workflow | Current protocol | Historical support | Write behavior |
 | --- | --- | --- | --- |
-| Review | `review-craft.run.v4` | sealed `run.v3` validation | writes v4 only |
+| Review | `review-craft.run.v5` | sealed `run.v4` and `run.v3` validation | writes v5 only |
 | Fix attempt | `review-craft.fix-attempt.v1` | n/a | immutable attempt directories |
 | Legacy fix | `review-craft.fix.v1` | validation and compatibility | compatibility path only |
 | Delivery | `review-craft.delivery.v2` | `delivery.v1` | writes v2 for attempt lineage |

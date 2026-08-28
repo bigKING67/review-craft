@@ -177,7 +177,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Copyright 2026 Cursor", notice)
         self.assertIn(cursor["reviewedRevision"], notice)
 
-    def test_alibaba_open_code_review_is_tracked_without_absorption_claim(self) -> None:
+    def test_alibaba_open_code_review_is_selectively_absorbed_and_tracked(self) -> None:
         contract = json.loads((ROOT / "contracts/upstreams.json").read_text(encoding="utf-8"))
         alibaba = next(
             source
@@ -186,12 +186,18 @@ class SkillContractTests(unittest.TestCase):
         )
         notice = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
-        self.assertEqual(alibaba["status"], "tracked")
+        self.assertEqual(alibaba["status"], "selective_absorbed")
+        self.assertTrue(alibaba["absorbedSurfaces"])
         self.assertTrue(alibaba["watchSurfaces"])
-        self.assertNotIn("absorbedSurfaces", alibaba)
         self.assertEqual(set(alibaba["reviewedBlobs"]), set(alibaba["sourcePaths"]))
-        self.assertIn("deterministic source-location anchoring", alibaba["watchSurfaces"])
+        self.assertIn(
+            "deterministic source-location anchoring with source-side and span-digest closure",
+            alibaba["absorbedSurfaces"],
+        )
+        self.assertIn("content-bound review resume and lineage", alibaba["watchSurfaces"])
+        self.assertFalse(set(alibaba["absorbedSurfaces"]) & set(alibaba["watchSurfaces"]))
         self.assertIn("default test-file exclusion", alibaba["excludedSurfaces"])
+        self.assertIn("independently implemented Python contract", " ".join(notice.split()))
         self.assertIn("No source or text", notice)
         self.assertIn(alibaba["reviewedRevision"], notice)
 

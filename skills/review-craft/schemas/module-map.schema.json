@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "strategy", "modules"],
   "properties": {
     "documentType": {"const": "review-craft.module-map"},
-    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4"]},
+    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4", "review-craft.run.v5"]},
     "strategy": {"type": "string", "minLength": 1},
     "modules": {"type": "array", "items": {"$ref": "#/$defs/module"}}
   },

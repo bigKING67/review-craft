@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "filesAnalyzed", "filesSkipped", "edges", "moduleEdges", "limitations"],
   "properties": {
     "documentType": {"const": "review-craft.dependency-map"},
-    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4"]},
+    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4", "review-craft.run.v5"]},
     "filesAnalyzed": {"type": "integer", "minimum": 0},
     "filesSkipped": {"type": "array", "items": {"$ref": "#/$defs/skipped"}},
     "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},

@@ -18,6 +18,7 @@ def _installed_runtime(package_root: Path) -> dict[str, Any]:
         SCORE_DIMENSIONS,
     )
     from review_craft.jsonio import read_json, sha256_json, write_json, write_jsonl
+    from review_craft.source_anchor import build_run_location
 
     module_path = Path(review_craft.__file__).resolve()
     try:
@@ -29,6 +30,7 @@ def _installed_runtime(package_root: Path) -> dict[str, Any]:
         "REMEDIATION_PHASES": REMEDIATION_PHASES,
         "SCHEMA_VERSION": SCHEMA_VERSION,
         "SCORE_DIMENSIONS": SCORE_DIMENSIONS,
+        "build_run_location": build_run_location,
         "read_json": read_json,
         "sha256_json": sha256_json,
         "write_json": write_json,
@@ -82,7 +84,13 @@ def populate_run(run_dir: Path, runtime: dict[str, Any]) -> None:
     coverage["summary"]["deferred"] = 0
     write_json(run_dir / artifacts["coverage"], coverage)
 
-    location = {"path": "app.py", "lineStart": 1, "lineEnd": 2, "role": "primary"}
+    location = runtime["build_run_location"](
+        run_dir,
+        path="app.py",
+        line_start=1,
+        line_end=2,
+        role="primary",
+    )
     candidate = {
         "id": "RC-CORR-001",
         "category": "correctness",

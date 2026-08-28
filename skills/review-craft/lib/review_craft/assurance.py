@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .constants import EVIDENCE_LEVELS, SCORE_DIMENSIONS
+from .constants import CONTENT_BOUND_SCHEMA_VERSIONS, EVIDENCE_LEVELS, SCORE_DIMENSIONS
 from .jsonio import read_json
 from .schema_validation import validate_instance
 
@@ -243,7 +243,7 @@ def validate_assurance(
     configuration = data["manifest"]["configuration"]
     if (
         "assuranceLevel" not in configuration
-        or data["manifest"].get("schemaVersion") != "review-craft.run.v4"
+        or data["manifest"].get("schemaVersion") not in CONTENT_BOUND_SCHEMA_VERSIONS
     ):
         return
     level = assurance_level(configuration)

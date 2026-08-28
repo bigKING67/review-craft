@@ -76,7 +76,7 @@
       "reviewedRevision": "5d255d160f9707b05537fd933d7adb68ba999c88",
       "reviewedAt": "2026-08-28",
       "license": "Apache-2.0",
-      "status": "tracked",
+      "status": "selective_absorbed",
       "sourcePaths": [
         "internal/session/manifest.go",
         "internal/session/resume_identity.go",
@@ -95,10 +95,12 @@
         "internal/agent/preview.go": "dd173c35f57eb74a9a42da33e8f4858748cf0910",
         "skills/open-code-review/SKILL.md": "00e1a685e88e2407af38be598af965e7cba04e4f"
       },
+      "absorbedSurfaces": [
+        "deterministic source-location anchoring with source-side and span-digest closure"
+      ],
       "watchSurfaces": [
         "coverage-derived terminality and sealed denominator",
         "content-bound review resume and lineage",
-        "deterministic source-location anchoring",
         "preview exclusion reasons and rule provenance",
         "public-safe failure summaries"
       ],

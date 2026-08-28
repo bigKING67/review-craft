@@ -12,6 +12,7 @@ from tests.support import (
     create_run,
     make_target,
     populate_valid_run,
+    rewrite_fixture_run_schema,
     run_cli,
 )
 
@@ -19,8 +20,8 @@ sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.constants import (  # noqa: E402
     ARTIFACT_PATHS,
-    LEGACY_ARTIFACT_PATHS,
     LEGACY_SCHEMA_VERSION,
+    PREVIOUS_SCHEMA_VERSION,
     SCHEMA_VERSION,
 )
 from review_craft.contracts import ContractError, validate_run  # noqa: E402
@@ -327,27 +328,22 @@ class EvidenceRegistryTests(unittest.TestCase):
         self.assertNotEqual(sealed_evidence.returncode, 0)
         self.assertIn("unsealed draft", sealed_evidence.stderr)
 
-        manifest_path = self.run_dir / "review-manifest.json"
-        manifest = read_json(manifest_path)
-        manifest["schemaVersion"] = LEGACY_SCHEMA_VERSION
-        manifest["artifacts"] = LEGACY_ARTIFACT_PATHS
-        write_json(manifest_path, manifest)
-        for key in (
-            "reviewScope",
-            "qualityModel",
-            "coverage",
-            "moduleMap",
-            "dependencyMap",
-            "findings",
-            "decisions",
-            "scorecard",
-            "remediationPlan",
-        ):
-            path = self.run_dir / LEGACY_ARTIFACT_PATHS[key]
-            document = read_json(path)
-            document["schemaVersion"] = LEGACY_SCHEMA_VERSION
-            write_json(path, document)
-        (self.run_dir / ARTIFACT_PATHS["evidenceRegistry"]).unlink()
+        rewrite_fixture_run_schema(self.run_dir, PREVIOUS_SCHEMA_VERSION)
+        validate_run(self.run_dir)
+        historical_v4_evidence = run_cli(
+            "run-evidence",
+            "--run-dir",
+            str(self.run_dir),
+            "--command",
+            "test",
+        )
+        self.assertNotEqual(historical_v4_evidence.returncode, 0)
+        self.assertIn("current run.v5", historical_v4_evidence.stderr)
+        historical_v4_finalize = run_cli("finalize", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(historical_v4_finalize.returncode, 0)
+        self.assertIn("run.v4 remain validation-only", historical_v4_finalize.stderr)
+
+        rewrite_fixture_run_schema(self.run_dir, LEGACY_SCHEMA_VERSION)
         validated = run_cli("validate", "--run-dir", str(self.run_dir))
         self.assertEqual(validated.returncode, 0, validated.stderr)
         historical_evidence = run_cli(
@@ -358,7 +354,7 @@ class EvidenceRegistryTests(unittest.TestCase):
             "test",
         )
         self.assertNotEqual(historical_evidence.returncode, 0)
-        self.assertIn("current run.v4", historical_evidence.stderr)
+        self.assertIn("current run.v5", historical_evidence.stderr)
         finalized = run_cli("finalize", "--run-dir", str(self.run_dir))
         self.assertNotEqual(finalized.returncode, 0)
         self.assertIn("validation-only historical data", finalized.stderr)

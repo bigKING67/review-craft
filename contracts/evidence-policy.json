@@ -20,10 +20,11 @@
     "matchingClaimRequiredForE3E4WhenPresent": true
   },
   "registeredManualEvidence": {
-    "currentRunSchema": "review-craft.run.v4",
+    "currentRunSchema": "review-craft.run.v5",
     "canonicalReferencePrefix": "artifact:",
     "copiedIntoRun": true,
     "contentBoundBySha256AndSize": true,
+    "historicalRunV4IntegrityClaim": true,
     "historicalRunV3IntegrityClaim": false
   },
   "targetSourceReadOnly": true,

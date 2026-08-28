@@ -8,9 +8,9 @@ from .assurance import validate_assurance
 from .configuration import validate_config
 from .constants import (
     ARTIFACT_PATHS,
+    CONTENT_BOUND_SCHEMA_VERSIONS,
     LEGACY_ARTIFACT_PATHS,
     LEGACY_SCHEMA_VERSION,
-    SCHEMA_VERSION,
     SUPPORTED_RUN_SCHEMA_VERSIONS,
 )
 from .contract_core import (
@@ -47,6 +47,7 @@ from .run_evidence_validation import (
 )
 from .schema_validation import validate_instance, validate_schema_definition
 from .score_validation import validate_scorecard
+from .source_anchor import SourceProjection
 
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
 DOCUMENT_SCHEMAS = {
@@ -81,7 +82,7 @@ def _schema(name: str) -> dict[str, Any]:
 def _artifact_paths(schema_version: str) -> dict[str, str]:
     if schema_version == LEGACY_SCHEMA_VERSION:
         return LEGACY_ARTIFACT_PATHS
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in CONTENT_BOUND_SCHEMA_VERSIONS:
         return ARTIFACT_PATHS
     raise ContractError([f"review-manifest.schemaVersion: unsupported {schema_version!r}"])
 
@@ -89,7 +90,7 @@ def _artifact_paths(schema_version: str) -> dict[str, str]:
 def _document_schemas(schema_version: str) -> dict[str, str]:
     if schema_version == LEGACY_SCHEMA_VERSION:
         return DOCUMENT_SCHEMAS
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in CONTENT_BOUND_SCHEMA_VERSIONS:
         return CURRENT_DOCUMENT_SCHEMAS
     raise ContractError([f"review-manifest.schemaVersion: unsupported {schema_version!r}"])
 
@@ -126,7 +127,7 @@ def load_run(run_dir: Path) -> dict[str, Any]:
         "commands": read_jsonl(_artifact(run_dir, artifact_paths, "commands")),
         "evidenceRegistry": (
             read_json(_artifact(run_dir, artifact_paths, "evidenceRegistry"))
-            if schema_version == SCHEMA_VERSION
+            if schema_version in CONTENT_BOUND_SCHEMA_VERSIONS
             else None
         ),
         "runState": read_json(_run_file(run_dir, "run-state.json")),
@@ -239,11 +240,15 @@ def _validate_live_source(
     target: dict[str, Any],
     schema_version: str,
     errors: list[str],
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    SourceProjection | None,
+]:
     run_state = data["runState"]
     if not isinstance(run_state, dict) or not _non_empty(run_state.get("targetRoot")):
         errors.append("run-state.targetRoot: required")
-        return None, None
+        return None, None, None
     try:
         target_root = Path(run_state["targetRoot"]).resolve(strict=True)
         records, current_diff, current_source, current_worktree, current_status = (
@@ -251,7 +256,7 @@ def _validate_live_source(
         )
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
         errors.append(f"run-state.targetRoot: source verification failed: {error}")
-        return None, None
+        return None, None, None
 
     module_map = build_module_map(records)
     dependency_map = build_dependency_map(target_root, records)
@@ -274,7 +279,15 @@ def _validate_live_source(
     )
     if current_status_fingerprint != run_state.get("statusFingerprint"):
         errors.append("run-state.targetRoot: Git status changed after preflight")
-    return module_map, dependency_map
+    return (
+        module_map,
+        dependency_map,
+        SourceProjection(
+            target_root=target_root,
+            records={row["path"]: row for row in records},
+            diff_base=configuration.get("diffBase"),
+        ),
+    )
 
 
 def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
@@ -287,7 +300,7 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     )
     coverage = data["coverage"]
     target = _validate_manifest_identity(manifest, manifest_configuration, coverage, errors)
-    rebuilt_module_map, rebuilt_dependency_map = _validate_live_source(
+    rebuilt_module_map, rebuilt_dependency_map, source_projection = _validate_live_source(
         data, manifest_configuration, target, schema_version, errors
     )
     if rebuilt_module_map is not None and data["moduleMap"] != rebuilt_module_map:
@@ -303,7 +316,7 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
             errors.append("review-manifest.artifacts: canonical artifact map mismatch")
         if final and manifest.get("status") not in {"draft", "final"}:
             errors.append("review-manifest.status: expected draft or final")
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in CONTENT_BOUND_SCHEMA_VERSIONS:
         _validate_evidence_registry(
             run_dir,
             data["evidenceRegistry"],
@@ -316,9 +329,21 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
     _validate_repository_maps(
         data["moduleMap"], data["dependencyMap"], coverage_paths, errors
     )
-    candidates = _validate_candidates(data["candidates"], coverage_paths, errors, final)
+    candidates = _validate_candidates(
+        data["candidates"],
+        coverage_paths,
+        errors,
+        final,
+        schema_version=schema_version,
+        source_projection=source_projection,
+    )
     findings = _validate_findings(
-        data["findings"], candidates, coverage_paths, errors
+        data["findings"],
+        candidates,
+        coverage_paths,
+        errors,
+        schema_version=schema_version,
+        source_projection=source_projection,
     )
     _validate_decisions(data["decisions"], findings, errors)
     validate_scorecard(

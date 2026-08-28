@@ -30,13 +30,14 @@ Start from the dimension maximum and deduct only for a validated finding or expl
 evidence gap. Cite IDs. The finalizer checks that deduction points equal maximum
 minus awarded points and computes the total.
 
-For a final `review-craft.run.v4` scorecard, every deduction reference must resolve to an
-existing finding ID or match the canonical `evidence-gap:<id>` namespace, where `<id>` is a
-lowercase ASCII identifier using letters, digits, `_`, or `-`. Bare `artifact:<id>`, paths,
-typos, and nonexistent finding IDs do not close a score deduction and fail validation.
-Draft validation may use the runtime-owned `coverage:draft` placeholder until coverage is
-closed. Sealed `review-craft.run.v3` artifacts retain their published free-form reference
-validation and are not silently upgraded to run.v4 semantics.
+For a final `review-craft.run.v4` or `review-craft.run.v5` scorecard, every deduction
+reference must resolve to an existing finding ID or match the canonical
+`evidence-gap:<id>` namespace, where `<id>` is a lowercase ASCII identifier using letters,
+digits, `_`, or `-`. Bare `artifact:<id>`, paths, typos, and nonexistent finding IDs do not
+close a score deduction and fail validation. Draft validation may use the runtime-owned
+`coverage:draft` placeholder until coverage is closed. Sealed `review-craft.run.v3`
+artifacts retain their published free-form reference validation and are not silently
+upgraded to run.v4 or run.v5 semantics.
 
 Only the canonical finalizer may produce the numeric total. When the runtime or
 finalizer is unavailable, report the evidence level and qualitative gaps without
@@ -97,8 +98,9 @@ findings have independent counts and sections; a `LIKELY` finding remains visibl
 never projected as confirmed. Evidence gaps are deduped
 from scorecard deduction references beginning with `evidence-gap:`; remaining risks come
 from `quality-model.json.unknowns`. Verified semantic claims and copied command artifacts
-are listed from canonical command receipts. Current run.v4 reports also list every
-registered `artifact:<id>` with kind, producer, SHA-256, and byte size.
+are listed from canonical command receipts. Current run.v5 reports list every registered
+`artifact:<id>` with kind, producer, SHA-256, and byte size; sealed run.v4 reports retain
+that same historical projection.
 Current reports also project assurance level, completion status, budget consumption,
 verifier status, unverified claims, and skipped dimensions. These fields distinguish a
 complete standard or assured review from a bounded provisional run.
@@ -109,8 +111,9 @@ in Chinese before finalization. Code identifiers, commands, paths, and canonical
 remain unchanged. The finalizer projects text deterministically and never performs implicit
 translation.
 
-New run.v4 scorecards write `accountedPercent` and `reviewedPercent`, with
-`coveragePercent` retaining the reviewed value. For compatibility, a historical
-run.v3 scorecard without the two explicit fields is validated using its original
-`coveragePercent` accounting semantics; restart unfinished historical runs with the
-current preflight rather than silently changing their meaning.
+New run.v5 scorecards write `accountedPercent` and `reviewedPercent`, with
+`coveragePercent` retaining the reviewed value. Sealed run.v4 scorecards retain those
+same published fields and semantics. For compatibility, a historical run.v3 scorecard
+without the two explicit fields is validated using its original `coveragePercent`
+accounting semantics; restart unfinished historical runs with current preflight rather
+than silently changing their meaning.

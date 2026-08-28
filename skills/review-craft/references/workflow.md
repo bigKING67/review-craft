@@ -73,7 +73,7 @@ fingerprint, and exact scope. Start a new run when any of them changes materiall
 immutable diff base. `module-map.json` is deterministic path evidence.
 `dependency-map.json` is best-effort static evidence, not proof that dynamic or
 framework-injected edges do not exist. Current source preflight creates
-`review-craft.run.v4` and an empty `evidence-registry.json` alongside these artifacts.
+`review-craft.run.v5` and an empty `evidence-registry.json` alongside these artifacts.
 
 ## 2. Project Quality Model
 
@@ -130,7 +130,8 @@ Track two percentages separately:
 - `accountedPercent`: files with any final disposition;
 - `reviewedPercent`: only `REVIEWED` and `COVERED_BY_PARENT` files.
 
-`coveragePercent` in newly finalized run.v4 artifacts is the reviewed percentage.
+`coveragePercent` in newly finalized run.v5 artifacts is the reviewed percentage.
+Sealed run.v4 artifacts retain the same published content-bound coverage semantics.
 Generated, vendored, and binary files may be fully accounted without pretending they
 were reviewed. A final score still requires complete accounting and no `PENDING`,
 `DEFERRED`, `UNREADABLE`, or `OUT_OF_SCOPE` review gaps; otherwise keep it provisional.
@@ -193,7 +194,7 @@ python3 <skill-root>/scripts/review_craft.py register-evidence \
   --media-type application/json
 ```
 
-Registration is allowed only for an unsealed `review-craft.run.v4` draft. It copies a
+Registration is allowed only for an unsealed `review-craft.run.v5` draft. It copies a
 regular non-symlink file to `evidence/registered/<id>/artifact` and records canonical
 path, SHA-256, byte size, media type, producer, description, and timestamp. Cite the
 returned `artifact:<id>` reference in coverage, candidate, finding, validation, or
@@ -235,6 +236,23 @@ Append one canonical object per candidate to `candidate-ledger.jsonl`. At discov
 record location, evidence, claimed impact, and confidence while keeping validation
 separate. Do not create candidates to satisfy a requested count. Read
 `finding-lifecycle.md` for canonical candidate fields and distinctions.
+
+Generate each run.v5 location from the bound source projection:
+
+```text
+python3 <skill-root>/scripts/review_craft.py anchor-location \
+  --run-dir <run-dir> --path src/example.py \
+  --line-start 10 --line-end 18 --role primary
+```
+
+Copy the returned location object into the candidate and reuse it unchanged in the
+matching finding. The runtime hashes the exact raw bytes for the inclusive line span,
+using LF bytes as delimiters while preserving original line endings, and records
+`sourceSide`, the complete source digest, source line count, and span digest. It never
+stores a source excerpt. Diff-mode deleted files are anchored to the immutable `BASE`;
+other locations use `CURRENT`. A path must be
+inside the canonical source projection and have exactly one inventory record. A candidate
+without a valid anchor cannot be promoted or finalized.
 
 When a candidate's stated benefit is retiring accidental complexity through
 `CLEAN_UP`, `MERGE`, `REPLACE`, or `DELETE`, read `simplification.md`. Use its

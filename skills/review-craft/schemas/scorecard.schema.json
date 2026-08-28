@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "status", "evidenceLevel", "confidence", "coveragePercent", "unresolvedCandidates", "dimensions", "total"],
   "properties": {
     "documentType": {"const": "review-craft.scorecard"},
-    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4"]},
+    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4", "review-craft.run.v5"]},
     "status": {"enum": ["provisional", "final"]},
     "evidenceLevel": {"enum": ["E0", "E1", "E2", "E3", "E4"]},
     "confidence": {"enum": ["LOW", "MEDIUM", "MEDIUM_HIGH", "HIGH"]},

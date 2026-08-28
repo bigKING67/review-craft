@@ -64,7 +64,7 @@ def run_evidence_command(
     run_dir = Path(run_dir_value).expanduser().resolve(strict=True)
     manifest = read_json(run_dir / "review-manifest.json")
     if manifest.get("schemaVersion") != SCHEMA_VERSION:
-        raise ValueError("run-evidence requires a current run.v4 review")
+        raise ValueError("run-evidence requires a current run.v5 review")
     if manifest.get("status") != "draft" or manifest.get("sealedAt") is not None:
         raise ValueError("run-evidence requires an unsealed draft review")
     if manifest.get("artifacts") != ARTIFACT_PATHS:

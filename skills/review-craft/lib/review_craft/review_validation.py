@@ -11,6 +11,7 @@ from .constants import (
     PROFILES,
     REMEDIATION_PHASES,
     REVIEW_MODES,
+    SCHEMA_VERSION,
     SCORE_DIMENSIONS,
     SEVERITIES,
     VALIDATION_STATUSES,
@@ -24,6 +25,7 @@ from .contract_core import (
 from .contract_core import (
     string_list as _string_list,
 )
+from .source_anchor import SourceProjection, build_source_anchor
 
 
 def _validate_quality_model(model: dict[str, Any], errors: list[str], final: bool) -> None:
@@ -271,7 +273,13 @@ def _validate_coverage(coverage: dict[str, Any], errors: list[str], final: bool)
 
 
 def _validate_location(
-    location: Any, prefix: str, coverage_paths: set[str], errors: list[str]
+    location: Any,
+    prefix: str,
+    coverage_paths: set[str],
+    errors: list[str],
+    *,
+    schema_version: str,
+    source_projection: SourceProjection | None,
 ) -> None:
     if not isinstance(location, dict):
         errors.append(f"{prefix}: expected an object")
@@ -292,10 +300,49 @@ def _validate_location(
         or end < start
     ):
         errors.append(f"{prefix}.lineEnd: expected an integer >= lineStart")
+    if schema_version != SCHEMA_VERSION:
+        if "anchor" in location:
+            errors.append(f"{prefix}.anchor: unsupported by frozen {schema_version}")
+        return
+    anchor = location.get("anchor")
+    if not isinstance(anchor, dict):
+        errors.append(f"{prefix}.anchor: required for {SCHEMA_VERSION}")
+        return
+    if (
+        source_projection is None
+        or not isinstance(path, str)
+        or path not in coverage_paths
+        or not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 1
+        or end < start
+    ):
+        return
+    try:
+        expected = build_source_anchor(
+            source_projection,
+            path=path,
+            line_start=start,
+            line_end=end,
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        errors.append(f"{prefix}.anchor: source validation failed: {error}")
+        return
+    for field, value in expected.items():
+        if anchor.get(field) != value:
+            errors.append(f"{prefix}.anchor.{field}: does not match canonical source")
 
 
 def _validate_candidates(
-    candidates: list[dict[str, Any]], coverage_paths: set[str], errors: list[str], final: bool
+    candidates: list[dict[str, Any]],
+    coverage_paths: set[str],
+    errors: list[str],
+    final: bool,
+    *,
+    schema_version: str,
+    source_projection: SourceProjection | None,
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(candidates):
@@ -316,7 +363,12 @@ def _validate_candidates(
         else:
             for location_index, location in enumerate(locations):
                 _validate_location(
-                    location, f"{prefix}.locations[{location_index}]", coverage_paths, errors
+                    location,
+                    f"{prefix}.locations[{location_index}]",
+                    coverage_paths,
+                    errors,
+                    schema_version=schema_version,
+                    source_projection=source_projection,
                 )
         validation = row.get("validation")
         if not isinstance(validation, dict):
@@ -337,6 +389,9 @@ def _validate_findings(
     candidates: dict[str, dict[str, Any]],
     coverage_paths: set[str],
     errors: list[str],
+    *,
+    schema_version: str,
+    source_projection: SourceProjection | None,
 ) -> dict[str, dict[str, Any]]:
     rows = document.get("findings")
     if not isinstance(rows, list):
@@ -348,7 +403,16 @@ def _validate_findings(
         if not isinstance(row, dict):
             errors.append(f"{prefix}: expected an object")
             continue
-        _validate_finding_row(row, prefix, candidates, coverage_paths, result, errors)
+        _validate_finding_row(
+            row,
+            prefix,
+            candidates,
+            coverage_paths,
+            result,
+            errors,
+            schema_version=schema_version,
+            source_projection=source_projection,
+        )
     return result
 
 
@@ -359,15 +423,25 @@ def _validate_finding_row(
     coverage_paths: set[str],
     result: dict[str, dict[str, Any]],
     errors: list[str],
+    *,
+    schema_version: str,
+    source_projection: SourceProjection | None,
 ) -> None:
     finding_id = row.get("id")
     if not _non_empty(finding_id) or finding_id in result:
         errors.append(f"{prefix}.id: expected a unique string")
     else:
         result[finding_id] = row
-    _validate_finding_candidate(row, prefix, candidates, errors)
+    _validate_finding_candidate(row, prefix, candidates, errors, schema_version=schema_version)
     _validate_finding_fields(row, prefix, errors)
-    _validate_finding_locations(row, prefix, coverage_paths, errors)
+    _validate_finding_locations(
+        row,
+        prefix,
+        coverage_paths,
+        errors,
+        schema_version=schema_version,
+        source_projection=source_projection,
+    )
 
 
 def _validate_finding_candidate(
@@ -375,6 +449,8 @@ def _validate_finding_candidate(
     prefix: str,
     candidates: dict[str, dict[str, Any]],
     errors: list[str],
+    *,
+    schema_version: str,
 ) -> None:
     candidate_id = row.get("candidateId")
     if candidate_id not in candidates:
@@ -388,6 +464,8 @@ def _validate_finding_candidate(
         errors.append(f"{prefix}.validationStatus: must match the candidate")
     if row.get("category") != candidate.get("category"):
         errors.append(f"{prefix}.category: must match the candidate")
+    if schema_version == SCHEMA_VERSION and row.get("locations") != candidate.get("locations"):
+        errors.append(f"{prefix}.locations: must exactly match the run.v5 candidate anchors")
 
 
 def _validate_finding_fields(row: dict[str, Any], prefix: str, errors: list[str]) -> None:
@@ -423,7 +501,13 @@ def _validate_finding_fields(row: dict[str, Any], prefix: str, errors: list[str]
 
 
 def _validate_finding_locations(
-    row: dict[str, Any], prefix: str, coverage_paths: set[str], errors: list[str]
+    row: dict[str, Any],
+    prefix: str,
+    coverage_paths: set[str],
+    errors: list[str],
+    *,
+    schema_version: str,
+    source_projection: SourceProjection | None,
 ) -> None:
     locations = row.get("locations")
     if not isinstance(locations, list) or not locations:
@@ -431,7 +515,12 @@ def _validate_finding_locations(
         return
     for location_index, location in enumerate(locations):
         _validate_location(
-            location, f"{prefix}.locations[{location_index}]", coverage_paths, errors
+            location,
+            f"{prefix}.locations[{location_index}]",
+            coverage_paths,
+            errors,
+            schema_version=schema_version,
+            source_projection=source_projection,
         )
 
 

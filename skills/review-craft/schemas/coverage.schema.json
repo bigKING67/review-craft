@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "inventoryFingerprint", "files", "excluded", "summary"],
   "properties": {
     "documentType": {"const": "review-craft.coverage"},
-    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4"]},
+    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4", "review-craft.run.v5"]},
     "inventoryFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "files": {"type": "array", "items": {"$ref": "#/$defs/file"}},
     "excluded": {"type": "array", "items": {"$ref": "#/$defs/excluded"}},

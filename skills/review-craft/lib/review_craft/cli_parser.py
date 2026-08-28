@@ -21,6 +21,7 @@ from .cli_remediation import (
     command_verify_fix,
 )
 from .cli_review import (
+    command_anchor_location,
     command_finalize,
     command_preflight,
     command_validate,
@@ -54,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated canonical dimensions; can be repeated",
     )
     preflight.set_defaults(handler=command_preflight)
+
+    anchor = subparsers.add_parser(
+        "anchor-location",
+        help="Create a source-bound run.v5 candidate or finding location",
+    )
+    anchor.add_argument("--run-dir", required=True)
+    anchor.add_argument("--path", required=True)
+    anchor.add_argument("--line-start", type=int, required=True)
+    anchor.add_argument("--line-end", type=int)
+    anchor.add_argument("--role", required=True)
+    anchor.set_defaults(handler=command_anchor_location)
 
     evidence = subparsers.add_parser("run-evidence", help="Run an allowlisted evidence command")
     evidence.add_argument("--run-dir", required=True)

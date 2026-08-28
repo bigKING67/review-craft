@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "mode", "dimensions", "profile", "diff"],
   "properties": {
     "documentType": {"const": "review-craft.review-scope"},
-    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4"]},
+    "schemaVersion": {"enum": ["review-craft.run.v3", "review-craft.run.v4", "review-craft.run.v5"]},
     "mode": {"enum": ["review", "diff", "focus"]},
     "assuranceLevel": {"enum": ["fast", "standard", "assured"]},
     "dimensions": {

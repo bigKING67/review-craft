@@ -170,13 +170,17 @@ def load_contract(path: Path) -> dict[str, Any]:
         status = _string(source, "status", index=index)
         if status not in ALLOWED_STATUSES:
             raise UpstreamContractError(f"sources[{index}].status: unsupported status {status!r}")
-        expected_surfaces = (
-            {"watchSurfaces", "excludedSurfaces"}
-            if status == "tracked"
-            else {"absorbedSurfaces", "excludedSurfaces"}
-        )
-        unexpected_surfaces = sorted((source_fields & SURFACE_FIELDS) - expected_surfaces)
-        missing_surfaces = sorted(expected_surfaces - source_fields)
+        if status == "tracked":
+            required_surfaces = {"watchSurfaces", "excludedSurfaces"}
+            allowed_surfaces = required_surfaces
+        elif status == "selective_absorbed":
+            required_surfaces = {"absorbedSurfaces", "excludedSurfaces"}
+            allowed_surfaces = required_surfaces | {"watchSurfaces"}
+        else:
+            required_surfaces = {"absorbedSurfaces", "excludedSurfaces"}
+            allowed_surfaces = required_surfaces
+        unexpected_surfaces = sorted((source_fields & SURFACE_FIELDS) - allowed_surfaces)
+        missing_surfaces = sorted(required_surfaces - source_fields)
         if unexpected_surfaces or missing_surfaces:
             raise UpstreamContractError(
                 f"sources[{index}]: unexpected surface fields {unexpected_surfaces}; "
@@ -212,14 +216,23 @@ def load_contract(path: Path) -> dict[str, Any]:
         paths = _string_list(source, "sourcePaths", index=index)
         _validate_source_paths(paths, index=index)
         _reviewed_blobs(source, paths, index=index)
-        active_field = "watchSurfaces" if status == "tracked" else "absorbedSurfaces"
-        active = _string_list(source, active_field, index=index)
+        active_fields = ["watchSurfaces"] if status == "tracked" else ["absorbedSurfaces"]
+        if status == "selective_absorbed" and "watchSurfaces" in source:
+            active_fields.append("watchSurfaces")
+        active_surfaces = {
+            field: _string_list(source, field, index=index) for field in active_fields
+        }
         excluded = _string_list(source, "excludedSurfaces", index=index)
-        overlap = sorted(set(active) & set(excluded))
-        if overlap:
-            raise UpstreamContractError(
-                f"sources[{index}]: {active_field} and excluded surfaces overlap: {overlap}"
-            )
+        surface_sets = {field: set(values) for field, values in active_surfaces.items()}
+        surface_sets["excludedSurfaces"] = set(excluded)
+        surface_names = list(surface_sets)
+        for left_index, left in enumerate(surface_names):
+            for right in surface_names[left_index + 1 :]:
+                overlap = sorted(surface_sets[left] & surface_sets[right])
+                if overlap:
+                    raise UpstreamContractError(
+                        f"sources[{index}]: {left} and {right} overlap: {overlap}"
+                    )
     return payload
 
 

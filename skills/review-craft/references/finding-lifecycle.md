@@ -14,6 +14,8 @@
 Use stable IDs such as `RC-ARCH-001`. Record category, type, title, exact locations,
 evidence, claimed impact, confidence, and a separate validation record. Candidate
 evidence should explain the trace, not merely quote a suspicious line.
+For canonical run.v5, generate every location with `anchor-location` and reuse the exact
+returned object in its matching finding; do not hand-author or copy an anchor across spans.
 
 ## Simplification proof
 

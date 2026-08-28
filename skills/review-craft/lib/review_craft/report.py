@@ -446,8 +446,8 @@ def finalize_run(run_dir: Path, *, sealed_at: str) -> Path:
     if schema_version != SCHEMA_VERSION:
         raise ContractError(
             [
-                "finalize requires a current review-craft.run.v4 draft; "
-                "review-craft.run.v3 remains validation-only historical data"
+                "finalize requires a current review-craft.run.v5 draft; "
+                "review-craft.run.v3 and run.v4 remain validation-only historical data"
             ]
         )
     scorecard_path = run_dir / ARTIFACT_PATHS["scorecard"]

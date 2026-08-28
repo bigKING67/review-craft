@@ -88,16 +88,24 @@ class UpstreamCheckTests(unittest.TestCase):
                     load_contract(contract_path)
 
     def test_tracked_status_requires_watch_surfaces_without_absorption_claim(self) -> None:
-        tracked = next(
-            source for source in self.contract["sources"] if source["status"] == "tracked"
-        )
+        payload = self._single_source_contract()
+        tracked = payload["sources"][0]
+        tracked["status"] = "tracked"
+        tracked["watchSurfaces"] = ["candidate contract"]
+        tracked.pop("absorbedSurfaces")
+        with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
+            contract_path = Path(directory) / "upstreams.json"
+            contract_path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = load_contract(contract_path)
+            tracked = loaded["sources"][0]
+
         self.assertTrue(tracked["watchSurfaces"])
         self.assertTrue(tracked["excludedSurfaces"])
         self.assertNotIn("absorbedSurfaces", tracked)
 
         for mutation in ("missing_watch", "false_absorption", "overlap"):
-            payload = self._single_source_contract()
-            source = payload["sources"][0]
+            mutated_payload = self._single_source_contract()
+            source = mutated_payload["sources"][0]
             source["status"] = "tracked"
             source["watchSurfaces"] = ["candidate contract"]
             source.pop("absorbedSurfaces")
@@ -109,18 +117,36 @@ class UpstreamCheckTests(unittest.TestCase):
                 source["excludedSurfaces"] = ["candidate contract"]
             with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
                 contract_path = Path(directory) / "upstreams.json"
-                contract_path.write_text(json.dumps(payload), encoding="utf-8")
+                contract_path.write_text(json.dumps(mutated_payload), encoding="utf-8")
                 with self.subTest(mutation=mutation), self.assertRaises(
                     UpstreamContractError
                 ):
                     load_contract(contract_path)
 
-    def test_absorbed_status_rejects_watch_only_metadata(self) -> None:
+    def test_fully_absorbed_status_rejects_watch_metadata(self) -> None:
         payload = self._single_source_contract()
         source = payload["sources"][0]
+        source["status"] = "absorbed"
         source["watchSurfaces"] = ["candidate contract"]
         with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
             contract_path = Path(directory) / "upstreams.json"
+            contract_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(UpstreamContractError):
+                load_contract(contract_path)
+
+    def test_selective_absorption_can_keep_distinct_watch_surfaces(self) -> None:
+        payload = self._single_source_contract()
+        source = payload["sources"][0]
+        source["status"] = "selective_absorbed"
+        source["watchSurfaces"] = ["candidate contract"]
+
+        with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
+            contract_path = Path(directory) / "upstreams.json"
+            contract_path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = load_contract(contract_path)
+            self.assertEqual(loaded["sources"][0]["watchSurfaces"], ["candidate contract"])
+
+            source["watchSurfaces"] = [source["absorbedSurfaces"][0]]
             contract_path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaises(UpstreamContractError):
                 load_contract(contract_path)

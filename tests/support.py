@@ -15,11 +15,15 @@ sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.constants import (  # noqa: E402
     ARTIFACT_PATHS,
+    LEGACY_ARTIFACT_PATHS,
+    LEGACY_SCHEMA_VERSION,
+    PREVIOUS_SCHEMA_VERSION,
     REMEDIATION_PHASES,
     SCHEMA_VERSION,
     SCORE_DIMENSIONS,
 )
-from review_craft.jsonio import read_json, write_json, write_jsonl  # noqa: E402
+from review_craft.jsonio import read_json, read_jsonl, write_json, write_jsonl  # noqa: E402
+from review_craft.source_anchor import build_run_location  # noqa: E402
 
 
 def run_cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -117,7 +121,13 @@ def populate_valid_run(run_dir: Path) -> None:
     coverage["summary"]["deferred"] = 0
     write_json(run_dir / ARTIFACT_PATHS["coverage"], coverage)
 
-    location = {"path": "app.py", "lineStart": 1, "lineEnd": 2, "role": "primary"}
+    location = build_run_location(
+        run_dir,
+        path="app.py",
+        line_start=1,
+        line_end=2,
+        role="primary",
+    )
     candidate = {
         "id": "RC-CORR-001",
         "category": "correctness",
@@ -277,3 +287,56 @@ def populate_valid_run(run_dir: Path) -> None:
             "phases": phases,
         },
     )
+
+
+def rewrite_fixture_run_schema(run_dir: Path, schema_version: str) -> None:
+    """Create explicit historical fixtures without adding a runtime migration path."""
+    if schema_version not in {LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION}:
+        raise ValueError(f"unsupported historical fixture schema: {schema_version}")
+    artifact_paths = (
+        LEGACY_ARTIFACT_PATHS
+        if schema_version == LEGACY_SCHEMA_VERSION
+        else ARTIFACT_PATHS
+    )
+    manifest_path = run_dir / "review-manifest.json"
+    manifest = read_json(manifest_path)
+    manifest["schemaVersion"] = schema_version
+    manifest["artifacts"] = artifact_paths
+    write_json(manifest_path, manifest)
+    for key in (
+        "reviewScope",
+        "qualityModel",
+        "coverage",
+        "moduleMap",
+        "dependencyMap",
+        "findings",
+        "decisions",
+        "scorecard",
+        "remediationPlan",
+    ):
+        path = run_dir / artifact_paths[key]
+        document = read_json(path)
+        document["schemaVersion"] = schema_version
+        write_json(path, document)
+
+    candidates = read_jsonl(run_dir / artifact_paths["candidateLedger"])
+    for candidate in candidates:
+        for location in candidate.get("locations", []):
+            if isinstance(location, dict):
+                location.pop("anchor", None)
+    write_jsonl(run_dir / artifact_paths["candidateLedger"], candidates)
+    findings_path = run_dir / artifact_paths["findings"]
+    findings = read_json(findings_path)
+    for finding in findings.get("findings", []):
+        for location in finding.get("locations", []):
+            if isinstance(location, dict):
+                location.pop("anchor", None)
+    write_json(findings_path, findings)
+
+    registry_path = run_dir / ARTIFACT_PATHS["evidenceRegistry"]
+    if schema_version == LEGACY_SCHEMA_VERSION:
+        registry_path.unlink()
+    else:
+        registry = read_json(registry_path)
+        registry["schemaVersion"] = PREVIOUS_SCHEMA_VERSION
+        write_json(registry_path, registry, mode=0o600)

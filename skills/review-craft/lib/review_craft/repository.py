@@ -295,11 +295,15 @@ def _file_record(root: Path, relative: str) -> dict[str, Any]:
     }
 
 
-def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[str, Any]:
+def _payload_at_revision(root: Path, revision: str, relative: str) -> bytes:
     result = run_git(root, "show", f"{revision}:{relative}")
     if result.returncode != 0:
         raise OSError(result.stderr.decode("utf-8", errors="replace").strip())
-    payload = result.stdout
+    return result.stdout
+
+
+def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[str, Any]:
+    payload = _payload_at_revision(root, revision, relative)
     preview = payload[:8192]
     return {
         "path": relative,
@@ -308,6 +312,28 @@ def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[s
         "sha256": sha256_bytes(payload),
         "binary": _binary_preview(preview, complete=len(payload) == len(preview)),
     }
+
+
+def source_payload(
+    root: Path, record: Mapping[str, Any], *, diff_base: str | None
+) -> bytes:
+    """Read the exact source side represented by one canonical inventory record."""
+    root = root.resolve(strict=True)
+    relative = record.get("path")
+    if not isinstance(relative, str) or not relative:
+        raise ValueError("source record path is invalid")
+    if record.get("kind") == "deleted":
+        if not diff_base:
+            raise ValueError("deleted source requires an immutable diff base")
+        payload = _payload_at_revision(root, diff_base, relative)
+    else:
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"source path is not a regular current file: {relative}")
+        payload = path.read_bytes()
+    if sha256_bytes(payload) != record.get("sha256"):
+        raise ValueError(f"source content no longer matches the inventory: {relative}")
+    return payload
 
 
 def inventory(

@@ -8,14 +8,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support import RUNTIME_LIB, create_run, make_target, populate_valid_run, run_cli
+from tests.support import (
+    RUNTIME_LIB,
+    create_run,
+    make_target,
+    populate_valid_run,
+    rewrite_fixture_run_schema,
+    run_cli,
+)
 
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.constants import (
     ARTIFACT_PATHS,
-    LEGACY_ARTIFACT_PATHS,
     LEGACY_SCHEMA_VERSION,
+    PREVIOUS_SCHEMA_VERSION,
 )
 from review_craft.contracts import ContractError, load_run, validate_run
 from review_craft.jsonio import canonical_json, read_json, read_jsonl, write_json, write_jsonl
@@ -237,7 +244,7 @@ class ContractTests(unittest.TestCase):
             validate_run(self.run_dir)
         self.assertIn("scores >=95 require evidence level E3", str(captured.exception))
 
-    def test_run_v4_score_deductions_require_closed_references(self) -> None:
+    def test_current_score_deductions_require_closed_references(self) -> None:
         scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
         scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
             "bogus:not-a-finding-or-evidence-gap"
@@ -248,7 +255,7 @@ class ContractTests(unittest.TestCase):
             validate_run(self.run_dir)
         self.assertIn("unknown score evidence reference", str(captured.exception))
 
-    def test_run_v4_accepts_canonical_evidence_gap_reference(self) -> None:
+    def test_current_run_accepts_canonical_evidence_gap_reference(self) -> None:
         scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
         scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
             "evidence-gap:isolated-install"
@@ -258,34 +265,27 @@ class ContractTests(unittest.TestCase):
         validate_run(self.run_dir)
 
     def test_run_v3_keeps_historical_score_reference_semantics(self) -> None:
-        manifest_path = self.run_dir / "review-manifest.json"
-        manifest = read_json(manifest_path)
-        manifest["schemaVersion"] = LEGACY_SCHEMA_VERSION
-        manifest["artifacts"] = LEGACY_ARTIFACT_PATHS
-        write_json(manifest_path, manifest)
-        for key in (
-            "reviewScope",
-            "qualityModel",
-            "coverage",
-            "moduleMap",
-            "dependencyMap",
-            "findings",
-            "decisions",
-            "scorecard",
-            "remediationPlan",
-        ):
-            path = self.run_dir / LEGACY_ARTIFACT_PATHS[key]
-            document = read_json(path)
-            document["schemaVersion"] = LEGACY_SCHEMA_VERSION
-            write_json(path, document)
-        (self.run_dir / ARTIFACT_PATHS["evidenceRegistry"]).unlink()
-        scorecard = read_json(self.run_dir / LEGACY_ARTIFACT_PATHS["scorecard"])
+        rewrite_fixture_run_schema(self.run_dir, LEGACY_SCHEMA_VERSION)
+        scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])
         scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
             "legacy:free-form-reference"
         ]
-        write_json(self.run_dir / LEGACY_ARTIFACT_PATHS["scorecard"], scorecard)
+        write_json(self.run_dir / ARTIFACT_PATHS["scorecard"], scorecard)
 
         validate_run(self.run_dir)
+
+    def test_run_v4_keeps_content_bound_score_reference_semantics(self) -> None:
+        rewrite_fixture_run_schema(self.run_dir, PREVIOUS_SCHEMA_VERSION)
+        scorecard_path = self.run_dir / ARTIFACT_PATHS["scorecard"]
+        scorecard = read_json(scorecard_path)
+        scorecard["dimensions"][0]["deductions"][0]["evidenceRefs"] = [
+            "legacy:free-form-reference"
+        ]
+        write_json(scorecard_path, scorecard)
+
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        self.assertIn("unknown score evidence reference", str(captured.exception))
 
     def test_e2_requires_successful_canonical_command_evidence(self) -> None:
         scorecard = read_json(self.run_dir / ARTIFACT_PATHS["scorecard"])

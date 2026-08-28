@@ -37,6 +37,7 @@ from .repository import (
     worktree_fingerprint,
 )
 from .repository_analysis import build_dependency_map, build_module_map, detect_profile
+from .source_anchor import build_run_location
 
 
 def _repository_name(state_root: Path, remote: str | None) -> str:
@@ -378,6 +379,18 @@ def command_validate(args: argparse.Namespace) -> int:
             sort_keys=True,
         )
     )
+    return 0
+
+
+def command_anchor_location(args: argparse.Namespace) -> int:
+    location = build_run_location(
+        args.run_dir,
+        path=args.path,
+        line_start=args.line_start,
+        line_end=args.line_end,
+        role=args.role,
+    )
+    print(json.dumps(location, ensure_ascii=False, sort_keys=True))
     return 0
 
 

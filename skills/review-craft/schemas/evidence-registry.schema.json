@@ -7,7 +7,7 @@
   "required": ["documentType", "schemaVersion", "artifacts"],
   "properties": {
     "documentType": {"const": "review-craft.evidence-registry"},
-    "schemaVersion": {"const": "review-craft.run.v4"},
+    "schemaVersion": {"enum": ["review-craft.run.v4", "review-craft.run.v5"]},
     "artifacts": {
       "type": "array",
       "items": {

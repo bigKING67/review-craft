@@ -4,9 +4,9 @@ import re
 from typing import Any
 
 from .constants import (
+    CONTENT_BOUND_SCHEMA_VERSIONS,
     EVIDENCE_LEVELS,
     FINAL_COVERAGE_DISPOSITIONS,
-    SCHEMA_VERSION,
     SCORE_DIMENSIONS,
     SEMANTIC_CLAIM_LEVELS,
 )
@@ -43,7 +43,7 @@ def _validate_deduction(
     references = deduction.get("evidenceRefs")
     if not _string_list(references):
         errors.append(f"{prefix}.evidenceRefs: required")
-    elif schema_version == SCHEMA_VERSION and close_references:
+    elif schema_version in CONTENT_BOUND_SCHEMA_VERSIONS and close_references:
         for index, reference in enumerate(references):
             if reference in findings or EVIDENCE_GAP_PATTERN.fullmatch(reference):
                 continue
