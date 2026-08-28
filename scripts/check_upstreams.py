@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -26,6 +27,7 @@ SOURCE_FIELDS = {
     "license",
     "status",
     "sourcePaths",
+    "reviewedBlobs",
     "absorbedSurfaces",
     "excludedSurfaces",
 }
@@ -37,13 +39,13 @@ class UpstreamContractError(ValueError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate pinned Review Craft upstreams and optionally compare remote heads"
+        description="Validate pinned Review Craft upstreams and optionally compare source blobs"
     )
     parser.add_argument("--contract", default=str(DEFAULT_CONTRACT))
     parser.add_argument(
         "--remote",
         action="store_true",
-        help="explicitly enable git ls-remote checks; offline validation is the default",
+        help="explicitly fetch remote source trees; offline validation is the default",
     )
     return parser.parse_args()
 
@@ -70,6 +72,33 @@ def _string_list(source: dict[str, Any], field: str, *, index: int) -> list[str]
     return value
 
 
+def _reviewed_blobs(
+    source: dict[str, Any], paths: list[str], *, index: int
+) -> dict[str, str]:
+    value = source.get("reviewedBlobs")
+    if not isinstance(value, dict) or not value:
+        raise UpstreamContractError(
+            f"sources[{index}].reviewedBlobs: expected a non-empty object"
+        )
+    if not all(
+        isinstance(path, str)
+        and isinstance(blob, str)
+        and SHA_PATTERN.fullmatch(blob) is not None
+        for path, blob in value.items()
+    ):
+        raise UpstreamContractError(
+            f"sources[{index}].reviewedBlobs: expected path keys and lowercase full Git SHAs"
+        )
+    missing = sorted(set(paths) - set(value))
+    unexpected = sorted(set(value) - set(paths))
+    if missing or unexpected:
+        raise UpstreamContractError(
+            f"sources[{index}].reviewedBlobs: unexpected paths {unexpected}; "
+            f"missing paths {missing}"
+        )
+    return value
+
+
 def _validate_repository(identifier: str, repository: str, *, index: int) -> None:
     parsed = urlparse(repository)
     try:
@@ -91,10 +120,17 @@ def _validate_repository(identifier: str, repository: str, *, index: int) -> Non
             f"sources[{index}].repository: expected a public https://github.com URL"
         )
     repository_id = parsed.path.strip("/").removesuffix(".git")
-    if repository_id != identifier:
+    if identifier == repository_id:
+        return
+    prefix = f"{repository_id}#"
+    if not identifier.startswith(prefix):
         raise UpstreamContractError(
-            f"sources[{index}].repository: path must match id {identifier!r}"
+            f"sources[{index}].repository: path must match id or its scoped prefix"
         )
+    scope = identifier.removeprefix(prefix)
+    path = PurePosixPath(scope)
+    if not scope or path.is_absolute() or ".." in path.parts or path.as_posix() != scope:
+        raise UpstreamContractError(f"sources[{index}].id: invalid repository scope")
 
 
 def _validate_source_paths(paths: list[str], *, index: int) -> None:
@@ -110,7 +146,7 @@ def load_contract(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UpstreamContractError("upstream contract must be a JSON object")
-    if payload.get("schema") != "review-craft.upstreams.v1":
+    if payload.get("schema") != "review-craft.upstreams.v2":
         raise UpstreamContractError("unsupported upstream contract schema")
     if set(payload) != {"schema", "sources"}:
         raise UpstreamContractError("upstream contract contains unknown or missing root fields")
@@ -157,7 +193,9 @@ def load_contract(path: Path) -> dict[str, Any]:
         status = _string(source, "status", index=index)
         if status not in ALLOWED_STATUSES:
             raise UpstreamContractError(f"sources[{index}].status: unsupported status {status!r}")
-        _validate_source_paths(_string_list(source, "sourcePaths", index=index), index=index)
+        paths = _string_list(source, "sourcePaths", index=index)
+        _validate_source_paths(paths, index=index)
+        _reviewed_blobs(source, paths, index=index)
         absorbed = _string_list(source, "absorbedSurfaces", index=index)
         excluded = _string_list(source, "excludedSurfaces", index=index)
         overlap = sorted(set(absorbed) & set(excluded))
@@ -168,29 +206,90 @@ def load_contract(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _remote_revision(source: dict[str, Any]) -> str:
-    reference = f"refs/heads/{source['branch']}"
-    environment = dict(os.environ)
-    environment["GIT_TERMINAL_PROMPT"] = "0"
+def _run_git(
+    arguments: list[str], *, environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
     try:
-        completed = subprocess.run(
-            ["git", "ls-remote", "--exit-code", source["repository"], reference],
+        return subprocess.run(
+            ["git", *arguments],
             cwd=ROOT,
             env=environment,
             text=True,
             capture_output=True,
             check=False,
-            timeout=30,
+            timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError("git ls-remote was unavailable or timed out") from error
-    if completed.returncode != 0:
-        raise RuntimeError(f"git ls-remote exited {completed.returncode}")
-    rows = [line.split() for line in completed.stdout.splitlines() if line.strip()]
-    matches = [row[0] for row in rows if len(row) == 2 and row[1] == reference]
-    if len(matches) != 1 or SHA_PATTERN.fullmatch(matches[0]) is None:
-        raise RuntimeError("git ls-remote returned an invalid branch result")
-    return matches[0]
+        raise RuntimeError("git was unavailable or timed out") from error
+
+
+def _remote_state(source: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    reference = f"refs/heads/{source['branch']}"
+    environment = dict(os.environ)
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    with tempfile.TemporaryDirectory(prefix="review-craft-upstream-") as directory:
+        repository = Path(directory) / "source.git"
+        initialized = _run_git(
+            ["init", "--bare", "--quiet", str(repository)], environment=environment
+        )
+        if initialized.returncode != 0:
+            raise RuntimeError(f"git init exited {initialized.returncode}")
+        fetched = _run_git(
+            [
+                "-C",
+                str(repository),
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                "--filter=blob:none",
+                source["repository"],
+                reference,
+            ],
+            environment=environment,
+        )
+        if fetched.returncode != 0:
+            raise RuntimeError(f"git fetch exited {fetched.returncode}")
+        resolved = _run_git(
+            ["-C", str(repository), "rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+            environment=environment,
+        )
+        revision = resolved.stdout.strip()
+        if resolved.returncode != 0 or SHA_PATTERN.fullmatch(revision) is None:
+            raise RuntimeError("git fetch returned an invalid branch revision")
+        pathspecs = [f":(literal){path}" for path in source["sourcePaths"]]
+        inspected = _run_git(
+            [
+                "-C",
+                str(repository),
+                "ls-tree",
+                "-r",
+                "-z",
+                "--full-tree",
+                revision,
+                "--",
+                *pathspecs,
+            ],
+            environment=environment,
+        )
+        if inspected.returncode != 0:
+            raise RuntimeError(f"git ls-tree exited {inspected.returncode}")
+
+    blobs: dict[str, str] = {}
+    for row in inspected.stdout.split("\0"):
+        if not row:
+            continue
+        try:
+            metadata, path = row.split("\t", 1)
+            _mode, object_type, blob = metadata.split()
+        except ValueError as error:
+            raise RuntimeError("git ls-tree returned an invalid source result") from error
+        if object_type != "blob" or SHA_PATTERN.fullmatch(blob) is None:
+            continue
+        if path in blobs:
+            raise RuntimeError("git ls-tree returned a duplicate source path")
+        blobs[path] = blob
+    return revision, blobs
 
 
 def evaluate(contract: dict[str, Any], *, remote: bool) -> tuple[dict[str, Any], int]:
@@ -205,11 +304,35 @@ def evaluate(contract: dict[str, Any], *, remote: bool) -> tuple[dict[str, Any],
         }
         if remote:
             try:
-                revision = _remote_revision(source)
+                revision, blobs = _remote_state(source)
                 result["remoteRevision"] = revision
-                if revision == source["reviewedRevision"]:
+                result["repositoryStatus"] = (
+                    "CURRENT" if revision == source["reviewedRevision"] else "UPDATED"
+                )
+                path_results = []
+                for path in source["sourcePaths"]:
+                    reviewed_blob = source["reviewedBlobs"][path]
+                    remote_blob = blobs.get(path)
+                    path_results.append(
+                        {
+                            "path": path,
+                            "reviewedBlob": reviewed_blob,
+                            "remoteBlob": remote_blob,
+                            "status": (
+                                "CURRENT"
+                                if remote_blob == reviewed_blob
+                                else "MISSING"
+                                if remote_blob is None
+                                else "UPDATED"
+                            ),
+                        }
+                    )
+                result["sourcePaths"] = path_results
+                if all(item["status"] == "CURRENT" for item in path_results):
+                    result["contentStatus"] = "CURRENT"
                     result["status"] = "CURRENT"
                 else:
+                    result["contentStatus"] = "UPDATED"
                     result["status"] = "UPDATED"
                     exit_code = max(exit_code, 1)
             except RuntimeError as error:
@@ -218,7 +341,7 @@ def evaluate(contract: dict[str, Any], *, remote: bool) -> tuple[dict[str, Any],
                 exit_code = 2
         results.append(result)
     return {
-        "schema": "review-craft.upstream-check.v1",
+        "schema": "review-craft.upstream-check.v2",
         "mode": "remote" if remote else "offline",
         "sources": results,
     }, exit_code

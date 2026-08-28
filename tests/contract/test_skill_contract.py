@@ -141,8 +141,41 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("read `simplification.md`", remediation)
         self.assertIn("existing candidate, evidence registry, finding, and decision", reference)
         self.assertIn("does not define a new Review Craft\nmode, score, ledger, report", reference)
+        self.assertIn("## Evaluate replacement dependencies", reference)
+        self.assertIn("complete obligation delta", reference)
+        self.assertIn("clear net ownership reduction", reference)
+        self.assertIn("preserve that residual contract", reference)
+        self.assertIn("## Compare the structural regression delta", reference)
+        self.assertIn("baseline and head obligations", reference)
+        self.assertIn("no universal file-line\nthreshold establishes a finding", reference)
+        self.assertIn("## Validate canonical ownership and placement", reference)
+        self.assertIn("ownership obligation that consolidation would retire", reference)
+        self.assertIn("half-applied state", reference)
+        self.assertIn("make recovery non-idempotent", reference)
+        self.assertIn("complete trace or\nmeasurement", reference)
         self.assertIn("runtime records this evidence but never edits", reference)
         self.assertNotIn("spawn_agent", reference)
+
+    def test_cursor_quality_review_upstream_is_selectively_absorbed_and_attributed(self) -> None:
+        contract = json.loads((ROOT / "contracts/upstreams.json").read_text(encoding="utf-8"))
+        cursor = next(
+            source
+            for source in contract["sources"]
+            if source["repository"].endswith("cursor/plugins")
+        )
+        notice = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+        self.assertEqual(contract["schema"], "review-craft.upstreams.v2")
+        self.assertEqual(cursor["status"], "selective_absorbed")
+        self.assertEqual(
+            set(cursor["reviewedBlobs"]),
+            set(cursor["sourcePaths"]),
+        )
+        self.assertIn("diff-oriented structural regression delta", cursor["absorbedSurfaces"])
+        self.assertIn("hard universal file-line blocker", cursor["excludedSurfaces"])
+        self.assertIn("Cursor Task subagent orchestration", cursor["excludedSurfaces"])
+        self.assertIn("Copyright 2026 Cursor", notice)
+        self.assertIn(cursor["reviewedRevision"], notice)
 
     def test_fix_authorization_and_source_mutation_boundary_remain_explicit(self) -> None:
         text = _skill_text()

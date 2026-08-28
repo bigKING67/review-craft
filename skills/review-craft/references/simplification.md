@@ -7,19 +7,25 @@ mode, score, ledger, report, or source-editing runtime.
 
 This reference selectively adapts simplification concepts from
 [`tt-a1i/simplify-codebase`](https://github.com/tt-a1i/simplify-codebase) at reviewed
-revision `add872f3db2a96f90081bedc070dde5d723afa95`. See the packaged
-`THIRD_PARTY_NOTICES.md` for provenance and the MIT license notice.
+revision `add872f3db2a96f90081bedc070dde5d723afa95`, plus structural-review concepts
+from Cursor's
+[`thermo-nuclear-code-quality-review`](https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review)
+at reviewed revision `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`. See the packaged
+`THIRD_PARTY_NOTICES.md` for provenance and the MIT license notices.
 
 ## Contents
 
 1. Qualify the candidate
 2. Map consumers and obligations
-3. Investigate beyond the first smell
-4. Build the proof record
-5. Protect boundaries and lifecycle guarantees
-6. Decide on net benefit
-7. Verify an authorized cut
-8. Preserve design history
+3. Compare the structural regression delta
+4. Investigate beyond the first smell
+5. Validate canonical ownership and placement
+6. Build the proof record
+7. Protect boundaries and lifecycle guarantees
+8. Decide on net benefit
+9. Evaluate replacement dependencies
+10. Verify an authorized cut
+11. Preserve design history
 
 ## Qualify the candidate
 
@@ -56,6 +62,21 @@ The contract map is sufficient only when each in-scope entrypoint and authority 
 has an owner and observable obligation, and every uninspected or externally unknowable
 surface is explicit.
 
+## Compare the structural regression delta
+
+In `diff` mode, compare the baseline and head obligations instead of judging only the
+head's absolute shape. Account for concepts, owners, branches, optional states, lifecycle
+stages, helper or policy layers, coupling edges, and synchronized edit sites that the
+change adds, removes, or relocates. A lower-obligation alternative is material only when
+its ownership, compatibility, call-chain, and net-effect claims can be validated; do not
+presume that an elegant refactor exists and then use that presumption as a blocker.
+
+File growth and absolute line count may trigger investigation, but no universal file-line
+threshold establishes a finding. Validate the maintenance cost: added owner crossings,
+duplicated policy, additional state transitions, wider change amplification, or another
+violated invariant. Record the delta in the existing candidate and evidence artifacts;
+do not introduce a parallel structural-regression score or ledger.
+
 ## Investigate beyond the first smell
 
 Use these lenses to generate leads without treating them as findings:
@@ -90,6 +111,23 @@ status:
 
 Smell and static-lead evidence cannot authorize deletion. A high-confidence destructive
 decision normally needs both contract and behavior proof.
+
+## Validate canonical ownership and placement
+
+Treat logic in a surprising layer, a near-duplicate helper, or a feature check scattered
+through a shared flow as a lead, not a placement finding. Before recommending
+consolidation, identify:
+
+- the existing canonical owner or boundary and the contract it demonstrably owns;
+- the duplicated or displaced obligation and whether its semantics actually match;
+- affected callers, consumers, and synchronized edit sites;
+- compatibility, policy, isolation, or lifecycle reasons that may justify separate owners;
+  and
+- the ownership obligation that consolidation would retire rather than merely relocate.
+
+Reuse an existing helper only when its current contract covers the required behavior.
+Do not turn preferred layering, generic utility placement, or architectural taste into a
+finding without a violated invariant or evidenced change-amplification cost.
 
 ## Build the proof record
 
@@ -134,6 +172,14 @@ owner and protect the same failure window. Preserve distinct mechanisms that sep
 provide publication rollback, callback isolation, terminal arbitration, worker ownership,
 durability transitions, or quiescent disposal.
 
+When related updates can leave a half-applied state, map the precondition, each write or
+publication step, observers, failure windows, rollback or compensation, and retry
+semantics. Promote the lead only when an intermediate state can violate an observable
+contract, corrupt durable truth, mislead a consumer, or make recovery non-idempotent.
+Do not recommend parallel execution merely because operations appear independent;
+ordering, race, resource, and error-aggregation claims require a complete trace or
+measurement under the normal performance and concurrency evidence gates.
+
 For cleanup changes, returning from `dispose` or setting a stopped flag is insufficient.
 Name the evidence that no owned timer, listener, stream, process, worker, promise, queue,
 retry, descriptor, or deferred write can publish or mutate state after the terminal
@@ -154,6 +200,25 @@ Keep, downgrade, or reject the candidate when:
 
 A conclusion that no safe simplification exists is valid when evidence-backed. Do not
 reward deleted lines, candidate count, or dramatic scope.
+
+## Evaluate replacement dependencies
+
+When a simplification proposes replacing local infrastructure with a platform facility,
+an existing dependency, or a new dependency, compare the complete obligation delta rather
+than source size alone. Record:
+
+- exact semantic parity and any unsupported residual behavior;
+- local policy, adapters, wrappers, and dedicated tests that would remain;
+- adoption, migration, rollback, and platform-compatibility work;
+- release cadence, maintenance ownership, security posture, license compatibility,
+  transitive footprint, and supply-chain exposure; and
+- local code, dependencies, fixtures, and operational duties that would actually retire.
+
+Prefer a suitable platform facility, then a dependency already present in the product,
+and introduce a new dependency only when evidence shows a clear net ownership reduction.
+Delegating one primitive while retaining most local policy is not a proved simplification;
+preserve that residual contract and choose `KEEP`, `DEFER`, or `MEASURE` when the net effect
+is unresolved.
 
 ## Verify an authorized cut
 

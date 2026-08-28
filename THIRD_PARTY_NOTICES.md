@@ -30,12 +30,27 @@ matrix, source-editing workflow, orchestration guidance, or independent reportin
   `references/decision-records.md`
 - License: MIT
 
-The upstream MIT notice follows:
+## Cursor Team Kit thermo-nuclear-code-quality-review
+
+Review Craft's `simplification.md` reference selectively adapts structural-review
+concepts from Cursor's public `thermo-nuclear-code-quality-review` Skill. It does not
+copy the hard universal file-line blocker, presumptive refactor blockers, default source
+rewrite posture, Cursor Task subagent orchestration, or rhetoric as evidence.
+
+- Project: `cursor/plugins`
+- Source: <https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review>
+- Reviewed revision: `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`
+- Adapted source path:
+  `cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md`
+- License: MIT
+
+The upstream MIT copyright notices and shared license text follow:
 
 ```text
 MIT License
 
 Copyright (c) 2026 simplify-codebase contributors
+Copyright 2026 Cursor
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

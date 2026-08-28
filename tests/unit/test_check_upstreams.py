@@ -17,6 +17,12 @@ class UpstreamCheckTests(unittest.TestCase):
     def setUp(self) -> None:
         self.contract = load_contract(ROOT / "contracts/upstreams.json")
 
+    def _single_source_contract(self) -> dict[str, object]:
+        return {
+            "schema": self.contract["schema"],
+            "sources": [deepcopy(self.contract["sources"][0])],
+        }
+
     def test_repository_contract_passes_offline_without_network(self) -> None:
         completed = subprocess.run(
             [sys.executable, "scripts/check_upstreams.py"],
@@ -29,7 +35,10 @@ class UpstreamCheckTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["mode"], "offline")
-        self.assertEqual(payload["sources"][0]["status"], "NOT_CHECKED")
+        self.assertTrue(payload["sources"])
+        self.assertTrue(
+            all(source["status"] == "NOT_CHECKED" for source in payload["sources"])
+        )
 
     def test_contract_rejects_non_full_revision(self) -> None:
         payload = deepcopy(self.contract)
@@ -60,35 +69,81 @@ class UpstreamCheckTests(unittest.TestCase):
                 ):
                     load_contract(contract_path)
 
-    def test_remote_comparison_distinguishes_current_and_updated(self) -> None:
-        current = self.contract["sources"][0]["reviewedRevision"]
-        for remote_revision, status, code in (
-            (current, "CURRENT", 0),
-            ("f" * 40, "UPDATED", 1),
+    def test_contract_requires_one_reviewed_blob_per_source_path(self) -> None:
+        for mutation in ("missing", "unexpected", "invalid"):
+            payload = deepcopy(self.contract)
+            blobs = payload["sources"][0]["reviewedBlobs"]
+            if mutation == "missing":
+                blobs.pop(next(iter(blobs)))
+            elif mutation == "unexpected":
+                blobs["unexpected.md"] = "a" * 40
+            else:
+                blobs[next(iter(blobs))] = "not-a-full-git-blob"
+            with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
+                contract_path = Path(directory) / "upstreams.json"
+                contract_path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(mutation=mutation), self.assertRaises(
+                    UpstreamContractError
+                ):
+                    load_contract(contract_path)
+
+    def test_remote_comparison_distinguishes_repository_and_content_drift(self) -> None:
+        contract = self._single_source_contract()
+        source = contract["sources"][0]
+        current_revision = source["reviewedRevision"]
+        current_blobs = source["reviewedBlobs"]
+        changed_blobs = deepcopy(current_blobs)
+        changed_blobs[next(iter(changed_blobs))] = "f" * 40
+        for remote_revision, remote_blobs, repository_status, content_status, code in (
+            (current_revision, current_blobs, "CURRENT", "CURRENT", 0),
+            ("f" * 40, current_blobs, "UPDATED", "CURRENT", 0),
+            ("f" * 40, changed_blobs, "UPDATED", "UPDATED", 1),
         ):
-            completed = subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=f"{remote_revision}\trefs/heads/main\n",
-                stderr="",
-            )
-            with self.subTest(status=status), patch(
-                "scripts.check_upstreams.subprocess.run", return_value=completed
+            with self.subTest(
+                repository_status=repository_status, content_status=content_status
+            ), patch(
+                "scripts.check_upstreams._remote_state",
+                return_value=(remote_revision, remote_blobs),
             ):
-                payload, actual_code = evaluate(deepcopy(self.contract), remote=True)
-                self.assertEqual(payload["sources"][0]["status"], status)
+                payload, actual_code = evaluate(deepcopy(contract), remote=True)
+                result = payload["sources"][0]
+                self.assertEqual(result["repositoryStatus"], repository_status)
+                self.assertEqual(result["contentStatus"], content_status)
+                self.assertEqual(result["status"], content_status)
                 self.assertEqual(actual_code, code)
 
-    def test_remote_failure_is_explicit_and_fails_closed(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=2, stdout="", stderr="fixture failure"
+    def test_missing_remote_source_path_is_relevant_drift(self) -> None:
+        contract = self._single_source_contract()
+        source = contract["sources"][0]
+        remote_blobs = deepcopy(source["reviewedBlobs"])
+        missing_path = next(iter(remote_blobs))
+        remote_blobs.pop(missing_path)
+        with patch(
+            "scripts.check_upstreams._remote_state",
+            return_value=("f" * 40, remote_blobs),
+        ):
+            payload, code = evaluate(contract, remote=True)
+
+        result = payload["sources"][0]
+        path_result = next(
+            item for item in result["sourcePaths"] if item["path"] == missing_path
         )
-        with patch("scripts.check_upstreams.subprocess.run", return_value=completed):
-            payload, code = evaluate(deepcopy(self.contract), remote=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "UPDATED")
+        self.assertEqual(path_result["status"], "MISSING")
+        self.assertIsNone(path_result["remoteBlob"])
+
+    def test_remote_failure_is_explicit_and_fails_closed(self) -> None:
+        contract = self._single_source_contract()
+        with patch(
+            "scripts.check_upstreams._remote_state",
+            side_effect=RuntimeError("git fetch exited 2"),
+        ):
+            payload, code = evaluate(contract, remote=True)
 
         self.assertEqual(code, 2)
         self.assertEqual(payload["sources"][0]["status"], "UNREACHABLE")
-        self.assertNotIn("fixture failure", payload["sources"][0]["error"])
+        self.assertEqual(payload["sources"][0]["error"], "git fetch exited 2")
 
 
 if __name__ == "__main__":
