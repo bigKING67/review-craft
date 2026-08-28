@@ -5,8 +5,14 @@ agent understand a repository, account for review coverage, validate candidate f
 choose proportionate remediation, and preserve well-designed code instead of rewarding issue
 count.
 
-The current release line is **0.7.0**. Install from the exact `v0.7.0` tag or published npm
+The current release line is **0.7.1**. Install from the exact `v0.7.1` tag or published npm
 version rather than a moving branch.
+
+Version 0.7.1 strengthens current `review-craft.run.v5` with content-bound source-span
+anchors, Git-base binding for deleted source, and a coverage denominator sealed one-to-one
+against the canonical inventory. It also adds evidence-backed simplification guidance,
+source-bound reference-upstream governance, automatic Review Craft routing, and maintained
+Node 24 CI dependencies without changing the bounded, provider-free product boundary.
 
 ## Product boundary
 
@@ -205,7 +211,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
 For this candidate the result should include:
 
 ```json
-{"ready": true, "version": "0.7.0"}
+{"ready": true, "version": "0.7.1"}
 ```
 
 Adjust the path for the Codex-only or Claude installation root.
