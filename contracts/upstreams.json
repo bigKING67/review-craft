@@ -1,0 +1,37 @@
+{
+  "schema": "review-craft.upstreams.v1",
+  "sources": [
+    {
+      "id": "tt-a1i/simplify-codebase",
+      "repository": "https://github.com/tt-a1i/simplify-codebase",
+      "branch": "main",
+      "reviewedRevision": "add872f3db2a96f90081bedc070dde5d723afa95",
+      "reviewedAt": "2026-08-28",
+      "license": "MIT",
+      "status": "selective_absorbed",
+      "sourcePaths": [
+        "SKILL.md",
+        "references/investigation.md",
+        "references/boundaries-and-lifecycle.md",
+        "references/execution-and-recovery.md",
+        "references/decision-records.md"
+      ],
+      "absorbedSurfaces": [
+        "maintenance-obligation model",
+        "consumer classification",
+        "simplification proof record",
+        "boundary and lifecycle analysis",
+        "vertical cut completeness",
+        "widening verification rings"
+      ],
+      "excludedSurfaces": [
+        "Survey and Change runtime",
+        "Focused and Broad mode matrix",
+        "automatic source mutation",
+        "subagent orchestration",
+        "independent scoring and reporting",
+        "historical finding integration as a supported runtime"
+      ]
+    }
+  ]
+}

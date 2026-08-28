@@ -122,6 +122,28 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(command, workflow)
 
+    def test_simplification_guidance_refines_existing_contracts_only(self) -> None:
+        skill = _skill_text()
+        reference = (SKILL_ROOT / "references/simplification.md").read_text(
+            encoding="utf-8"
+        )
+        workflow = (SKILL_ROOT / "references/workflow.md").read_text(encoding="utf-8")
+        findings = (SKILL_ROOT / "references/finding-lifecycle.md").read_text(
+            encoding="utf-8"
+        )
+        remediation = (SKILL_ROOT / "references/remediation.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("[simplification.md](references/simplification.md)", skill)
+        self.assertIn("read `simplification.md`", workflow)
+        self.assertIn("Read `simplification.md`", findings)
+        self.assertIn("read `simplification.md`", remediation)
+        self.assertIn("existing candidate, evidence registry, finding, and decision", reference)
+        self.assertIn("does not define a new Review Craft\nmode, score, ledger, report", reference)
+        self.assertIn("runtime records this evidence but never edits", reference)
+        self.assertNotIn("spawn_agent", reference)
+
     def test_fix_authorization_and_source_mutation_boundary_remain_explicit(self) -> None:
         text = _skill_text()
         remediation = text.split("## Remediation workflow", 1)[1].split(

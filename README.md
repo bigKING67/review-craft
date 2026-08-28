@@ -355,5 +355,15 @@ not cross-runner proof of a regression.
 ## License and provenance
 
 Review Craft is MIT licensed. Its engineering-review design was informed by the public
-Apache-2.0 project identified in `THIRD_PARTY_NOTICES.md`; Review Craft does not vendor that
-runtime.
+Apache-2.0 project identified in `THIRD_PARTY_NOTICES.md`. Its simplification-proof
+guidance selectively adapts concepts from the MIT-licensed upstream pinned there. Review
+Craft does not vendor either upstream repository; repository-governance metadata records
+the reviewed revision and the deliberately excluded surfaces. Source-checkout validation
+checks that lock offline. From a source checkout, check for upstream drift explicitly,
+outside the release gate, with:
+
+```text
+python3 scripts/check_upstreams.py --remote
+```
+
+`CURRENT` exits `0`, `UPDATED` exits `1`, and an unreachable or invalid source exits `2`.

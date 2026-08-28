@@ -15,3 +15,43 @@ TypeScript SDK, deep-scan orchestration, attack-path implementation, or report c
 If future versions incorporate specific upstream source or text, the corresponding
 copyright, Apache-2.0 license, modified-file notice, and file-level provenance must
 be added before distribution.
+
+## simplify-codebase
+
+Review Craft's `simplification.md` reference selectively adapts concepts and terminology
+from the public `tt-a1i/simplify-codebase` project. It does not copy that project's mode
+matrix, source-editing workflow, orchestration guidance, or independent reporting model.
+
+- Project: `tt-a1i/simplify-codebase`
+- Source: <https://github.com/tt-a1i/simplify-codebase>
+- Reviewed revision: `add872f3db2a96f90081bedc070dde5d723afa95`
+- Adapted source paths: `SKILL.md`, `references/investigation.md`,
+  `references/boundaries-and-lifecycle.md`, `references/execution-and-recovery.md`, and
+  `references/decision-records.md`
+- License: MIT
+
+The upstream MIT notice follows:
+
+```text
+MIT License
+
+Copyright (c) 2026 simplify-codebase contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

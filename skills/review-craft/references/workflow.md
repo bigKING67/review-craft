@@ -236,6 +236,12 @@ record location, evidence, claimed impact, and confidence while keeping validati
 separate. Do not create candidates to satisfy a requested count. Read
 `finding-lifecycle.md` for canonical candidate fields and distinctions.
 
+When a candidate's stated benefit is retiring accidental complexity through
+`CLEAN_UP`, `MERGE`, `REPLACE`, or `DELETE`, read `simplification.md`. Use its
+maintenance-obligation, consumer-map, cut-boundary, and net-effect proof inside the
+existing candidate, evidence, finding, and decision artifacts; do not create a parallel
+mode, ledger, score, or report.
+
 ## 6. Candidate validation
 
 Choose a method appropriate to the claim:

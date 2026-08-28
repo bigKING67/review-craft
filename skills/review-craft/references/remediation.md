@@ -40,6 +40,12 @@ For `DELETE` or `REWRITE`, follow the migration, compatibility, rollback, and
 verification gates already bound in the canonical decision. Stop if those details are
 not executable. A decision in a report is not itself authorization to modify source.
 
+For an authorized `CLEAN_UP`, `MERGE`, `REPLACE`, or `DELETE` whose benefit is retiring
+accidental complexity, read `simplification.md`. Carry its vertical cut, residue search,
+decisive proof, discovery-query repeat, boundary comparison, diff audit, and realized net
+effect into the existing fix plan and immutable attempt evidence. Do not create a second
+receipt or let the runtime apply or roll back source changes.
+
 ## 3. Capture commands before assessment
 
 Use the attempt protocol for new source-checkout workflows:

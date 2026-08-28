@@ -126,6 +126,8 @@ boundary is active:
 
 - authority or hostile-data uncertainty: `authority-and-scope.md`;
 - materially unclear project goals: `quality-model.md`;
+- accidental-complexity, consolidation, or removal candidates:
+  `simplification.md`;
 - unresolved validation classification, multi-candidate reconciliation, or
   `DELETE`/`REWRITE` gates: `finding-lifecycle.md`;
 - canonical full-review coverage and artifact flow: `workflow.md`;
@@ -243,5 +245,6 @@ or security workflow from a self-score.
 ## Supporting references
 
 - Authority, workflow, quality, findings: [authority-and-scope.md](references/authority-and-scope.md), [workflow.md](references/workflow.md), [quality-model.md](references/quality-model.md), [finding-lifecycle.md](references/finding-lifecycle.md)
+- Simplification proof: [simplification.md](references/simplification.md)
 - Scoring, integrations, modes: [scoring-and-report.md](references/scoring-and-report.md), [integrations.md](references/integrations.md), [modes-and-profiles.md](references/modes-and-profiles.md)
 - Remediation and fix verification: [remediation.md](references/remediation.md)

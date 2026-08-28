@@ -35,6 +35,7 @@ REQUIRED_FILES = (
     "contracts/package-check-receipt.schema.json",
     "contracts/package-boundary.json",
     "contracts/release-policy.json",
+    "contracts/upstreams.json",
     "package.json",
     "pyproject.toml",
     "skills/review-craft/SKILL.md",
@@ -75,6 +76,7 @@ REQUIRED_FILES = (
     "skills/review-craft/references/modes-and-profiles.md",
     "skills/review-craft/references/protocol-lifecycle.md",
     "skills/review-craft/references/remediation.md",
+    "skills/review-craft/references/simplification.md",
     "skills/review-craft/schemas/assurance-verification.schema.json",
     "skills/review-craft/schemas/dependency-map.schema.json",
     "skills/review-craft/schemas/delivery-attestation.schema.json",
@@ -92,6 +94,7 @@ REQUIRED_FILES = (
     "skills/review-craft/schemas/review-scope.schema.json",
     "skills/review-craft/scripts/review_craft.py",
     "scripts/benchmark_runtime.py",
+    "scripts/check_upstreams.py",
     "scripts/complexity_budget.py",
     "scripts/package_check.py",
     "scripts/package_e2e_fixture.py",
@@ -187,6 +190,19 @@ def validate_required_files(errors: list[str]) -> None:
             errors.append(f"missing required file: {relative}")
 
 
+def validate_upstreams(errors: list[str]) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/check_upstreams.py")],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown failure"
+        errors.append(f"upstream contract validation failed: {detail}")
+
+
 def validate_versions(errors: list[str]) -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     pyproject_version = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', pyproject, re.M)
@@ -260,6 +276,7 @@ def main() -> int:
     validate_schemas(errors)
     if not args.schemas_only:
         validate_required_files(errors)
+        validate_upstreams(errors)
         validate_versions(errors)
         validate_skill(errors)
         validate_tree(errors)

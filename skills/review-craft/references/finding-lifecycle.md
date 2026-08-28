@@ -3,16 +3,25 @@
 ## Contents
 
 1. Candidate fields
-2. Validation outcomes
-3. Severity and priority
-4. Decision rules
-5. Performance claims
+2. Simplification proof
+3. Validation outcomes
+4. Severity and priority
+5. Decision rules
+6. Performance claims
 
 ## Candidate fields
 
 Use stable IDs such as `RC-ARCH-001`. Record category, type, title, exact locations,
 evidence, claimed impact, confidence, and a separate validation record. Candidate
 evidence should explain the trace, not merely quote a suspicious line.
+
+## Simplification proof
+
+Read `simplification.md` when a candidate proposes retiring a maintenance obligation
+through `CLEAN_UP`, `MERGE`, `REPLACE`, or `DELETE`. Its smell-to-behavior investigation
+depth is evidence about how far the analysis progressed; it does not replace the canonical
+validation outcomes below. Preserve its consumer map, cut boundary, surrendered behavior,
+decisive proof, and net effect through existing canonical artifacts.
 
 ## Validation outcomes
 
