@@ -13,8 +13,9 @@
   authorized fix preparation and verification. The runtime records and validates fix
   evidence but never edits target source. It supports immutable fix-attempt lineage with
   post-command assessment plus the independent `review-craft.delivery.v2` export.
-  Preflight creates `review-craft.run.v5` with source-bound location anchors and a
-  content-bound manual evidence registry; sealed `review-craft.run.v4` and
+  Preflight creates `review-craft.run.v5` with source-bound location anchors, an
+  inventory-bound coverage denominator, and a content-bound manual evidence registry;
+  sealed `review-craft.run.v4` and
   `review-craft.run.v3` remain validation-only historical data. Keep legacy `fix.v1`
   and `delivery.v1` semantics unchanged. Remote push and GitHub Actions proof require
   explicit CLI options.

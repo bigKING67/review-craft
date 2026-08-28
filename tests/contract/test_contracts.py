@@ -382,6 +382,47 @@ class ContractTests(unittest.TestCase):
             validate_run(self.run_dir)
         self.assertIn("coverage.summary.reviewed", str(captured.exception))
 
+    def test_run_v5_binds_coverage_rows_to_the_canonical_inventory(self) -> None:
+        coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
+        cases = {
+            "sha256": "f" * 64,
+            "untracked": True,
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                tampered = copy.deepcopy(coverage)
+                tampered["files"][0][field] = value
+                write_json(self.run_dir / ARTIFACT_PATHS["coverage"], tampered)
+
+                with self.assertRaises(ContractError) as captured:
+                    validate_run(self.run_dir)
+                self.assertIn(
+                    f"coverage.files[0].{field}: does not match the canonical inventory",
+                    str(captured.exception),
+                )
+
+    def test_run_v5_coverage_paths_match_the_canonical_inventory(self) -> None:
+        coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
+        coverage["files"][0]["path"] = "replacement.py"
+        write_json(self.run_dir / ARTIFACT_PATHS["coverage"], coverage)
+
+        with self.assertRaises(ContractError) as captured:
+            validate_run(self.run_dir)
+        message = str(captured.exception)
+        self.assertIn("coverage.files: missing canonical inventory path 'app.py'", message)
+        self.assertIn(
+            "coverage.files: unexpected canonical inventory path 'replacement.py'",
+            message,
+        )
+
+    def test_run_v4_keeps_frozen_coverage_row_validation_semantics(self) -> None:
+        rewrite_fixture_run_schema(self.run_dir, PREVIOUS_SCHEMA_VERSION)
+        coverage = read_json(self.run_dir / ARTIFACT_PATHS["coverage"])
+        coverage["files"][0]["sha256"] = "f" * 64
+        write_json(self.run_dir / ARTIFACT_PATHS["coverage"], coverage)
+
+        validate_run(self.run_dir)
+
     def test_review_scope_dimensions_must_match_configuration(self) -> None:
         review_scope = read_json(self.run_dir / ARTIFACT_PATHS["reviewScope"])
         review_scope["dimensions"] = ["architecture"]

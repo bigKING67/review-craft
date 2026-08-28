@@ -194,6 +194,11 @@ class SkillContractTests(unittest.TestCase):
             "deterministic source-location anchoring with source-side and span-digest closure",
             alibaba["absorbedSurfaces"],
         )
+        self.assertIn(
+            "sealed coverage denominator bound one-to-one to canonical inventory",
+            alibaba["absorbedSurfaces"],
+        )
+        self.assertIn("coverage-derived run terminal states", alibaba["watchSurfaces"])
         self.assertIn("content-bound review resume and lineage", alibaba["watchSurfaces"])
         self.assertFalse(set(alibaba["absorbedSurfaces"]) & set(alibaba["watchSurfaces"]))
         self.assertIn("default test-file exclusion", alibaba["excludedSurfaces"])

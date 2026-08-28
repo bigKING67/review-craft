@@ -116,6 +116,15 @@ UNREADABLE
 DEFERRED
 ```
 
+For current run.v5, the coverage denominator is sealed by the canonical source projection.
+Validation recomputes that projection and requires the inventory-owned fields of every
+coverage row (`path`, kind, size, digest, binary/classification state, and any diff or
+filesystem identity fields) to match it one-to-one. Only disposition, rationale, ownership,
+and evidence references remain authorable review state. Do not add, remove, rename, or
+rewrite inventory identity in `coverage.json`; change scope configuration and run preflight
+again when the intended denominator changes. Frozen run.v3 and run.v4 artifacts keep their
+published validation semantics.
+
 Keep repository-relative POSIX paths. Record reasons and evidence references for
 every disposition. Classify generated and vendored content only through explicit
 patterns or reliable build/package facts; size and unfamiliarity are insufficient.

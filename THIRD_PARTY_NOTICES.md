@@ -73,12 +73,14 @@ SOFTWARE.
 
 ## Alibaba Open Code Review
 
-Review Craft selectively adapts the deterministic source-location anchoring concept from
-Alibaba's public Open Code Review project through an independently implemented Python
-contract. No source or text from the reviewed revision has been copied. Remaining runtime
-contract surfaces stay non-normative watch candidates. This boundary does not make its Go
-CLI, provider runtime, subagent model, default exclusions, automatic mutation behavior,
-filtering policy, or benchmark claims part of Review Craft.
+Review Craft selectively adapts deterministic source-location anchoring and a sealed
+coverage-denominator concept from Alibaba's public Open Code Review project through
+independently implemented Python contracts. Current run.v5 validation binds every
+inventory-owned coverage field one-to-one to the canonical source projection; it does not
+copy Alibaba's run-terminal-state model. No source or text from the reviewed revision has
+been copied. Remaining runtime contract surfaces stay non-normative watch candidates. This
+boundary does not make its Go CLI, provider runtime, subagent model, default exclusions,
+automatic mutation behavior, filtering policy, or benchmark claims part of Review Craft.
 
 - Project: `alibaba/open-code-review`
 - Source: <https://github.com/alibaba/open-code-review>

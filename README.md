@@ -314,6 +314,12 @@ Historical artifacts are validated under their published semantics and are never
 upgraded or reinterpreted. See
 [`protocol-lifecycle.md`](skills/review-craft/references/protocol-lifecycle.md).
 
+Current run.v5 validation also seals the coverage denominator against the canonical source
+projection: every inventory-owned field in `coverage.files` must match the live, content-
+bound inventory one-to-one. Review dispositions, reasons, and evidence references remain
+authorable review state. This stronger binding is not backported into frozen run.v3 or
+run.v4 validation semantics.
+
 ## Development validation
 
 Ordinary validation is deterministic and provider-free:

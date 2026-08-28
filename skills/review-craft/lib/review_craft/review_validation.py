@@ -27,6 +27,20 @@ from .contract_core import (
 )
 from .source_anchor import SourceProjection, build_source_anchor
 
+_COVERAGE_INVENTORY_FIELDS = (
+    "path",
+    "kind",
+    "sizeBytes",
+    "sha256",
+    "binary",
+    "classification",
+    "linkTarget",
+    "readError",
+    "diffStatus",
+    "previousPath",
+    "untracked",
+)
+
 
 def _validate_quality_model(model: dict[str, Any], errors: list[str], final: bool) -> None:
     for field in ("purpose", "audience"):
@@ -270,6 +284,39 @@ def _validate_coverage(coverage: dict[str, Any], errors: list[str], final: bool)
         if summary.get("deferred") != deferred:
             errors.append(f"coverage.summary.deferred: expected {deferred}")
     return paths
+
+
+def _validate_coverage_inventory(
+    coverage: dict[str, Any],
+    schema_version: str,
+    source_projection: SourceProjection | None,
+    errors: list[str],
+) -> None:
+    if schema_version != SCHEMA_VERSION or source_projection is None:
+        return
+    files = coverage.get("files")
+    if not isinstance(files, list):
+        return
+    rows_by_path = {
+        row.get("path"): (index, row)
+        for index, row in enumerate(files)
+        if isinstance(row, dict) and isinstance(row.get("path"), str)
+    }
+    expected_paths = set(source_projection.records)
+    actual_paths = set(rows_by_path)
+    for path in sorted(expected_paths - actual_paths):
+        errors.append(f"coverage.files: missing canonical inventory path {path!r}")
+    for path in sorted(actual_paths - expected_paths):
+        errors.append(f"coverage.files: unexpected canonical inventory path {path!r}")
+    for path in sorted(expected_paths & actual_paths):
+        index, row = rows_by_path[path]
+        expected = source_projection.records[path]
+        for field in _COVERAGE_INVENTORY_FIELDS:
+            if (field in row) != (field in expected) or row.get(field) != expected.get(field):
+                errors.append(
+                    f"coverage.files[{index}].{field}: "
+                    "does not match the canonical inventory"
+                )
 
 
 def _validate_location(

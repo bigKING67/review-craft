@@ -26,10 +26,11 @@ already-appropriate code.
   teams, forked context, or host-private orchestration.
 - Version 0.7 supports read-only `review`, `diff`, and `focus` workflows plus authorized
   remediation verification, immutable fix-attempt lineage, and delivery v1/v2
-  attestations. Preflight creates `review-craft.run.v5` with source-bound location anchors
-  and content-bound registered manual artifacts; sealed run.v4 and run.v3 are
-  validation-only historical data. The runtime never edits source, commits, pushes, or
-  publishes, and does not support deep multi-pass or historical comparison.
+  attestations. Preflight creates `review-craft.run.v5` with source-bound location anchors,
+  an inventory-bound coverage denominator, and content-bound registered manual artifacts;
+  sealed run.v4 and run.v3 are validation-only historical data. The runtime never edits
+  source, commits, pushes, or publishes, and does not support deep multi-pass or historical
+  comparison.
 - Assurance is `fast` (budgeted/provisional), `standard`, or `assured` (E3+, no unresolved claims, and independent registered verification covering every finding).
 
 ## Authority and trust

@@ -33,6 +33,7 @@ from .repository_analysis import build_dependency_map, build_module_map
 from .review_validation import (
     _validate_candidates,
     _validate_coverage,
+    _validate_coverage_inventory,
     _validate_decisions,
     _validate_findings,
     _validate_quality_model,
@@ -325,6 +326,9 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         )
     _validate_quality_model(data["qualityModel"], errors, final)
     coverage_paths = _validate_coverage(data["coverage"], errors, final)
+    _validate_coverage_inventory(
+        data["coverage"], schema_version, source_projection, errors
+    )
     _validate_review_scope(data["reviewScope"], manifest_configuration, coverage_paths, errors)
     _validate_repository_maps(
         data["moduleMap"], data["dependencyMap"], coverage_paths, errors

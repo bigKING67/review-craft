@@ -96,10 +96,11 @@
         "skills/open-code-review/SKILL.md": "00e1a685e88e2407af38be598af965e7cba04e4f"
       },
       "absorbedSurfaces": [
-        "deterministic source-location anchoring with source-side and span-digest closure"
+        "deterministic source-location anchoring with source-side and span-digest closure",
+        "sealed coverage denominator bound one-to-one to canonical inventory"
       ],
       "watchSurfaces": [
-        "coverage-derived terminality and sealed denominator",
+        "coverage-derived run terminal states",
         "content-bound review resume and lineage",
         "preview exclusion reasons and rule provenance",
         "public-safe failure summaries"
