@@ -120,7 +120,15 @@ class SourceAnchorTests(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.strip()
-        source = (target / "app.py").read_bytes()
+        base_source = subprocess.run(
+            ["git", "show", f"{base}:app.py"],
+            cwd=target,
+            check=True,
+            capture_output=True,
+        ).stdout
+        worktree_source = base_source.replace(b"\n", b"\r\n")
+        self.assertNotEqual(worktree_source, base_source)
+        (target / "app.py").write_bytes(worktree_source)
         (target / "app.py").unlink()
         completed = run_cli(
             "preflight",
@@ -140,8 +148,8 @@ class SourceAnchorTests(unittest.TestCase):
         self.assertEqual(anchored.returncode, 0, anchored.stderr)
         assert location is not None
         self.assertEqual(location["anchor"]["sourceSide"], "BASE")
-        self.assertEqual(location["anchor"]["sourceSha256"], sha256_bytes(source))
-        self.assertEqual(location["anchor"]["spanSha256"], sha256_bytes(source))
+        self.assertEqual(location["anchor"]["sourceSha256"], sha256_bytes(base_source))
+        self.assertEqual(location["anchor"]["spanSha256"], sha256_bytes(base_source))
 
     def test_run_v5_rejects_missing_or_tampered_candidate_anchor(self) -> None:
         populate_valid_run(self.run_dir)
