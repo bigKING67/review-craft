@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import contextlib
 import json
 import re
 from collections import Counter
@@ -9,6 +8,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .constants import PROFILES, SCHEMA_VERSION
+from .repository import source_payload
 
 MAX_ANALYZED_FILE_BYTES = 2 * 1024 * 1024
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
@@ -36,26 +36,45 @@ JS_IMPORT_PATTERNS = (
 )
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _profile_text(
+    root: Path, record: dict[str, Any] | None, skipped: list[str]
+) -> str | None:
+    if record is None:
+        return None
+    path = record["path"]
+    if record["kind"] != "file" or record["binary"]:
+        reason = "binary" if record["binary"] else record["kind"]
+        skipped.append(f"skipped profile context {path}: {reason} inventory entry")
+        return None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+        return source_payload(root, record, diff_base=None).decode("utf-8")
+    except (OSError, ValueError) as error:
+        skipped.append(f"skipped profile context {path}: {type(error).__name__}")
+        return None
 
 
-def _profile_context(root: Path, paths: set[str]) -> tuple[dict[str, Any], set[str], str]:
-    package = _read_json(root / "package.json") if "package.json" in paths else {}
+def _profile_context(
+    root: Path, records: list[dict[str, Any]]
+) -> tuple[dict[str, Any], set[str], str, list[str]]:
+    manifests = {row["path"]: row for row in records}
+    skipped: list[str] = []
+    package: dict[str, Any] = {}
+    package_text = _profile_text(root, manifests.get("package.json"), skipped)
+    if package_text is not None:
+        try:
+            value = json.loads(package_text)
+            if not isinstance(value, dict):
+                raise ValueError("package.json must contain an object")
+            package = value
+        except ValueError as error:
+            skipped.append(f"skipped profile context package.json: {type(error).__name__}")
     dependencies: dict[str, Any] = {}
     for field in ("dependencies", "devDependencies", "peerDependencies"):
         value = package.get(field)
         if isinstance(value, dict):
             dependencies.update(value)
-    pyproject_text = ""
-    if "pyproject.toml" in paths:
-        with contextlib.suppress(OSError):
-            pyproject_text = (root / "pyproject.toml").read_text(encoding="utf-8")
-    return package, set(dependencies), pyproject_text
+    pyproject_text = _profile_text(root, manifests.get("pyproject.toml"), skipped)
+    return package, set(dependencies), pyproject_text or "", skipped
 
 
 def _add_profile_signal(
@@ -172,7 +191,7 @@ def detect_profile(root: Path, records: list[dict[str, Any]], requested: str) ->
         }
 
     paths = {row["path"] for row in records}
-    package, dependency_names, pyproject_text = _profile_context(root, paths)
+    package, dependency_names, pyproject_text, skipped = _profile_context(root, records)
     scores: Counter[str] = Counter()
     signals: dict[str, list[str]] = {profile: [] for profile in PROFILES if profile != "auto"}
     _add_repository_shape_signals(paths, package, scores, signals)
@@ -206,7 +225,7 @@ def detect_profile(root: Path, records: list[dict[str, Any]], requested: str) ->
         "requested": requested,
         "resolved": resolved,
         "confidence": confidence,
-        "signals": signals[resolved],
+        "signals": signals[resolved] + skipped,
     }
 
 

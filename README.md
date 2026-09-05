@@ -386,6 +386,10 @@ Craft does not vendor those upstream repositories; repository-governance metadat
 the reviewed revision, source-path Git blobs, and deliberately excluded surfaces. A
 `tracked` source records non-normative watch surfaces and makes no absorption or quality
 claim; `selective_absorbed` records only the surfaces actually adapted into Review Craft.
+Each entry covers only its listed source paths, not a complete upstream-repository audit.
+When an upstream branch advances, `contracts/upstreams.json` records the latest reviewed
+revision and blobs; `THIRD_PARTY_NOTICES.md` separately preserves the original adaptation
+review where it differs.
 Source-checkout validation checks that lock offline. From a source checkout, check for
 relevant upstream drift explicitly, outside the release gate, with:
 

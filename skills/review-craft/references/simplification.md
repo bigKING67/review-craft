@@ -7,10 +7,12 @@ mode, score, ledger, report, or source-editing runtime.
 
 This reference selectively adapts simplification concepts from
 [`tt-a1i/simplify-codebase`](https://github.com/tt-a1i/simplify-codebase) at reviewed
-revision `add872f3db2a96f90081bedc070dde5d723afa95`, plus structural-review concepts
+revision `5da55efcb52db690e7406f06f827a23b15da2706` (original adaptation review:
+`add872f3db2a96f90081bedc070dde5d723afa95`), plus structural-review concepts
 from Cursor's
 [`thermo-nuclear-code-quality-review`](https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review)
-at reviewed revision `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`. See the packaged
+at reviewed revision `93b00b89ef425a9c1bac0d0b317dfc49c930ac99` (the tracked Skill blob
+is unchanged from original adaptation review `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`). See the packaged
 `THIRD_PARTY_NOTICES.md` for provenance and the MIT license notices.
 
 ## Contents
@@ -150,6 +152,15 @@ Do not create a parallel simplification ledger. Map the record into canonical Re
 fields and register any decisive manual artifact before citing it. Prove shared artifacts
 below file granularity: account for candidate-exclusive selectors, members, fields, keys,
 registry entries, generated fragments, and fixtures while preserving surviving owners.
+
+Keep the canonical finding ID stable across its proof record, source links, and delivery.
+Record verified owner, symbol, and path or source-span details; state any missing locus
+facts explicitly. Describe topology only when its nodes, relationships, and cut set
+are evidenced. This reference does not add a visual companion or renderer.
+
+Lead delivery with the decision, then give the proof record, decision-relevant uncertainty,
+and separate validation layers. Do not repeat the investigation narrative or add empty
+sections; concision must retain the candidate, evidence strength, consequence, and boundary.
 
 ## Protect boundaries and lifecycle guarantees
 

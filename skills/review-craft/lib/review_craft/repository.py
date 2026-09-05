@@ -94,9 +94,13 @@ def inspect_git(target: Path) -> GitState:
         if remote_result.returncode == 0
         else None
     )
-    status = run_git(root, "status", "--porcelain=v1", "-z").stdout.decode(
-        "utf-8", errors="surrogateescape"
-    )
+    status_result = run_git(root, "status", "--porcelain=v1", "-z")
+    if status_result.returncode != 0:
+        raise RuntimeError(
+            f"git status failed (exit code {status_result.returncode}); "
+            "worktree cleanliness is unknown"
+        )
+    status = status_result.stdout.decode("utf-8", errors="surrogateescape")
     return GitState(True, root, revision, branch, remote, status, revision is None)
 
 

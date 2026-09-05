@@ -5,8 +5,8 @@
       "id": "tt-a1i/simplify-codebase",
       "repository": "https://github.com/tt-a1i/simplify-codebase",
       "branch": "main",
-      "reviewedRevision": "add872f3db2a96f90081bedc070dde5d723afa95",
-      "reviewedAt": "2026-08-28",
+      "reviewedRevision": "5da55efcb52db690e7406f06f827a23b15da2706",
+      "reviewedAt": "2026-09-05",
       "license": "MIT",
       "status": "selective_absorbed",
       "sourcePaths": [
@@ -17,7 +17,7 @@
         "references/decision-records.md"
       ],
       "reviewedBlobs": {
-        "SKILL.md": "5e3139ab426b903bcea014a4dba6b0b4951a4619",
+        "SKILL.md": "38144f313b24614ab17cea156eec99197557dc81",
         "references/investigation.md": "68e4367420f7cf66afb782204c170ce9a1fb637a",
         "references/boundaries-and-lifecycle.md": "d9e9b6ea2718dcd35b4a1832ef5a2cfa3e181540",
         "references/execution-and-recovery.md": "2974d996f076cd13568f277dd72c783119cad85c",
@@ -30,7 +30,9 @@
         "boundary and lifecycle analysis",
         "vertical cut completeness",
         "replacement dependency evaluation",
-        "widening verification rings"
+        "widening verification rings",
+        "stable finding identity and verified locus disclosure",
+        "concise decision-relevant delivery"
       ],
       "excludedSurfaces": [
         "Survey and Change runtime",
@@ -38,15 +40,17 @@
         "automatic source mutation",
         "subagent orchestration",
         "independent scoring and reporting",
-        "historical finding integration as a supported runtime"
+        "historical finding integration as a supported runtime",
+        "unverified topology or relationship claims",
+        "optional cleanup-map renderer and visual companion workflow"
       ]
     },
     {
       "id": "cursor/plugins#cursor-team-kit/skills/thermo-nuclear-code-quality-review",
       "repository": "https://github.com/cursor/plugins",
       "branch": "main",
-      "reviewedRevision": "397c8660da6d3d873a91e18c2ca2f22cac1f0ac1",
-      "reviewedAt": "2026-08-28",
+      "reviewedRevision": "93b00b89ef425a9c1bac0d0b317dfc49c930ac99",
+      "reviewedAt": "2026-09-05",
       "license": "MIT",
       "status": "selective_absorbed",
       "sourcePaths": [
@@ -73,8 +77,8 @@
       "id": "alibaba/open-code-review#review-runtime-contracts",
       "repository": "https://github.com/alibaba/open-code-review",
       "branch": "main",
-      "reviewedRevision": "5d255d160f9707b05537fd933d7adb68ba999c88",
-      "reviewedAt": "2026-08-28",
+      "reviewedRevision": "2190f11fcd24ed74ed7a1120c5e63f901b1da658",
+      "reviewedAt": "2026-09-05",
       "license": "Apache-2.0",
       "status": "selective_absorbed",
       "sourcePaths": [
@@ -90,14 +94,16 @@
         "internal/session/manifest.go": "6a113b246aff438ba881b3112991c0086fd95661",
         "internal/session/resume_identity.go": "e318b99dbd0fc31723618def470294add53cedfa",
         "internal/diff/resolver.go": "8443dfd70924bf1df5028b5063980bf7142b3023",
-        "internal/config/rules/system_rules.go": "567748db16a0f15c39931d81908b12af361766db",
+        "internal/config/rules/system_rules.go": "403c46a56e2d5b6fed40dfb00826ce3174aec0dd",
         "internal/model/preview.go": "2fdba24403b9fdc27a26d06457f237a4d893e9c0",
         "internal/agent/preview.go": "dd173c35f57eb74a9a42da33e8f4858748cf0910",
-        "skills/open-code-review/SKILL.md": "00e1a685e88e2407af38be598af965e7cba04e4f"
+        "skills/open-code-review/SKILL.md": "8d24ae919cad345bf2369d9f1b600ff8ae1226e7"
       },
       "absorbedSurfaces": [
         "deterministic source-location anchoring with source-side and span-digest closure",
-        "sealed coverage denominator bound one-to-one to canonical inventory"
+        "sealed coverage denominator bound one-to-one to canonical inventory",
+        "canonical-inventory-bound plain-text inputs for automatic profiling",
+        "explicit skip reasons for unavailable or untrusted automatic-profile inputs"
       ],
       "watchSurfaces": [
         "coverage-derived run terminal states",
@@ -112,7 +118,8 @@
         "default test-file exclusion",
         "automatic target-source mutation",
         "silent candidate filtering",
-        "self-reported benchmark claims as release evidence"
+        "self-reported benchmark claims as release evidence",
+        "general project-rule loading or automatic rule execution"
       ]
     }
   ]

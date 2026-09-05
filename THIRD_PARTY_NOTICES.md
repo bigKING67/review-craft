@@ -21,10 +21,14 @@ be added before distribution.
 Review Craft's `simplification.md` reference selectively adapts concepts and terminology
 from the public `tt-a1i/simplify-codebase` project. It does not copy that project's mode
 matrix, source-editing workflow, orchestration guidance, or independent reporting model.
+The latest bounded review added stable finding identity, verified-locus, and concise-handoff
+guidance to the existing selective adaptation. It does not add a topology claim, visual
+companion, or cleanup-map renderer.
 
 - Project: `tt-a1i/simplify-codebase`
 - Source: <https://github.com/tt-a1i/simplify-codebase>
-- Reviewed revision: `add872f3db2a96f90081bedc070dde5d723afa95`
+- Latest reviewed revision: `5da55efcb52db690e7406f06f827a23b15da2706` (2026-09-05)
+- Original adaptation review: `add872f3db2a96f90081bedc070dde5d723afa95` (2026-08-28)
 - Adapted source paths: `SKILL.md`, `references/investigation.md`,
   `references/boundaries-and-lifecycle.md`, `references/execution-and-recovery.md`, and
   `references/decision-records.md`
@@ -39,7 +43,8 @@ rewrite posture, Cursor Task subagent orchestration, or rhetoric as evidence.
 
 - Project: `cursor/plugins`
 - Source: <https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review>
-- Reviewed revision: `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`
+- Latest reviewed revision: `93b00b89ef425a9c1bac0d0b317dfc49c930ac99` (2026-09-05; tracked Skill blob unchanged)
+- Original adaptation review: `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1` (2026-08-28)
 - Adapted source path:
   `cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md`
 - License: MIT
@@ -81,11 +86,16 @@ copy Alibaba's run-terminal-state model. No source or text from the reviewed rev
 been copied. Remaining runtime contract surfaces stay non-normative watch candidates. This
 boundary does not make its Go CLI, provider runtime, subagent model, default exclusions,
 automatic mutation behavior, filtering policy, or benchmark claims part of Review Craft.
+The latest bounded review also informed automatic-profile input confinement: Review Craft
+uses only canonical-inventory ordinary text, records skipped input explicitly, and does not
+follow an external symlink or load binary content. This is a narrow boundary principle, not
+an adoption of Alibaba's project-rule loader or runtime.
 
 - Project: `alibaba/open-code-review`
 - Source: <https://github.com/alibaba/open-code-review>
-- Reviewed revision: `5d255d160f9707b05537fd933d7adb68ba999c88`
-- Watched source paths: `internal/session/manifest.go`,
+- Latest reviewed revision: `2190f11fcd24ed74ed7a1120c5e63f901b1da658` (2026-09-05)
+- Original adaptation review: `5d255d160f9707b05537fd933d7adb68ba999c88` (2026-08-28)
+- Reviewed source paths: `internal/session/manifest.go`,
   `internal/session/resume_identity.go`, `internal/diff/resolver.go`,
   `internal/config/rules/system_rules.go`, `internal/model/preview.go`,
   `internal/agent/preview.go`, and `skills/open-code-review/SKILL.md`

@@ -225,6 +225,23 @@ class DeliveryTests(unittest.TestCase):
         )
         self.assertEqual(validated.returncode, 0, validated.stderr)
 
+    def test_git_status_failure_does_not_create_delivery_attestation(self) -> None:
+        subprocess.run(
+            ["git", "config", "status.showUntrackedFiles", "invalid"],
+            cwd=self.target,
+            check=True,
+        )
+        completed = run_cli(
+            "verify-delivery",
+            "--fix-dir",
+            str(self.fix_dir),
+            "--output-root",
+            self.delivery_tmp.name,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("git status failed", completed.stderr)
+        self.assertEqual(list(Path(self.delivery_tmp.name).iterdir()), [])
+
     def test_public_delivery_schema_accepts_generated_attestation(self) -> None:
         _, attestation = verify_delivery(
             self.fix_dir,
