@@ -5,8 +5,13 @@ agent understand a repository, account for review coverage, validate candidate f
 choose proportionate remediation, and preserve well-designed code instead of rewarding issue
 count.
 
-The current release line is **0.7.1**. Install from the exact `v0.7.1` tag or published npm
+The current release line is **0.7.2**. Install from the exact `v0.7.2` tag or published npm
 version rather than a moving branch.
+
+Version 0.7.2 rejects failed Git status reads before review or delivery evidence can claim
+a clean worktree. Automatic project profiling reads only inventory-bound ordinary text
+and records skipped or invalid inputs explicitly. It also refreshes selectively reviewed
+upstream references without changing schemas, dependencies, or supported workflows.
 
 Version 0.7.1 strengthens current `review-craft.run.v5` with content-bound source-span
 anchors, Git-base binding for deleted source, and a coverage denominator sealed one-to-one
@@ -211,7 +216,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
 For this candidate the result should include:
 
 ```json
-{"ready": true, "version": "0.7.1"}
+{"ready": true, "version": "0.7.2"}
 ```
 
 Adjust the path for the Codex-only or Claude installation root.

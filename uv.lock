@@ -136,7 +136,7 @@ wheels = [
 
 [[package]]
 name = "review-craft-dev"
-version = "0.7.1"
+version = "0.7.2"
 source = { virtual = "." }
 
 [package.dev-dependencies]
