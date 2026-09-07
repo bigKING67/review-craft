@@ -36,6 +36,12 @@ decisive proof, and net effect through existing canonical artifacts.
 
 Keep rejected candidates to measure false positives and prevent rediscovery drift.
 
+For a bounded review, keep each candidate's evidence and validation disposition distinct.
+Several candidates may be resolved in one declared scope when their required checks remain
+narrow and relevant. Do not merge independent claims into one finding, infer a shared cause
+without evidence, or turn the candidate count itself into a reason to require canonical
+artifacts.
+
 For dead-code candidates, a text search with no call sites is insufficient by
 itself. Check exports and public API, reflection and plugin registration, build and
 packaging entrypoints, generated consumers, and runtime coverage where applicable.

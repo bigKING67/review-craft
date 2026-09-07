@@ -38,12 +38,13 @@ Node 24 CI dependencies without changing the bounded, provider-free product boun
 
 ### Bounded review
 
-Use the bounded path for one small, completely readable scope that needs one evidence-backed
-finding or decision. It does not create canonical artifacts or a numeric score and does not
-run `doctor` or `preflight` by default.
+Use the bounded path for a small, completely readable scope that needs a bounded,
+evidence-backed set of findings or decisions. Several candidates may be resolved when the
+checks stay narrow and relevant to that scope. It does not create canonical artifacts or a
+numeric score and does not run `doctor` or `preflight` by default.
 
-If the scope stops being bounded, narrow it or report the evidence gap. Do not automatically
-upgrade the request to the canonical workflow.
+If resolving the question would materially expand its scope, narrow it or report the evidence
+gap. Do not automatically upgrade the request to the canonical workflow.
 
 Valid outcomes include `KEEP`, `CLEAN_UP`, `DEFER`, `MEASURE`, and `DOCUMENT`. A no-finding
 result still needs evidence explaining why the inspected behavior is appropriate.

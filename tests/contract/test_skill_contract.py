@@ -93,13 +93,24 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("default path", bounded)
         self.assertIn("evidence-backed", bounded)
         self.assertIn("`KEEP`, `CLEAN_UP`, `DEFER`, `MEASURE`, or `DOCUMENT`", bounded)
-        self.assertIn("A no-finding result without\nevidence", bounded)
+        self.assertIn("A no-finding result without evidence supporting", bounded)
         self.assertIn("Do not emit a numeric score", bounded)
         self.assertIn("Do not run `doctor`, `preflight`", bounded)
         self.assertIn("Exit the fast path", bounded)
-        self.assertIn("Do not automatically enter the canonical workflow", bounded)
-        self.assertIn("request separate authorization", bounded)
+        self.assertIn("Do not\nautomatically enter the canonical workflow", bounded)
+        self.assertIn("request separate\nauthorization", bounded)
         self.assertIn("`DELETE` and `REWRITE`", bounded)
+        self.assertIn("several candidates arise", bounded)
+        self.assertIn("needs narrow inspection", bounded)
+        self.assertIn("materially expand its scope", bounded)
+        self.assertIn("full compatibility,\nmigration, rollback, and verification gates", bounded)
+        self.assertNotIn("multiple candidates require reconciliation", bounded)
+
+        modes = (SKILL_ROOT / "references/modes-and-profiles.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("evidence-backed set of findings or decisions", modes.replace("\n", " "))
+        self.assertIn("Multiple candidates and narrow validation", modes)
 
     def test_canonical_workflow_remains_explicit_and_deterministic(self) -> None:
         text = _skill_text()

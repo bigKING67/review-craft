@@ -81,9 +81,12 @@ through `.review-craft.json` rather than editing generated artifacts.
 
 ## Review depth
 
-Use the bounded path for one narrow evidence-backed decision when canonical artifacts and
-scoring are unnecessary. Use canonical `review`, `diff`, or `focus` for complete inventory,
-candidate validation, scope-bound scoring, and deterministic reporting.
+Use the bounded path for a narrow, evidence-backed set of findings or decisions when
+canonical artifacts and scoring are unnecessary. Multiple candidates and narrow validation
+of relevant callers, tests, configuration, or runtime boundaries remain bounded when they
+resolve the declared question. Use canonical `review`, `diff`, or `focus` when the work
+needs complete inventory, scope-bound scoring, deterministic reporting, or another canonical
+contract.
 
 Canonical runs support `fast | standard | assured` through `assuranceLevel` or
 `preflight --assurance`:

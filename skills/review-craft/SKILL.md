@@ -109,16 +109,19 @@ Read [modes-and-profiles.md](references/modes-and-profiles.md) before `diff`, `f
 This is the default path. Use it only when all of the following are true:
 
 - the requested scope is small enough to read completely and account for every file;
-- the user requests one structured finding or decision, not a canonical full review;
+- the user requests a bounded set of structured findings or decisions, not a canonical full
+  review;
 - no numeric score, `diff` or `focus` mode, or explicit project profile is required;
 - scoped controls resolve authority and trust without a material conflict;
 - the conclusion does not require the canonical artifact lifecycle.
 
 Inspect the scoped controls, source, tests, and relevant engineering context. Build
-the minimum quality model needed for the decision, then run only decisive, narrow,
-read-only validation. Return one evidence-backed finding or an evidence-backed
-`KEEP`, `CLEAN_UP`, `DEFER`, `MEASURE`, or `DOCUMENT` disposition. A no-finding result without
-evidence supporting its disposition is incomplete.
+the minimum quality model needed for the declared question, then run only decisive,
+narrow, read-only validation. Validate as many distinct candidates as are needed to
+resolve that bounded question. Return a bounded, evidence-backed set of findings and/or
+`KEEP`, `CLEAN_UP`, `DEFER`, `MEASURE`, or `DOCUMENT` dispositions; each result must retain
+its own evidence and validation status. A no-finding result without evidence supporting
+its disposition is incomplete.
 
 Do not run `doctor`, `preflight`, or the canonical artifact workflow by default on
 this path. Do not emit a numeric score, claim canonical full-review coverage, or
@@ -129,18 +132,21 @@ boundary is active:
 - materially unclear project goals: `quality-model.md`;
 - accidental-complexity, consolidation, or removal candidates:
   `simplification.md`;
-- unresolved validation classification, multi-candidate reconciliation, or
+- unresolved validation classification, candidate reconciliation, or
   `DELETE`/`REWRITE` gates: `finding-lifecycle.md`;
 - canonical full-review coverage and artifact flow: `workflow.md`;
 - numeric scoring and report finalization: `scoring-and-report.md`.
 
-Exit the fast path when evidence is incomplete, scope grows, authority conflicts,
-multiple candidates require reconciliation, or the result could justify `DELETE` or
-`REWRITE`. Do not automatically enter the canonical workflow. If the user did not
-explicitly request canonical artifacts or high-assurance evidence, narrow the scope or
-return the evidence gap and request separate authorization. `DELETE` and `REWRITE`
-decisions still require the full compatibility, migration, rollback, and verification
-gates.
+Do not exit merely because several candidates arise or because an in-scope candidate
+needs narrow inspection of a relevant caller, test, configuration, or runtime boundary.
+Exit the fast path when resolving the declared question would materially expand its scope,
+authority conflicts remain unresolved, or the requested result needs canonical artifacts,
+a numeric score, a canonical mode or profile, or high-assurance evidence. Do not
+automatically enter the canonical workflow. If the user did not explicitly request the
+required canonical work, narrow the scope or return the evidence gap and request separate
+authorization. `DELETE` and `REWRITE` decisions still require the full compatibility,
+migration, rollback, and verification gates; when those gates materially expand the declared
+scope, preserve the candidate as bounded evidence rather than recommending the change.
 
 ## Canonical workflow
 
