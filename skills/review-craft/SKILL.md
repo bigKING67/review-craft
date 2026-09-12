@@ -1,6 +1,6 @@
 ---
 name: review-craft
-description: "Use for repository-wide or high-assurance engineering review requiring explicit coverage, evidence-validated findings, proportional remediation decisions, and deterministic reporting, or for explicitly authorized canonical fix and delivery verification. Prefer the host's native review for quick PR, diff, or local checks. Do not use for casual scoring, visual UI/UX critique, or deep exploit validation."
+description: "全仓或高保障工程审查，要求覆盖与证据；经明确授权可做 canonical 整改。小型 diff 用宿主原生 review；不用于随意评分、视觉 UI 评审或深度漏洞验证。"
 ---
 
 # Review Craft
