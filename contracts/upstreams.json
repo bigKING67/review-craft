@@ -121,6 +121,52 @@
         "self-reported benchmark claims as release evidence",
         "general project-rule loading or automatic rule execution"
       ]
+    },
+    {
+      "id": "Egonex-AI/Understand-Anything",
+      "repository": "https://github.com/Egonex-AI/Understand-Anything",
+      "branch": "main",
+      "reviewedRevision": "6df3065f1d8ddc2ce3615314d1d493f36d6b1c80",
+      "reviewedAt": "2026-09-21",
+      "license": "MIT",
+      "status": "tracked",
+      "sourcePaths": [
+        "LICENSE",
+        "docs/incremental/source-evidence-audit.md",
+        "understand-anything-plugin/packages/core/src/plugins/symbol-evidence.ts",
+        "understand-anything-plugin/packages/core/src/plugins/symbol-scopes.test.ts",
+        "understand-anything-plugin/packages/core/src/staleness.ts",
+        "understand-anything-plugin/packages/core/src/fingerprint.ts",
+        "understand-anything-plugin/packages/core/src/change-classifier.ts",
+        "understand-anything-plugin/skills/understand-diff/SKILL.md",
+        "understand-anything-plugin/agents/graph-reviewer.md"
+      ],
+      "reviewedBlobs": {
+        "LICENSE": "5df102e8a2e29cdfb881ae7ec5040f2766564680",
+        "docs/incremental/source-evidence-audit.md": "11948226cded0803ce46ca2efa6418a274244b1e",
+        "understand-anything-plugin/packages/core/src/plugins/symbol-evidence.ts": "adc779389755aa450407ca993a295f574bd765e6",
+        "understand-anything-plugin/packages/core/src/plugins/symbol-scopes.test.ts": "e474e7e21cdc2c491457b9bf098fc05fdf89803c",
+        "understand-anything-plugin/packages/core/src/staleness.ts": "93bb06d8d4ed6ca369e449f7eeea0fa8db1e10f4",
+        "understand-anything-plugin/packages/core/src/fingerprint.ts": "66d904d5b07fa46c1dc73613f5ff96b27a492168",
+        "understand-anything-plugin/packages/core/src/change-classifier.ts": "0ab9a5614820870fdce2e16dd2af20e042cdd42a",
+        "understand-anything-plugin/skills/understand-diff/SKILL.md": "13880f31b183f03cace421f0c6fb1d1a66f4be0e",
+        "understand-anything-plugin/agents/graph-reviewer.md": "3b32d37adb570db5c9d1ef510f95091588cc5e99"
+      },
+      "watchSurfaces": [
+        "source evidence distinguishing analyzer omissions from verified symbol deletion",
+        "scope invariants and composition tests for evidence boundaries",
+        "dependency relationships guiding bounded change-impact investigation",
+        "project-scoped freshness with explicit dirty, stale, and unknown states"
+      ],
+      "excludedSurfaces": [
+        "knowledge-graph runtime and dashboard product",
+        "mandatory multi-agent orchestration",
+        "automatic update hooks and target-repository artifact writes",
+        "structural-fingerprint cosmetic classification as permission to skip logic review",
+        "graph schema or referential integrity as canonical review coverage proof",
+        "second inventory, scoring, reporting, or evidence authority",
+        "upstream runtime, host-support, or performance claims without local verification"
+      ]
     }
   ]
 }

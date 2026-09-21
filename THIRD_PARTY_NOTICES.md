@@ -105,3 +105,48 @@ If Review Craft later incorporates specific source or text, add the applicable A
 license, retained notices, modified-file notice, and file-level provenance before
 distribution. Until then, this entry records the conceptual adaptation and remaining
 learning boundary.
+
+## Understand Anything
+
+Review Craft tracks the public Understand Anything project as a non-normative reference
+candidate (`tracked`), not an absorbed runtime or a verified quality endorsement. The
+bounded review read selected source, test content, and the source-evidence audit; it did
+not execute upstream tests or verify host support or performance. No upstream source or
+text has been copied into Review Craft's runtime, and no runtime capability is added by
+this registration.
+
+- Project: `Egonex-AI/Understand-Anything`
+- Source: <https://github.com/Egonex-AI/Understand-Anything>
+- Reviewed revision: `6df3065f1d8ddc2ce3615314d1d493f36d6b1c80` (2026-09-21)
+- License: MIT; upstream copyright holders are Yuxiang Lin and Infinite Universe, Inc.
+- Reviewed source paths (exact Git blobs are pinned in `contracts/upstreams.json`):
+  - `LICENSE`
+  - `docs/incremental/source-evidence-audit.md`
+  - `understand-anything-plugin/packages/core/src/plugins/symbol-evidence.ts`
+  - `understand-anything-plugin/packages/core/src/plugins/symbol-scopes.test.ts`
+  - `understand-anything-plugin/packages/core/src/staleness.ts`
+  - `understand-anything-plugin/packages/core/src/fingerprint.ts`
+  - `understand-anything-plugin/packages/core/src/change-classifier.ts`
+  - `understand-anything-plugin/skills/understand-diff/SKILL.md`
+  - `understand-anything-plugin/agents/graph-reviewer.md`
+
+Watch candidates are the distinction between analyzer omissions and verified symbol
+removal, scope invariants and composition tests, dependency-guided change-impact
+investigation, and project-scoped freshness with explicit dirty, stale, and unknown
+states. These may inform future bounded improvements to Review Craft's existing
+contracts; they do not establish a second inventory or evidence authority.
+
+The structural fingerprint's `COSMETIC` classification can include internal logic
+changes when structural signatures match. It must not authorize skipping code review.
+Graph schema validity, referential integrity, and nonempty graph structures do not prove
+canonical per-file review coverage. Relationship graphs remain investigation aids;
+missing static edges do not establish the absence of dynamic consumers.
+
+Excluded surfaces include the knowledge-graph runtime and dashboard, mandatory
+multi-agent orchestration, automatic update hooks, target-repository artifact writes,
+and independent inventory, scoring, or reporting. Upstream runtime, host-support, and
+performance claims are not local validation evidence.
+
+Any future adoption must record the specific adapted surfaces and matching validation
+before changing the status to `selective_absorbed`. If source or substantial text is
+copied, retain the applicable MIT copyright and permission notice before distribution.
