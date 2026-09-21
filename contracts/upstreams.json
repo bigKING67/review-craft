@@ -129,7 +129,7 @@
       "reviewedRevision": "6df3065f1d8ddc2ce3615314d1d493f36d6b1c80",
       "reviewedAt": "2026-09-21",
       "license": "MIT",
-      "status": "tracked",
+      "status": "selective_absorbed",
       "sourcePaths": [
         "LICENSE",
         "docs/incremental/source-evidence-audit.md",
@@ -153,8 +153,7 @@
         "understand-anything-plugin/agents/graph-reviewer.md": "3b32d37adb570db5c9d1ef510f95091588cc5e99"
       },
       "watchSurfaces": [
-        "source evidence distinguishing analyzer omissions from verified symbol deletion",
-        "scope invariants and composition tests for evidence boundaries",
+        "automated symbol identity, scope resolution, and verified-deletion comparison",
         "dependency relationships guiding bounded change-impact investigation",
         "project-scoped freshness with explicit dirty, stale, and unknown states"
       ],
@@ -166,6 +165,10 @@
         "graph schema or referential integrity as canonical review coverage proof",
         "second inventory, scoring, reporting, or evidence authority",
         "upstream runtime, host-support, or performance claims without local verification"
+      ],
+      "absorbedSurfaces": [
+        "candidate-scoped absence-evidence guidance separating observations, coverage gaps, and dynamic consumers",
+        "composition-based dependency-evidence tests and simplification verification guidance"
       ]
     }
   ]

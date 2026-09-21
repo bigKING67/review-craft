@@ -393,8 +393,8 @@ the reviewed revision, source-path Git blobs, and deliberately excluded surfaces
 `tracked` source records non-normative watch surfaces and makes no absorption or quality
 claim; `selective_absorbed` records only the surfaces actually adapted into Review Craft.
 Each entry covers only its listed source paths, not a complete upstream-repository audit.
-Understand Anything is tracked for source-evidence, scope-testing, change-impact, and
-freshness mechanisms; its runtime has not been adopted. See the
+Understand Anything informs absence-evidence guidance and composition tests; automated
+symbol comparison, change-impact, and freshness mechanisms remain watch candidates. See the
 [reference boundary](THIRD_PARTY_NOTICES.md#understand-anything) for details.
 When an upstream branch advances, `contracts/upstreams.json` records the latest reviewed
 revision and blobs; `THIRD_PARTY_NOTICES.md` separately preserves the original adaptation

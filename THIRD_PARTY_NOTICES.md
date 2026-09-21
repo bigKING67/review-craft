@@ -108,12 +108,13 @@ learning boundary.
 
 ## Understand Anything
 
-Review Craft tracks the public Understand Anything project as a non-normative reference
-candidate (`tracked`), not an absorbed runtime or a verified quality endorsement. The
-bounded review read selected source, test content, and the source-evidence audit; it did
-not execute upstream tests or verify host support or performance. No upstream source or
-text has been copied into Review Craft's runtime, and no runtime capability is added by
-this registration.
+Review Craft selectively adapts absence-evidence and composition-testing concepts into
+`skills/review-craft/references/simplification.md`, with independently authored dependency
+analysis tests in `tests/unit/test_dependency_evidence.py`. This is guidance and test
+coverage for the existing best-effort dependency analyzer, not a new symbol extractor,
+verified-deletion engine, or upstream runtime dependency. No upstream source or text has
+been copied. The upstream review was limited to selected source, test content, and the
+source-evidence audit; upstream tests, host support, and performance remain unverified.
 
 - Project: `Egonex-AI/Understand-Anything`
 - Source: <https://github.com/Egonex-AI/Understand-Anything>
@@ -130,11 +131,16 @@ this registration.
   - `understand-anything-plugin/skills/understand-diff/SKILL.md`
   - `understand-anything-plugin/agents/graph-reviewer.md`
 
-Watch candidates are the distinction between analyzer omissions and verified symbol
-removal, scope invariants and composition tests, dependency-guided change-impact
-investigation, and project-scoped freshness with explicit dirty, stale, and unknown
-states. These may inform future bounded improvements to Review Craft's existing
-contracts; they do not establish a second inventory or evidence authority.
+Adapted guidance separates observed consumers, coverage gaps, and dynamic uncertainty,
+binds absence claims to the candidate's scope, and uses composition tests to check that
+unrelated source changes do not corrupt evidence. Local tests cover stable import facts
+under declaration changes, explicit parse gaps, and a runtime consumer missed by static
+analysis. They validate these bounded analyzer behaviors, not model adherence or general
+symbol completeness.
+
+Automated symbol identity and verified-deletion comparison, dependency-guided impact
+investigation, and project-scoped freshness remain non-normative watch candidates.
+Review Craft retains its existing canonical inventory and evidence authority.
 
 The structural fingerprint's `COSMETIC` classification can include internal logic
 changes when structural signatures match. It must not authorize skipping code review.
@@ -147,6 +153,6 @@ multi-agent orchestration, automatic update hooks, target-repository artifact wr
 and independent inventory, scoring, or reporting. Upstream runtime, host-support, and
 performance claims are not local validation evidence.
 
-Any future adoption must record the specific adapted surfaces and matching validation
-before changing the status to `selective_absorbed`. If source or substantial text is
+Any further adoption must record the specific adapted surfaces and matching validation
+before expanding `absorbedSurfaces`. If source or substantial text is
 copied, retain the applicable MIT copyright and permission notice before distribution.

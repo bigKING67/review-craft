@@ -15,6 +15,11 @@ at reviewed revision `93b00b89ef425a9c1bac0d0b317dfc49c930ac99` (the tracked Ski
 is unchanged from original adaptation review `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`). See the packaged
 `THIRD_PARTY_NOTICES.md` for provenance and the MIT license notices.
 
+The absence-evidence and composition-testing guidance also selectively adapts concepts
+from [Understand Anything](https://github.com/Egonex-AI/Understand-Anything) at
+`6df3065f1d8ddc2ce3615314d1d493f36d6b1c80`. It does not add symbol extraction,
+incremental graph reuse, or an automatic deletion decision.
+
 ## Contents
 
 1. Qualify the candidate
@@ -63,6 +68,31 @@ assumption of non-use.
 The contract map is sufficient only when each in-scope entrypoint and authority boundary
 has an owner and observable obligation, and every uninspected or externally unknowable
 surface is explicit.
+
+### Bound claims of absence
+
+Keep observed declarations or consumers, analyzer coverage gaps, and possible dynamic
+consumers separate. An empty search result, a valid graph, or a successful parse does
+not establish that the candidate is absent. Identify the exact path, owner, symbol, and
+source state; disclose unsupported syntax, skipped files, scope exclusions, and
+unresolved dispatch in the existing proof record.
+
+A deletion or non-use claim needs evidence covering that candidate's possible scope.
+Keep a relevant unresolved gap as `Uncertain` and defer the destructive decision until
+decisive source or behavior evidence resolves it. Do not let an unrelated local name or
+an unrelated skipped file invalidate an independently established fact; explain why the
+gap can or cannot reach the candidate. Never infer owner identity from a name match alone.
+
+### Verify the evidence model under composition
+
+When a cut depends on an analyzer's absence claim, test the underlying invariant rather
+than only the triggering example. Vary unrelated declarations, nesting, name shadowing,
+and line positions: facts about the same consumer must remain stable after source
+locations are rebound. Introduce a parse failure or an unresolved dynamic target: reduced
+coverage must remain an explicit gap, not become stronger evidence of absence. Include
+a known surviving consumer and a verified removal so that both false deletion and
+unnecessary blocking are detectable. Use controlled fixtures and existing test tools;
+these checks do not authorize executing arbitrary review-target code.
 
 ## Compare the structural regression delta
 
