@@ -11,6 +11,7 @@ from . import __version__
 from .assurance import (
     ASSURANCE_BUDGETS,
     draft_assurance_state,
+    eligible_file_count,
 )
 from .cli_common import utc_now
 from .configuration import effective_preflight_config, load_config
@@ -278,10 +279,7 @@ def command_preflight(args: argparse.Namespace) -> int:
         diff_base=config["diffBase"],
     )
     if config["assuranceLevel"] == "fast":
-        eligible_files = sum(
-            row["kind"] not in {"generated", "vendored", "binary"}
-            for row in records
-        )
+        eligible_files = eligible_file_count({"files": [_coverage_row(row) for row in records]})
         maximum = ASSURANCE_BUDGETS["fast"]["maxEligibleFiles"]
         if maximum is not None and eligible_files > maximum:
             raise ValueError(

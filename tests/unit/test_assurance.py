@@ -10,6 +10,95 @@ from tests.support import make_target, populate_valid_run, run_cli
 
 
 class AssuranceTests(unittest.TestCase):
+    def test_fast_budget_excludes_generated_vendored_and_binary_files(self) -> None:
+        for kind in ("generated", "vendored", "binary"):
+            with self.subTest(kind=kind):
+                temporary, target = make_target()
+                self.addCleanup(temporary.cleanup)
+                assets = target / "assets"
+                assets.mkdir()
+                for index in range(201):
+                    (assets / f"file{index}").write_bytes(
+                        b"\0fixture" if kind == "binary" else b"VALUE = 1\n"
+                    )
+                with tempfile.TemporaryDirectory() as output:
+                    config = None
+                    if kind != "binary":
+                        config = Path(output) / "config.json"
+                        config.write_text(json.dumps({kind: ["assets/**"]}), encoding="utf-8")
+                    run_dir = self._preflight(target, output, "fast", config)
+                    coverage = json.loads((run_dir / "coverage.json").read_text())
+                    self.assertEqual(len(coverage["files"]), 202)
+                    self.assertEqual(
+                        sum(row["disposition"] == kind.upper() for row in coverage["files"]),
+                        201,
+                    )
+                    validated = run_cli("validate", "--run-dir", str(run_dir), "--allow-draft")
+                    self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_fast_budget_keeps_the_ordinary_source_limit(self) -> None:
+        for count in (200, 201):
+            with self.subTest(count=count):
+                temporary, target = make_target()
+                self.addCleanup(temporary.cleanup)
+                for index in range(count - 1):
+                    (target / f"file{index}.py").write_text("VALUE = 1\n", encoding="utf-8")
+                with tempfile.TemporaryDirectory() as output:
+                    completed = run_cli(
+                        "preflight",
+                        "--target",
+                        str(target),
+                        "--output-root",
+                        output,
+                        "--assurance",
+                        "fast",
+                    )
+                    if count == 200:
+                        self.assertEqual(completed.returncode, 0, completed.stderr)
+                    else:
+                        self.assertEqual(completed.returncode, 2, completed.stderr)
+                        self.assertIn("201 > 200", completed.stderr)
+                        self.assertEqual(list(Path(output).iterdir()), [])
+
+    def test_fast_budget_mixed_coverage_uses_the_same_eligibility_count(self) -> None:
+        from review_craft.assurance import eligible_file_count
+
+        temporary, target = make_target()
+        self.addCleanup(temporary.cleanup)
+        for index in range(199):
+            (target / f"file{index}.py").write_text("VALUE = 1\n", encoding="utf-8")
+        for name, payload in (
+            ("generated.py", b"VALUE = 1\n"),
+            ("vendor.py", b"VALUE = 1\n"),
+            ("asset.bin", b"\0fixture"),
+        ):
+            (target / name).write_bytes(payload)
+        with tempfile.TemporaryDirectory() as output:
+            config = Path(output) / "config.json"
+            config.write_text(
+                json.dumps({"generated": ["generated.py"], "vendored": ["vendor.py"]})
+            )
+            run = self._preflight(target, output, "fast", config)
+            coverage = json.loads((run / "coverage.json").read_text())
+            self.assertEqual(len(coverage["files"]), 203)
+            self.assertEqual(eligible_file_count(coverage), 200)
+            checked = run_cli("validate", "--run-dir", str(run), "--allow-draft")
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            (target / "extra.py").write_text("VALUE = 1\n")
+            rejected = run_cli(
+                "preflight",
+                "--target",
+                str(target),
+                "--output-root",
+                output,
+                "--assurance",
+                "fast",
+                "--config",
+                str(config),
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("201 > 200", rejected.stderr)
+
     def _preflight(
         self,
         target: Path,
@@ -37,30 +126,20 @@ class AssuranceTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         with tempfile.TemporaryDirectory() as output:
             run_dir = self._preflight(target, output, "fast")
-            manifest = json.loads(
-                (run_dir / "review-manifest.json").read_text(encoding="utf-8")
-            )
-            scope = json.loads(
-                (run_dir / "review-scope.json").read_text(encoding="utf-8")
-            )
-            scorecard = json.loads(
-                (run_dir / "scorecard.json").read_text(encoding="utf-8")
-            )
+            manifest = json.loads((run_dir / "review-manifest.json").read_text(encoding="utf-8"))
+            scope = json.loads((run_dir / "review-scope.json").read_text(encoding="utf-8"))
+            scorecard = json.loads((run_dir / "scorecard.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["configuration"]["assuranceLevel"], "fast")
             self.assertEqual(scope["assuranceLevel"], "fast")
             self.assertEqual(scorecard["assurance"]["level"], "fast")
-            self.assertEqual(
-                scorecard["assurance"]["budget"]["maxEvidenceCommands"], 3
-            )
+            self.assertEqual(scorecard["assurance"]["budget"]["maxEvidenceCommands"], 3)
 
             populate_valid_run(run_dir)
             rejected = run_cli("finalize", "--run-dir", str(run_dir))
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("fast assurance must remain provisional", rejected.stderr)
 
-            scorecard = json.loads(
-                (run_dir / "scorecard.json").read_text(encoding="utf-8")
-            )
+            scorecard = json.loads((run_dir / "scorecard.json").read_text(encoding="utf-8"))
             scorecard["status"] = "provisional"
             (run_dir / "scorecard.json").write_text(
                 json.dumps(scorecard, ensure_ascii=False, indent=2) + "\n",
@@ -71,12 +150,8 @@ class AssuranceTests(unittest.TestCase):
             report = (run_dir / "report.md").read_text(encoding="utf-8")
             self.assertIn("Assurance: `FAST`", report)
             self.assertIn("FAST 保证等级不形成最终评分", report)
-            sealed_scorecard = json.loads(
-                (run_dir / "scorecard.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(
-                sealed_scorecard["assurance"]["completionStatus"], "PARTIAL"
-            )
+            sealed_scorecard = json.loads((run_dir / "scorecard.json").read_text(encoding="utf-8"))
+            self.assertEqual(sealed_scorecard["assurance"]["completionStatus"], "PARTIAL")
 
     def test_assured_finalization_requires_bound_independent_verification(self) -> None:
         temporary, target = make_target()
@@ -129,9 +204,7 @@ class AssuranceTests(unittest.TestCase):
             self.assertEqual(missing.returncode, 2)
             self.assertIn("requires one registered verification artifact", missing.stderr)
 
-            manifest = json.loads(
-                (run_dir / "review-manifest.json").read_text(encoding="utf-8")
-            )
+            manifest = json.loads((run_dir / "review-manifest.json").read_text(encoding="utf-8"))
             verifier = Path(output) / "verifier.json"
             verifier.write_text(
                 json.dumps(
