@@ -72,7 +72,12 @@ fingerprint, and exact scope. Start a new run when any of them changes materiall
 `review-scope.json` is authoritative for mode, dimensions, resolved profile, and
 immutable diff base. `module-map.json` is deterministic path evidence.
 `dependency-map.json` is best-effort static evidence, not proof that dynamic or
-framework-injected edges do not exist. Current source preflight creates
+framework-injected edges do not exist. Its readable inputs use the canonical source
+reader: content drift, missing/replaced paths, or symlink traversal invalidate the source
+snapshot before a successful preflight; validation reports these as source-verification
+failures. Parse, decoding, and access failures remain explicit analysis gaps. Path checks
+do not establish an atomic snapshot against concurrent filesystem replacement.
+Current source preflight creates
 `review-craft.run.v5` and an empty `evidence-registry.json` alongside these artifacts.
 
 ## 2. Project Quality Model

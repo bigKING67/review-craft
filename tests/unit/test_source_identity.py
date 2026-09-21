@@ -299,6 +299,20 @@ class SourceIdentityTests(unittest.TestCase):
             current_source(self.root)[1]["sourceFingerprint"], before["sourceFingerprint"]
         )
 
+    def test_frozen_diff_preserves_ignored_broken_checkout_semantics(self) -> None:
+        from review_craft.contracts import _current_source_projection
+
+        child = self.submodule()
+        run_git(self.root, "config", "submodule.dep space.ignore", "all", check=True)
+        (child / ".git").write_text("gitdir: nonexistent-fixture-directory\n")
+        config = {**default_config(), "mode": "diff", "diffBase": "HEAD"}
+        for schema in ("review-craft.run.v3", "review-craft.run.v4"):
+            rows, diff, *_ = _current_source_projection(self.root, config, schema_version=schema)
+            self.assertEqual(rows, [])
+            self.assertEqual(diff["changes"], [])
+        with self.assertRaisesRegex(RuntimeError, "git status failed"):
+            _current_source_projection(self.root, config)
+
     def test_excluded_broken_submodule_does_not_block_inventory(self) -> None:
         child = self.submodule()
         (child / ".git").write_text("gitdir: nonexistent-fixture-directory\n")

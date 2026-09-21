@@ -256,12 +256,12 @@ def _validate_live_source(
         records, current_diff, current_source, current_worktree, current_status = (
             _current_source_projection(target_root, configuration, schema_version=schema_version)
         )
+        module_map = build_module_map(records)
+        dependency_map = build_dependency_map(target_root, records)
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
         errors.append(f"run-state.targetRoot: source verification failed: {error}")
         return None, None, None
 
-    module_map = build_module_map(records)
-    dependency_map = build_dependency_map(target_root, records)
     module_map["schemaVersion"] = schema_version
     dependency_map["schemaVersion"] = schema_version
     if current_source != target.get("sourceFingerprint"):

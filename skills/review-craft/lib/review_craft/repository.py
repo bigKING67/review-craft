@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import os
 import re
+import stat as stat_mode
 import subprocess
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -117,10 +118,10 @@ def inspect_git(target: Path, *, _legacy_identity: bool = False) -> GitState:
     return GitState(True, root, revision, branch, remote, status, revision is None)
 
 
-def resolve_git_revision(root: Path, value: str) -> str:
+def resolve_git_revision(root: Path, value: str, *, _legacy_identity: bool = False) -> str:
     if not value or value.startswith("-") or any(character in value for character in "\0\r\n"):
         raise ValueError("diff base must be a non-option Git revision")
-    state = inspect_git(root)
+    state = inspect_git(root, _legacy_identity=_legacy_identity)
     if not state.is_repository:
         raise ValueError("diff mode requires a Git repository")
     result = run_git(state.root, "rev-parse", "--verify", f"{value}^{{commit}}")
@@ -459,21 +460,42 @@ def _file_record_at_revision(
     }
 
 
+def _current_source_path(root: Path, relative: str) -> Path:
+    """Reject path replacement before reading; this is not an atomic snapshot."""
+    path = root
+    try:
+        for part in Path(relative).parts:
+            path = path / part
+            if stat_mode.S_ISLNK(path.lstat().st_mode):
+                raise ValueError(f"source path traverses a symlink: {relative}")
+        if not path.resolve(strict=True).is_relative_to(root):
+            raise ValueError(f"source path escapes the target root: {relative}")
+        if not stat_mode.S_ISREG(path.lstat().st_mode):
+            raise ValueError(f"source path is not a regular current file: {relative}")
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise ValueError(f"source path no longer matches the inventory: {relative}") from error
+    return path
+
+
 def source_payload(root: Path, record: Mapping[str, Any], *, diff_base: str | None) -> bytes:
     """Read the exact source side represented by one canonical inventory record."""
     root = root.resolve(strict=True)
     relative = record.get("path")
-    if not isinstance(relative, str) or not relative:
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or not Path(relative).parts
+        or Path(relative).is_absolute()
+        or ".." in Path(relative).parts
+        or Path(relative).drive
+    ):
         raise ValueError("source record path is invalid")
     if record.get("kind") == "deleted":
         if not diff_base:
             raise ValueError("deleted source requires an immutable diff base")
         payload = _payload_at_revision(root, diff_base, relative)
     else:
-        path = root / relative
-        if path.is_symlink() or not path.is_file():
-            raise ValueError(f"source path is not a regular current file: {relative}")
-        payload = path.read_bytes()
+        payload = _current_source_path(root, relative).read_bytes()
     if sha256_bytes(payload) != record.get("sha256"):
         raise ValueError(f"source content no longer matches the inventory: {relative}")
     return payload
@@ -577,7 +599,7 @@ def inventory_for_mode(
         return records, excluded, None
     if not diff_base:
         raise ValueError("diff mode requires a diff base")
-    base_revision = resolve_git_revision(root, diff_base)
+    base_revision = resolve_git_revision(root, diff_base, _legacy_identity=_legacy_identity)
     changes = git_diff_changes(root, base_revision, _legacy_identity=_legacy_identity)
     records, excluded = inventory(
         root,

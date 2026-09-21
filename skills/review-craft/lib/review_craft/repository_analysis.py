@@ -364,7 +364,7 @@ def build_dependency_map(root: Path, records: list[dict[str, Any]]) -> dict[str,
             skipped.append({"path": relative, "reason": "file exceeds the 2 MiB analysis limit"})
             continue
         try:
-            text = (root / relative).read_text(encoding="utf-8")
+            text = source_payload(root, row, diff_base=None).decode("utf-8")
         except (OSError, UnicodeDecodeError) as error:
             skipped.append({"path": relative, "reason": type(error).__name__})
             continue
