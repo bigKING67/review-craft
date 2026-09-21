@@ -19,6 +19,42 @@ from review_craft.repository_analysis import detect_profile
 
 
 class RepositoryBoundaryTests(unittest.TestCase):
+    def test_hidden_untracked_files_cannot_verify_a_clean_checkout(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        (target / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+        run_git(target, "add", "--", ".gitignore", check=True)
+        run_git(target, "commit", "-m", "ignore fixture output", check=True)
+        (target / "ignored").mkdir()
+        (target / "ignored/cache.txt").write_text("cache", encoding="utf-8")
+        self.assertEqual(inspect_git(target).status, "")
+
+        (target / "untracked.py").write_text("VALUE = 2\n", encoding="utf-8")
+        (target / "nested").mkdir()
+        (target / "nested/source.py").write_text("VALUE = 3\n", encoding="utf-8")
+        config = default_config()
+        _, source = current_source(target, config)
+        run_git(target, "config", "status.showUntrackedFiles", "no", check=True)
+        self.assertEqual(run_git(target, "status", "--porcelain=v1").stdout, b"")
+        self.assertTrue(inspect_git(target).status)
+        local, *_ = collect_delivery_evidence(
+            target,
+            source_configuration=config,
+            expected_source_fingerprint=source["sourceFingerprint"],
+            verify_push=False,
+            github_run=None,
+        )
+        self.assertTrue(local["sourceMatchesVerification"])
+        self.assertFalse(local["clean"])
+        self.assertEqual(local["status"], "FAILED")
+        with tempfile.TemporaryDirectory() as output:
+            completed = run_cli("preflight", "--target", str(target), "--output-root", output)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_dir = Path(json.loads(completed.stdout)["runDir"])
+            manifest = json.loads((run_dir / "review-manifest.json").read_text())
+            self.assertTrue(manifest["target"]["dirty"])
+        self.assertEqual(run_git(target, "config", "status.showUntrackedFiles").stdout, b"no\n")
+
     def test_failed_git_status_cannot_report_clean_or_create_a_review(self) -> None:
         temporary, target = make_target(commit=True)
         self.addCleanup(temporary.cleanup)

@@ -26,3 +26,45 @@ There is no automatic migration:
 
 Compatibility validators are read boundaries. New fields, semantics, or evidence claims
 must not be backported into frozen protocols.
+
+## Source identity in current writes
+
+Current inventory records carry `sourceIdentity` alongside the content-only `sha256`.
+The source and worktree fingerprints include this identity, and fix baseline/current
+records preserve it. A metadata-only change is a `MODIFIED` source change even when the
+before/after content hashes are equal.
+
+- Regular files bind the POSIX owner-executable bit, regardless of `core.filemode`.
+  Windows binds the indexed Git executable flag (untracked files default to false);
+  this is not a Windows ACL or effective execution-permission claim. Other permission
+  bits, ACLs, mount options, and interpreter availability are outside this identity.
+- Submodules remain atomic `other`/binary inventory entries, not recursive source
+  coverage. Their identity binds both the indexed gitlink object ID and the actual
+  checkout commit. An uninitialized checkout is represented explicitly as null,
+  including when its directory is absent. Initialization therefore changes identity.
+  Their `sha256` binds nested submodule identity records, not a directory's file bytes.
+- A selected dirty, unmerged, or unverifiable submodule blocks source collection.
+  Dirty recursive worktrees are not represented by a status string or treated as
+  stable source. Hidden-status configuration cannot authorize reuse of verification.
+  `assume-unchanged` and `skip-worktree` index flags are rejected, also in initialized
+  nested submodules. Inventory scope/exclusion filtering precedes submodule inspection;
+  an excluded dependency is outside the source-identity claim. Preflight and delivery
+  still inspect whole-repository Git status separately and may reject a broken excluded
+  checkout when that whole-repository cleanliness check cannot complete.
+- Diff inventory binds the immutable base mode/gitlink for deleted paths. Submodule
+  changes cannot be hidden from diff selection by `submodule.*.ignore` configuration.
+
+Sealed run.v3/v4 validation uses the original file-record, Git status, and diff-selection
+semantics through a private compatibility read path. That path cannot be selected by
+current preflight, fix, delivery, or configuration. Frozen coverage rejects
+`sourceIdentity` fields; it does not acquire current metadata guarantees.
+
+Records without `sourceIdentity` keep their original fingerprint algorithm when read
+as historical data. They do not acquire new guarantees. Current-protocol live source collection
+uses the stronger identity, so an older current-format run/fix may fail live comparison even without a
+content edit. Restart preflight and verification; do not strip metadata to force a match
+or rewrite stored artifacts. Frozen run.v3/v4 and existing delivery attestations retain
+their historical validation semantics; this is not an in-place protocol migration.
+
+Git command semantics: [status](https://git-scm.com/docs/git-status) and
+[index entries](https://git-scm.com/docs/git-ls-files).

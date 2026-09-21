@@ -294,9 +294,7 @@ def rewrite_fixture_run_schema(run_dir: Path, schema_version: str) -> None:
     if schema_version not in {LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION}:
         raise ValueError(f"unsupported historical fixture schema: {schema_version}")
     artifact_paths = (
-        LEGACY_ARTIFACT_PATHS
-        if schema_version == LEGACY_SCHEMA_VERSION
-        else ARTIFACT_PATHS
+        LEGACY_ARTIFACT_PATHS if schema_version == LEGACY_SCHEMA_VERSION else ARTIFACT_PATHS
     )
     manifest_path = run_dir / "review-manifest.json"
     manifest = read_json(manifest_path)
@@ -318,6 +316,49 @@ def rewrite_fixture_run_schema(run_dir: Path, schema_version: str) -> None:
         document = read_json(path)
         document["schemaVersion"] = schema_version
         write_json(path, document)
+
+    # Historical fixtures must carry historical source fields and hashes, not
+    # identity-bearing current rows relabeled as an older protocol.
+    from review_craft.contracts import _current_source_projection
+    from review_craft.jsonio import sha256_bytes, sha256_json
+    from review_craft.repository_analysis import build_module_map
+
+    state_path = run_dir / "run-state.json"
+    state = read_json(state_path)
+    records, _, source_hash, worktree_hash, status = _current_source_projection(
+        Path(state["targetRoot"]),
+        manifest["configuration"],
+        schema_version=schema_version,
+    )
+    coverage_path = run_dir / artifact_paths["coverage"]
+    coverage = read_json(coverage_path)
+    old_rows = {row["path"]: row for row in coverage["files"]}
+    coverage["files"] = [
+        {
+            **record,
+            **{
+                key: old_rows[record["path"]][key]
+                for key in ("disposition", "reason", "evidenceRefs")
+            },
+        }
+        for record in records
+    ]
+    coverage["inventoryFingerprint"] = source_hash
+    write_json(coverage_path, coverage)
+    modules = build_module_map(records)
+    modules["schemaVersion"] = schema_version
+    write_json(run_dir / artifact_paths["moduleMap"], modules)
+    manifest["target"]["sourceFingerprint"] = source_hash
+    manifest["target"]["identity"] = sha256_json(
+        {
+            key: manifest["target"][key]
+            for key in ("remote", "revision", "branch", "sourceFingerprint")
+        }
+    )
+    write_json(manifest_path, manifest)
+    state["worktreeFingerprint"] = worktree_hash
+    state["statusFingerprint"] = sha256_bytes(status.encode("utf-8", errors="surrogateescape"))
+    write_json(state_path, state)
 
     candidates = read_jsonl(run_dir / artifact_paths["candidateLedger"])
     for candidate in candidates:

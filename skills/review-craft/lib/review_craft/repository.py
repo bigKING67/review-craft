@@ -70,7 +70,7 @@ def safe_remote(value: str | None) -> str | None:
     return value
 
 
-def inspect_git(target: Path) -> GitState:
+def inspect_git(target: Path, *, _legacy_identity: bool = False) -> GitState:
     target = target.resolve(strict=True)
     probe = run_git(target, "rev-parse", "--show-toplevel")
     if probe.returncode != 0:
@@ -94,7 +94,20 @@ def inspect_git(target: Path) -> GitState:
         if remote_result.returncode == 0
         else None
     )
-    status_result = run_git(root, "status", "--porcelain=v1", "-z")
+    status_result = (
+        run_git(root, "status", "--porcelain=v1", "-z")
+        if _legacy_identity
+        else run_git(
+            root,
+            "-c",
+            f"core.fileMode={'false' if os.name == 'nt' else 'true'}",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        )
+    )
     if status_result.returncode != 0:
         raise RuntimeError(
             f"git status failed (exit code {status_result.returncode}); "
@@ -117,16 +130,27 @@ def resolve_git_revision(root: Path, value: str) -> str:
     return result.stdout.decode("ascii").strip()
 
 
-def git_diff_changes(root: Path, base_revision: str) -> list[dict[str, Any]]:
-    state = inspect_git(root)
+def git_diff_changes(
+    root: Path,
+    base_revision: str,
+    *,
+    _legacy_identity: bool = False,
+) -> list[dict[str, Any]]:
+    state = inspect_git(root, _legacy_identity=_legacy_identity)
     if not state.is_repository:
         raise ValueError("diff mode requires a Git repository")
     result = run_git(
         state.root,
+        *(
+            []
+            if _legacy_identity
+            else ["-c", f"core.fileMode={'false' if os.name == 'nt' else 'true'}"]
+        ),
         "diff",
         "--name-status",
         "-z",
         "--find-renames",
+        *([] if _legacy_identity else ["--ignore-submodules=none"]),
         base_revision,
         "--",
     )
@@ -221,11 +245,7 @@ def _git_paths(root: Path) -> list[str]:
     }
     # Full-review identity follows the current filesystem. Diff mode supplies
     # deleted paths explicitly so it can preserve their base-revision content.
-    return sorted(
-        path
-        for path in paths
-        if (root / path).exists() or (root / path).is_symlink()
-    )
+    return sorted(path for path in paths if (root / path).exists() or (root / path).is_symlink())
 
 
 def _filesystem_paths(root: Path) -> list[str]:
@@ -296,7 +316,108 @@ def _file_record(root: Path, relative: str) -> dict[str, Any]:
         "sizeBytes": size,
         "sha256": digest.hexdigest(),
         "binary": _binary_preview(preview, complete=size == len(preview)),
+        "sourceIdentity": {
+            "executable": bool(stat.st_mode & 0o100),
+            "gitlink": None,
+            "checkout": None,
+        },
     }
+
+
+def _index_entries(root: Path) -> dict[str, tuple[str, str]]:
+    result = run_git(root, "ls-files", "--stage", "-z")
+    if result.returncode != 0:
+        raise RuntimeError("git index inspection failed; source identity is unknown")
+    entries = {}
+    for item in result.stdout.split(b"\0"):
+        if not item:
+            continue
+        metadata, path = item.split(b"\t", 1)
+        mode, oid, stage = metadata.decode("ascii").split()
+        relative = path.decode("utf-8", errors="surrogateescape")
+        entries[relative] = (mode if stage == "0" else "unmerged", oid)
+    return entries
+
+
+def _submodule_record(root: Path, relative: str, oid: str) -> dict[str, Any]:
+    path = root / relative
+    checkout = None
+    nested_identity = sha256_bytes(b"")
+    if path.is_symlink():
+        raise RuntimeError(f"submodule {relative!r} is a symlink; identity is unknown")
+    if (path / ".git").exists():
+        child = inspect_git(path)
+        if child.root != path.resolve() or child.revision is None:
+            raise RuntimeError(f"submodule {relative!r} checkout identity is unknown")
+        # Git configuration must not hide executable-bit changes in a POSIX child.
+        status = run_git(
+            path,
+            "-c",
+            f"core.fileMode={'false' if os.name == 'nt' else 'true'}",
+            "-c",
+            "status.showUntrackedFiles=normal",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        )
+        if status.returncode != 0 or status.stdout:
+            raise RuntimeError(
+                f"submodule {relative!r} is dirty or unreadable; "
+                "recursive worktree identity is not supported"
+            )
+        checkout = child.revision
+        nested_identity = _submodule_index_identity(path)
+    elif path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise RuntimeError(f"submodule {relative!r} has no verifiable checkout")
+    return {
+        "path": relative,
+        "kind": "other",
+        "sizeBytes": 0,
+        "sha256": nested_identity,
+        "binary": True,
+        "sourceIdentity": {"executable": None, "gitlink": oid, "checkout": checkout},
+    }
+
+
+def _submodule_index_identity(root: Path) -> str:
+    flags = run_git(root, "ls-files", "-v", "-z")
+    if flags.returncode != 0:
+        raise RuntimeError(f"submodule {root.name!r} index visibility is unknown")
+    for row in flags.stdout.split(b"\0"):
+        if row and (row[:1].islower() or row[:1] == b"S"):
+            raise RuntimeError(
+                f"submodule {root.name!r} has hidden index flags; worktree cleanliness is unknown"
+            )
+    nested = [
+        _submodule_record(root, path, oid)
+        for path, (mode, oid) in sorted(_index_entries(root).items())
+        if mode == "160000"
+    ]
+    return sha256_bytes(canonical_compact(nested).encode("utf-8"))
+
+
+def _current_file_record(
+    root: Path,
+    relative: str,
+    entry: tuple[str, str] | None,
+    deleted_revision: str | None,
+) -> dict[str, Any]:
+    if entry is not None:
+        mode, oid = entry
+        if mode == "unmerged":
+            raise RuntimeError(f"unmerged index entry: {relative}")
+        if mode == "160000":
+            return _submodule_record(root, relative, oid)
+    path = root / relative
+    if not path.exists() and not path.is_symlink() and deleted_revision is not None:
+        return _file_record_at_revision(root, deleted_revision, relative)
+    record = _file_record(root, relative)
+    if os.name == "nt" and record["kind"] == "file":
+        # Windows has no POSIX executable bit: bind Git's tracked executable flag.
+        record["sourceIdentity"]["executable"] = entry is not None and entry[0] == "100755"
+    return record
 
 
 def _payload_at_revision(root: Path, revision: str, relative: str) -> bytes:
@@ -306,7 +427,26 @@ def _payload_at_revision(root: Path, revision: str, relative: str) -> bytes:
     return result.stdout
 
 
-def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[str, Any]:
+def _file_record_at_revision(
+    root: Path,
+    revision: str,
+    relative: str,
+    *,
+    _legacy_identity: bool = False,
+) -> dict[str, Any]:
+    tree = run_git(root, "ls-tree", "-z", revision, "--", f":(literal){relative}")
+    if tree.returncode != 0 or not tree.stdout:
+        raise OSError(f"cannot read base source identity: {relative}")
+    mode, _, oid = tree.stdout.split(b"\t", 1)[0].decode("ascii").split()
+    if mode == "160000" and not _legacy_identity:
+        return {
+            "path": relative,
+            "kind": "deleted",
+            "sizeBytes": 0,
+            "sha256": sha256_bytes(b""),
+            "binary": True,
+            "sourceIdentity": {"executable": None, "gitlink": oid, "checkout": None},
+        }
     payload = _payload_at_revision(root, revision, relative)
     preview = payload[:8192]
     return {
@@ -315,12 +455,11 @@ def _file_record_at_revision(root: Path, revision: str, relative: str) -> dict[s
         "sizeBytes": len(payload),
         "sha256": sha256_bytes(payload),
         "binary": _binary_preview(preview, complete=len(payload) == len(preview)),
+        "sourceIdentity": {"executable": mode == "100755", "gitlink": None, "checkout": None},
     }
 
 
-def source_payload(
-    root: Path, record: Mapping[str, Any], *, diff_base: str | None
-) -> bytes:
+def source_payload(root: Path, record: Mapping[str, Any], *, diff_base: str | None) -> bytes:
     """Read the exact source side represented by one canonical inventory record."""
     root = root.resolve(strict=True)
     relative = record.get("path")
@@ -349,14 +488,21 @@ def inventory(
     vendored: Iterable[str] = (),
     paths: Iterable[str] | None = None,
     deleted_revision: str | None = None,
+    _legacy_identity: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     root = root.resolve(strict=True)
-    git_state = inspect_git(root)
+    is_repository = run_git(root, "rev-parse", "--show-toplevel").returncode == 0
+    entries = _index_entries(root) if is_repository and not _legacy_identity else {}
     candidate_paths = (
         sorted(set(paths))
         if paths is not None
-        else (_git_paths(root) if git_state.is_repository else _filesystem_paths(root))
+        else (_git_paths(root) if is_repository else _filesystem_paths(root))
     )
+    if paths is None:
+        candidate_paths = sorted(
+            set(candidate_paths)
+            | {path for path, (mode, _) in entries.items() if mode in {"160000", "unmerged"}}
+        )
     exclude_patterns = tuple(DEFAULT_EXCLUDES) + tuple(excludes)
     included: list[dict[str, Any]] = []
     excluded: list[dict[str, str]] = []
@@ -369,13 +515,25 @@ def inventory(
             excluded.append({"path": relative, "reason": "matched exclude pattern"})
             continue
         try:
-            if (root / relative).exists() or (root / relative).is_symlink():
-                record = _file_record(root, relative)
-            elif deleted_revision is not None:
-                record = _file_record_at_revision(root, deleted_revision, relative)
+            if _legacy_identity:
+                if (
+                    not (root / relative).exists()
+                    and not (root / relative).is_symlink()
+                    and deleted_revision
+                ):
+                    record = _file_record_at_revision(
+                        root, deleted_revision, relative, _legacy_identity=True
+                    )
+                else:
+                    record = _file_record(root, relative)
+                record.pop("sourceIdentity", None)
             else:
-                record = _file_record(root, relative)
+                record = _current_file_record(
+                    root, relative, entries.get(relative), deleted_revision
+                )
         except OSError as error:
+            if entries.get(relative, (None,))[0] == "160000":
+                raise RuntimeError(f"submodule {relative!r} identity is unreadable") from error
             record = {
                 "path": relative,
                 "kind": "unreadable",
@@ -405,6 +563,7 @@ def inventory_for_mode(
     generated: Iterable[str] = (),
     vendored: Iterable[str] = (),
     diff_base: str | None = None,
+    _legacy_identity: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]], dict[str, Any] | None]:
     if mode != "diff":
         records, excluded = inventory(
@@ -413,12 +572,13 @@ def inventory_for_mode(
             excludes=excludes,
             generated=generated,
             vendored=vendored,
+            _legacy_identity=_legacy_identity,
         )
         return records, excluded, None
     if not diff_base:
         raise ValueError("diff mode requires a diff base")
     base_revision = resolve_git_revision(root, diff_base)
-    changes = git_diff_changes(root, base_revision)
+    changes = git_diff_changes(root, base_revision, _legacy_identity=_legacy_identity)
     records, excluded = inventory(
         root,
         scopes=scopes,
@@ -427,6 +587,7 @@ def inventory_for_mode(
         vendored=vendored,
         paths=[row["path"] for row in changes],
         deleted_revision=base_revision,
+        _legacy_identity=_legacy_identity,
     )
     changes_by_path = {row["path"]: row for row in changes}
     for record in records:
@@ -442,8 +603,10 @@ def inventory_for_mode(
     for change in changes:
         row = dict(change)
         row["inScope"] = row["path"] in included_paths
-        row["reason"] = "in configured scope" if row["inScope"] else excluded_reasons.get(
-            row["path"], "not present in the selected inventory"
+        row["reason"] = (
+            "in configured scope"
+            if row["inScope"]
+            else excluded_reasons.get(row["path"], "not present in the selected inventory")
         )
         scoped_changes.append(row)
     return records, excluded, {"baseRevision": base_revision, "changes": scoped_changes}
@@ -489,7 +652,7 @@ def fingerprint_inventory(records: list[dict[str, Any]]) -> str:
             "sha256": row["sha256"],
             "classification": row["classification"],
         }
-        for field in ("diffStatus", "previousPath", "untracked"):
+        for field in ("diffStatus", "previousPath", "untracked", "sourceIdentity"):
             if field in row:
                 value[field] = row[field]
         stable.append(value)

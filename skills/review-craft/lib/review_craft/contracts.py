@@ -11,6 +11,7 @@ from .constants import (
     CONTENT_BOUND_SCHEMA_VERSIONS,
     LEGACY_ARTIFACT_PATHS,
     LEGACY_SCHEMA_VERSION,
+    SCHEMA_VERSION,
     SUPPORTED_RUN_SCHEMA_VERSIONS,
 )
 from .contract_core import (
@@ -107,9 +108,7 @@ def load_run(run_dir: Path) -> dict[str, Any]:
         raise ContractError(["manifest: expected a JSON object"])
     schema_version = manifest.get("schemaVersion")
     if schema_version not in SUPPORTED_RUN_SCHEMA_VERSIONS:
-        raise ContractError(
-            [f"review-manifest.schemaVersion: unsupported {schema_version!r}"]
-        )
+        raise ContractError([f"review-manifest.schemaVersion: unsupported {schema_version!r}"])
     artifact_paths = _artifact_paths(schema_version)
     result = {
         "manifest": manifest,
@@ -122,9 +121,7 @@ def load_run(run_dir: Path) -> dict[str, Any]:
         "findings": read_json(_artifact(run_dir, artifact_paths, "findings")),
         "decisions": read_json(_artifact(run_dir, artifact_paths, "decisions")),
         "scorecard": read_json(_artifact(run_dir, artifact_paths, "scorecard")),
-        "remediationPlan": read_json(
-            _artifact(run_dir, artifact_paths, "remediationPlan")
-        ),
+        "remediationPlan": read_json(_artifact(run_dir, artifact_paths, "remediationPlan")),
         "commands": read_jsonl(_artifact(run_dir, artifact_paths, "commands")),
         "evidenceRegistry": (
             read_json(_artifact(run_dir, artifact_paths, "evidenceRegistry"))
@@ -215,7 +212,10 @@ def _validate_manifest_identity(
 
 
 def _current_source_projection(
-    target_root: Path, configuration: dict[str, Any]
+    target_root: Path,
+    configuration: dict[str, Any],
+    *,
+    schema_version: str = SCHEMA_VERSION,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str, str, str]:
     records, _, current_diff = inventory_for_mode(
         target_root,
@@ -225,13 +225,14 @@ def _current_source_projection(
         generated=configuration["generated"],
         vendored=configuration["vendored"],
         diff_base=configuration["diffBase"],
+        _legacy_identity=schema_version != SCHEMA_VERSION,
     )
     return (
         records,
         current_diff,
         fingerprint_inventory(records),
         worktree_fingerprint(target_root, records=records),
-        inspect_git(target_root).status,
+        inspect_git(target_root, _legacy_identity=schema_version != SCHEMA_VERSION).status,
     )
 
 
@@ -253,7 +254,7 @@ def _validate_live_source(
     try:
         target_root = Path(run_state["targetRoot"]).resolve(strict=True)
         records, current_diff, current_source, current_worktree, current_status = (
-            _current_source_projection(target_root, configuration)
+            _current_source_projection(target_root, configuration, schema_version=schema_version)
         )
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
         errors.append(f"run-state.targetRoot: source verification failed: {error}")
@@ -326,13 +327,9 @@ def validate_run(run_dir: Path, *, final: bool = True) -> dict[str, Any]:
         )
     _validate_quality_model(data["qualityModel"], errors, final)
     coverage_paths = _validate_coverage(data["coverage"], errors, final)
-    _validate_coverage_inventory(
-        data["coverage"], schema_version, source_projection, errors
-    )
+    _validate_coverage_inventory(data["coverage"], schema_version, source_projection, errors)
     _validate_review_scope(data["reviewScope"], manifest_configuration, coverage_paths, errors)
-    _validate_repository_maps(
-        data["moduleMap"], data["dependencyMap"], coverage_paths, errors
-    )
+    _validate_repository_maps(data["moduleMap"], data["dependencyMap"], coverage_paths, errors)
     candidates = _validate_candidates(
         data["candidates"],
         coverage_paths,

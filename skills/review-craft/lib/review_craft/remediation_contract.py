@@ -74,6 +74,7 @@ def stable_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "diffStatus",
         "previousPath",
         "untracked",
+        "sourceIdentity",
     )
     return [
         {field: row[field] for field in fields if field in row}
@@ -308,7 +309,9 @@ def changes(
             status = "ADDED"
         elif new is None:
             status = "DELETED"
-        elif old.get("sha256") == new.get("sha256") and old.get("kind") == new.get("kind"):
+        elif all(
+            old.get(field) == new.get(field) for field in ("sha256", "kind", "sourceIdentity")
+        ):
             continue
         else:
             status = "MODIFIED"

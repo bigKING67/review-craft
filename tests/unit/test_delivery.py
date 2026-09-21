@@ -242,6 +242,26 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("git status failed", completed.stderr)
         self.assertEqual(list(Path(self.delivery_tmp.name).iterdir()), [])
 
+    def test_hidden_untracked_verified_source_fails_delivery(self) -> None:
+        for args in (
+            ["rm", "--cached", "--", "app.py"],
+            ["commit", "-m", "leave verified source untracked"],
+            ["config", "status.showUntrackedFiles", "no"],
+        ):
+            subprocess.run(["git", *args], cwd=self.target, check=True, capture_output=True)
+        completed = run_cli(
+            "verify-delivery", "--fix-dir", str(self.fix_dir),
+            "--output-root", self.delivery_tmp.name,
+        )
+        self.assertEqual(completed.returncode, 4, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "FAILED")
+        attestation = read_json(Path(payload["deliveryDir"]) / "delivery-attestation.json")
+        self.assertTrue(attestation["localSource"]["sourceMatchesVerification"])
+        self.assertFalse(attestation["localSource"]["clean"])
+        validated = run_cli("validate-delivery", "--delivery-dir", payload["deliveryDir"])
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+
     def test_public_delivery_schema_accepts_generated_attestation(self) -> None:
         _, attestation = verify_delivery(
             self.fix_dir,

@@ -53,7 +53,8 @@
         "classification": {"type": "string", "minLength": 1},
         "diffStatus": {"type": "string", "minLength": 1},
         "previousPath": {"type": "string", "minLength": 1},
-        "untracked": {"type": "boolean"}
+        "untracked": {"type": "boolean"},
+        "sourceIdentity": {"type": "object", "additionalProperties": false, "required": ["executable", "gitlink", "checkout"], "properties": {"executable": {"type": ["boolean", "null"]}, "gitlink": {"type": ["string", "null"], "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"}, "checkout": {"type": ["string", "null"], "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"}}}
       }
     },
     "change": {

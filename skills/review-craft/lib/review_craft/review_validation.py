@@ -39,6 +39,7 @@ _COVERAGE_INVENTORY_FIELDS = (
     "diffStatus",
     "previousPath",
     "untracked",
+    "sourceIdentity",
 )
 
 
@@ -292,7 +293,13 @@ def _validate_coverage_inventory(
     source_projection: SourceProjection | None,
     errors: list[str],
 ) -> None:
-    if schema_version != SCHEMA_VERSION or source_projection is None:
+    if schema_version != SCHEMA_VERSION:
+        if any(
+            "sourceIdentity" in row for row in coverage.get("files", []) if isinstance(row, dict)
+        ):
+            errors.append("coverage.sourceIdentity: unsupported by frozen review protocol")
+        return
+    if source_projection is None:
         return
     files = coverage.get("files")
     if not isinstance(files, list):
@@ -314,8 +321,7 @@ def _validate_coverage_inventory(
         for field in _COVERAGE_INVENTORY_FIELDS:
             if (field in row) != (field in expected) or row.get(field) != expected.get(field):
                 errors.append(
-                    f"coverage.files[{index}].{field}: "
-                    "does not match the canonical inventory"
+                    f"coverage.files[{index}].{field}: does not match the canonical inventory"
                 )
 
 
