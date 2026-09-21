@@ -43,7 +43,7 @@ rewrite posture, Cursor Task subagent orchestration, or rhetoric as evidence.
 
 - Project: `cursor/plugins`
 - Source: <https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review>
-- Latest reviewed revision: `93b00b89ef425a9c1bac0d0b317dfc49c930ac99` (2026-09-05; tracked Skill blob unchanged)
+- Latest reviewed revision: `6ed0f7a9504f577d7529064103cecce9be7dfc5e` (2026-09-21; tracked Skill blob unchanged)
 - Original adaptation review: `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1` (2026-08-28)
 - Adapted source path:
   `cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md`
@@ -93,13 +93,23 @@ an adoption of Alibaba's project-rule loader or runtime.
 
 - Project: `alibaba/open-code-review`
 - Source: <https://github.com/alibaba/open-code-review>
-- Latest reviewed revision: `2190f11fcd24ed74ed7a1120c5e63f901b1da658` (2026-09-05)
+- Latest reviewed revision: `cf64e7080f600d507888a26785ad6a8b7a13ab6a` (2026-09-21)
 - Original adaptation review: `5d255d160f9707b05537fd933d7adb68ba999c88` (2026-08-28)
 - Reviewed source paths: `internal/session/manifest.go`,
   `internal/session/resume_identity.go`, `internal/diff/resolver.go`,
   `internal/config/rules/system_rules.go`, `internal/model/preview.go`,
-  `internal/agent/preview.go`, and `skills/open-code-review/SKILL.md`
+  `internal/agent/preview.go`, `skills/open-code-review/SKILL.md`,
+  `internal/agent/selection.go`, and `internal/agent/preview_run_test.go`
 - License: Apache-2.0
+
+The 2026-09-21 bounded review also informs selection consistency: fast preflight now
+uses the same canonical coverage dispositions and eligibility function as budget
+validation. Generated, vendored, and binary entries remain accounted without consuming
+the eligible-source budget. Boundary and mixed-input tests check this parity. This is
+an independently implemented adaptation of shared-decision and parity-testing principles,
+not adoption of Alibaba's file filters, deletion exclusions, secret-path lists, token
+thresholds, preview command, SARIF, or provider integrations. The reference paths are
+pinned by Git blob; this is not a full-repository upstream audit or an upstream test run.
 
 If Review Craft later incorporates specific source or text, add the applicable Apache-2.0
 license, retained notices, modified-file notice, and file-level provenance before

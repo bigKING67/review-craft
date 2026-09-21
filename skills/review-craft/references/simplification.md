@@ -11,7 +11,7 @@ revision `5da55efcb52db690e7406f06f827a23b15da2706` (original adaptation review:
 `add872f3db2a96f90081bedc070dde5d723afa95`), plus structural-review concepts
 from Cursor's
 [`thermo-nuclear-code-quality-review`](https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review)
-at reviewed revision `93b00b89ef425a9c1bac0d0b317dfc49c930ac99` (the tracked Skill blob
+at reviewed revision `6ed0f7a9504f577d7529064103cecce9be7dfc5e` (the tracked Skill blob
 is unchanged from original adaptation review `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1`). See the packaged
 `THIRD_PARTY_NOTICES.md` for provenance and the MIT license notices.
 

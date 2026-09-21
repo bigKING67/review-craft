@@ -393,6 +393,8 @@ the reviewed revision, source-path Git blobs, and deliberately excluded surfaces
 `tracked` source records non-normative watch surfaces and makes no absorption or quality
 claim; `selective_absorbed` records only the surfaces actually adapted into Review Craft.
 Each entry covers only its listed source paths, not a complete upstream-repository audit.
+Alibaba Open Code Review also informs shared eligibility decisions between fast preflight
+and canonical coverage/budget validation; its filtering policy remains excluded.
 Understand Anything informs absence-evidence guidance and composition tests; automated
 symbol comparison, change-impact, and freshness mechanisms remain watch candidates. See the
 [reference boundary](THIRD_PARTY_NOTICES.md#understand-anything) for details.
