@@ -77,7 +77,12 @@ def inspect_git(target: Path, *, _legacy_identity: bool = False) -> GitState:
     probe = run_git(target, "rev-parse", "--show-toplevel")
     if probe.returncode != 0:
         return GitState(False, target, None, None, None, "", False)
-    root = Path(probe.stdout.decode("utf-8", errors="replace").strip()).resolve()
+    root_text = (
+        probe.stdout.decode("utf-8", errors="replace").strip()
+        if _legacy_identity
+        else os.fsdecode(probe.stdout.removesuffix(b"\n"))
+    )
+    root = Path(root_text).resolve()
     revision_result = run_git(root, "rev-parse", "HEAD")
     revision = (
         revision_result.stdout.decode("utf-8", errors="replace").strip()

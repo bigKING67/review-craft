@@ -4,6 +4,7 @@ from __future__ import annotations
 # ruff: noqa: I001
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,11 +15,52 @@ from tests.support import make_target, run_cli
 from review_craft.configuration import default_config
 from review_craft.delivery import collect_delivery_evidence
 from review_craft.remediation_contract import current_source
-from review_craft.repository import inspect_git, inventory, run_git
+from review_craft.repository import inspect_git, inventory, inventory_for_mode, run_git
 from review_craft.repository_analysis import detect_profile
 
 
 class RepositoryBoundaryTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Windows normalizes trailing whitespace in paths")
+    def test_git_root_preserves_trailing_whitespace(self) -> None:
+        for suffix in (" ", "\t", "\n", "\r"):
+            with self.subTest(suffix=repr(suffix)):
+                temporary, target = make_target(commit=True)
+                self.addCleanup(temporary.cleanup)
+                renamed = target.with_name(target.name + suffix)
+                target.rename(renamed)
+                self.addCleanup(renamed.rename, target)
+                state = inspect_git(renamed)
+                self.assertEqual(state.root, renamed.resolve())
+                self.assertIsNotNone(state.revision)
+                self.assertEqual(state.status, "")
+                (renamed / " untracked file ").write_text("content")
+                self.assertIn(" untracked file ", inspect_git(renamed).status)
+
+    @unittest.skipIf(os.name == "nt", "POSIX filename characters")
+    def test_real_git_diff_preserves_quoted_and_whitespace_names(self) -> None:
+        temporary, target = make_target(commit=True)
+        self.addCleanup(temporary.cleanup)
+        names = [" leading.py", "trailing.py ", "tab\t.py", "line\n.py", 'quote".py', "中文.py"]
+        for name in names:
+            (target / name).write_text("original\n")
+        run_git(target, "add", "--", *names, check=True)
+        run_git(target, "commit", "-m", "path fixtures", check=True)
+        base = inspect_git(target).revision
+        for name in names:
+            (target / name).write_text("changed\n")
+        untracked = " untracked\n.py "
+        (target / untracked).write_text("new\n")
+        records, _, _ = inventory_for_mode(target, mode="diff", diff_base=base)
+        self.assertEqual({row["path"] for row in records}, {*names, untracked})
+        run_git(target, "checkout", "--", *names, check=True)
+        renamed = ' renamed"\n.py '
+        run_git(target, "mv", "--", names[0], renamed, check=True)
+        (target / names[1]).unlink()
+        records, _, _ = inventory_for_mode(target, mode="diff", diff_base=base)
+        by_path = {row["path"]: row for row in records}
+        self.assertEqual(by_path[renamed]["previousPath"], names[0])
+        self.assertEqual(by_path[names[1]]["diffStatus"], "D")
+
     def test_hidden_untracked_files_cannot_verify_a_clean_checkout(self) -> None:
         temporary, target = make_target(commit=True)
         self.addCleanup(temporary.cleanup)
