@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.support import make_target, populate_valid_run, run_cli
 
@@ -209,7 +211,10 @@ class AssuranceTests(unittest.TestCase):
             before_input = {
                 p.relative_to(run_dir): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()
             }
-            input_result = run_cli("verification-input", "--run-dir", str(run_dir))
+            # Windows redirected stdout may use a legacy code page. JSON must remain
+            # portable without losing the original Unicode findings or digest.
+            with patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
+                input_result = run_cli("verification-input", "--run-dir", str(run_dir))
             self.assertEqual(
                 before_input,
                 {p.relative_to(run_dir): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()},

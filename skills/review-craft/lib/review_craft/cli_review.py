@@ -404,5 +404,5 @@ def command_verification_input(args: argparse.Namespace) -> int:
     manifest = data["manifest"]
     if manifest.get("schemaVersion") != SCHEMA_VERSION or manifest.get("status") != "draft":
         raise ValueError("verification-input requires a current run.v5 draft")
-    print(json.dumps(verification_input(data), ensure_ascii=False, sort_keys=True))
+    print(json.dumps(verification_input(data), ensure_ascii=True, sort_keys=True))
     return 0
