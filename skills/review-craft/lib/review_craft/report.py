@@ -450,6 +450,14 @@ def finalize_run(run_dir: Path, *, sealed_at: str) -> Path:
                 "review-craft.run.v3 and run.v4 remain validation-only historical data"
             ]
         )
+    # Finalization is a write path, even when re-rendering an already sealed run.
+    # Historical v1 agreements may be read by validate, never reused for this write.
+    if manifest.get("configuration", {}).get("assuranceLevel") == "assured":
+        current_data = load_run(run_dir)
+        current_data["manifest"] = {**current_data["manifest"], "status": "draft"}
+        _state, verification_errors = build_assurance_state(current_data, run_dir)
+        if verification_errors:
+            raise ContractError(verification_errors)
     scorecard_path = run_dir / ARTIFACT_PATHS["scorecard"]
     coverage = read_json(run_dir / ARTIFACT_PATHS["coverage"])
     scorecard = read_json(scorecard_path)

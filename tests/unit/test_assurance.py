@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -205,11 +206,27 @@ class AssuranceTests(unittest.TestCase):
             self.assertIn("requires one registered verification artifact", missing.stderr)
 
             manifest = json.loads((run_dir / "review-manifest.json").read_text(encoding="utf-8"))
+            before_input = {
+                p.relative_to(run_dir): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()
+            }
+            input_result = run_cli("verification-input", "--run-dir", str(run_dir))
+            self.assertEqual(
+                before_input,
+                {p.relative_to(run_dir): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()},
+            )
+            self.assertEqual(input_result.returncode, 0, input_result.stderr)
+            verifier_input = json.loads(input_result.stdout)
+            self.assertEqual(verifier_input["reviewRunId"], manifest["runId"])
+            self.assertEqual(
+                verifier_input["findings"],
+                json.loads((run_dir / "findings.json").read_text(encoding="utf-8")),
+            )
             verifier = Path(output) / "verifier.json"
             verifier.write_text(
                 json.dumps(
                     {
-                        "schema": "review-craft.assurance-verification.v1",
+                        "schema": "review-craft.assurance-verification.v2",
+                        "findingsSha256": verifier_input["findingsSha256"],
                         "reviewRunId": manifest["runId"],
                         "sourceFingerprint": manifest["target"]["sourceFingerprint"],
                         "createdAt": "2026-08-20T00:00:00Z",
@@ -249,6 +266,50 @@ class AssuranceTests(unittest.TestCase):
                 "application/json",
             )
             self.assertEqual(registered.returncode, 0, registered.stderr)
+            findings_path = run_dir / "findings.json"
+            original = json.loads(findings_path.read_text(encoding="utf-8"))
+            for field, changed in (
+                ("currentImpact", "A materially changed impact"),
+                ("severity", "HIGH"),
+                ("rootCause", "A different root cause"),
+                ("locations", []),
+                ("evidenceRefs", ["source:app.py:2-2"]),
+                ("recommendation", "A different remediation"),
+            ):
+                with self.subTest(field=field):
+                    value = json.loads(json.dumps(original))
+                    value["findings"][0][field] = changed
+                    findings_path.write_text(json.dumps(value), encoding="utf-8")
+                    stale = run_cli("finalize", "--run-dir", str(run_dir))
+                    self.assertEqual(stale.returncode, 2, stale.stderr)
+                    self.assertIn("findingsSha256", stale.stderr)
+            findings_path.write_text(json.dumps(original), encoding="utf-8")
+            # A material content change requires a newly registered independent assessment.
+            original["findings"][0]["currentImpact"] = "An independently reassessed impact"
+            findings_path.write_text(json.dumps(original, sort_keys=True), encoding="utf-8")
+            updated_input = run_cli("verification-input", "--run-dir", str(run_dir))
+            self.assertEqual(updated_input.returncode, 0, updated_input.stderr)
+            updated = json.loads(verifier.read_text(encoding="utf-8"))
+            updated["findingsSha256"] = json.loads(updated_input.stdout)["findingsSha256"]
+            verifier.write_text(json.dumps(updated), encoding="utf-8")
+            reverified = run_cli(
+                "register-evidence",
+                "--run-dir",
+                str(run_dir),
+                "--id",
+                "assured-verifier-current",
+                "--source",
+                str(verifier),
+                "--kind",
+                "verification",
+                "--producer",
+                "fixture",
+                "--description",
+                "New independent assessment after a material change",
+                "--media-type",
+                "application/json",
+            )
+            self.assertEqual(reverified.returncode, 0, reverified.stderr)
             finalized = run_cli("finalize", "--run-dir", str(run_dir))
             self.assertEqual(finalized.returncode, 0, finalized.stderr)
             sealed = json.loads(scorecard_path.read_text(encoding="utf-8"))
@@ -256,8 +317,33 @@ class AssuranceTests(unittest.TestCase):
             self.assertEqual(sealed["assurance"]["verifier"]["status"], "VERIFIED")
             self.assertEqual(
                 sealed["assurance"]["verifier"]["evidenceRef"],
-                "artifact:assured-verifier",
+                "artifact:assured-verifier-current",
             )
+            # Reconstruct a sealed historical v1 fixture with a matching registry hash.
+            # Production registration remains immutable; only this test fixture is rewritten.
+            registry_path = run_dir / "evidence-registry.json"
+            registry = json.loads(registry_path.read_text())
+            receipt = next(
+                row for row in registry["artifacts"] if row["id"] == "assured-verifier-current"
+            )
+            receipt_path = run_dir / receipt["path"]
+            historical = json.loads(receipt_path.read_text())
+            historical["schema"] = "review-craft.assurance-verification.v1"
+            del historical["findingsSha256"]
+            content = json.dumps(historical).encode()
+            receipt_path.write_bytes(content)
+            receipt.update(sha256=hashlib.sha256(content).hexdigest(), sizeBytes=len(content))
+            registry["artifacts"] = [
+                row for row in registry["artifacts"] if row["id"] != "assured-verifier"
+            ]
+            (run_dir / "evidence/registered/assured-verifier/artifact").unlink()
+            (run_dir / "evidence/registered/assured-verifier").rmdir()
+            registry_path.write_text(json.dumps(registry))
+            historical_read = run_cli("validate", "--run-dir", str(run_dir))
+            self.assertEqual(historical_read.returncode, 0, historical_read.stderr)
+            historical_write = run_cli("finalize", "--run-dir", str(run_dir))
+            self.assertEqual(historical_write.returncode, 2)
+            self.assertIn("findingsSha256", historical_write.stderr)
 
 
 if __name__ == "__main__":

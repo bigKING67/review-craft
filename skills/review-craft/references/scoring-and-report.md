@@ -52,7 +52,9 @@ non-goal. Do not inflate a score merely because source files, schemas, or tests 
 
 Canonical `fast` assurance is always provisional and capped at E2 even when its bounded
 scope is fully accounted. `assured` is final only with E3+ evidence, no unverified claims,
-and one valid independent verification artifact covering every canonical finding. The
+and exactly one current v2 independent verification artifact binding the entire canonical
+findings document by SHA-256 and covering every finding. Stale receipts remain immutable;
+changed findings require renewed independent assessment. The
 finalizer derives the assurance block; do not hand-author completion or verifier status.
 
 ## Evidence levels

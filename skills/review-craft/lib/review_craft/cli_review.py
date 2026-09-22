@@ -12,6 +12,7 @@ from .assurance import (
     ASSURANCE_BUDGETS,
     draft_assurance_state,
     eligible_file_count,
+    verification_input,
 )
 from .cli_common import utc_now
 from .configuration import effective_preflight_config, load_config
@@ -395,4 +396,13 @@ def command_anchor_location(args: argparse.Namespace) -> int:
 def command_finalize(args: argparse.Namespace) -> int:
     report = finalize_run(Path(args.run_dir), sealed_at=utc_now())
     print(json.dumps({"report": str(report)}, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def command_verification_input(args: argparse.Namespace) -> int:
+    data = validate_run(Path(args.run_dir), final=False)
+    manifest = data["manifest"]
+    if manifest.get("schemaVersion") != SCHEMA_VERSION or manifest.get("status") != "draft":
+        raise ValueError("verification-input requires a current run.v5 draft")
+    print(json.dumps(verification_input(data), ensure_ascii=False, sort_keys=True))
     return 0

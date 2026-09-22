@@ -218,12 +218,21 @@ scorecard evidence. A source path written directly into canonical evidence is no
 registered artifact. Unknown IDs, path-style references, missing copies, symlinks,
 path drift, size drift, and content drift fail validation.
 
-For `assured`, create one JSON document matching
-`schemas/assurance-verification.schema.json`, bind it to the run ID and source fingerprint,
-and list every canonical finding in canonical order. The verifier must be independent and
-each disposition must be `AGREED`; `FALSIFIED`, `BLOCKED`, missing findings, or verifier
-unverified claims prevent finalization. Register it with `--kind verification`, then cite
-the returned artifact reference through the derived scorecard assurance state.
+For `assured`, run `verification-input --run-dir <run-dir>` to read the complete
+canonical findings document, run ID, source fingerprint, and `findingsSha256` without
+changing the run. Have an independent verifier assess that exact document and produce
+`schemas/assurance-verification-v2.schema.json`, preserving those three binding fields
+and listing every canonical finding in canonical order. Each disposition must be
+`AGREED`; `FALSIFIED`, `BLOCKED`, missing findings, or unverified claims prevent
+finalization. Register the result with `--kind verification`.
+
+The digest covers the entire findings JSON document, including an empty findings list.
+Object key order and JSON whitespace do not change it; array order and content do.
+After any content change, obtain a new independent assessment and register a new ID.
+Keep stale receipts immutable: exactly one receipt matching the current digest is
+required, and multiple matching receipts block finalization. A schema-valid receipt
+proves structure and binding, not the truth of its assessment. Sealed historical v1
+receipts remain readable; new finalization requires v2.
 
 If a command mutates tracked or untracked target source, stop automatic execution,
 report the mutation, and do not revert user work.
@@ -386,3 +395,11 @@ contract failure. Complete a run only when:
 - every remediation phase has acceptance criteria;
 - canonical artifacts validate;
 - `report.md` is deterministically generated, not hand-authored.
+
+### Candidate falsification and decisive blockers
+
+Before promoting a candidate, actively seek existing controls that disprove its claimed
+trigger or impact. Record the concrete control and evidence, including why it does or
+does not close the path. A blocked candidate must identify the decisive missing fact or
+validation step and its effect on the conclusion; do not use blockers as a speculative
+parking place. Structural schema validation alone cannot establish that a finding is true.

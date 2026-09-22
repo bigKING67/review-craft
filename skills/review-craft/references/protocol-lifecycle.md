@@ -68,3 +68,10 @@ their historical validation semantics; this is not an in-place protocol migratio
 
 Git command semantics: [status](https://git-scm.com/docs/git-status) and
 [index entries](https://git-scm.com/docs/git-ls-files).
+
+## Independent assurance receipts
+
+`review-craft.assurance-verification.v2` is required for new assured finalization and
+binds the complete canonical findings document. Existing sealed v1-only runs retain
+validation-only historical semantics; they are not silently migrated or newly finalized
+under v1. Editing a historical receipt invalidates its registered content hash.
