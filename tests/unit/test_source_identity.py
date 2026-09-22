@@ -147,11 +147,12 @@ class SourceIdentityTests(unittest.TestCase):
         subprocess.run(
             ["git", "update-index", "--index-info"],
             cwd=self.root,
-            input=entries,
-            text=True,
+            input=entries.encode("ascii"),
             check=True,
             capture_output=True,
         )
+        staged = run_git(self.root, "ls-files", "--stage", check=True).stdout
+        self.assertEqual(staged.count(b"\tmissing-submodule\n"), 3)
         with self.assertRaisesRegex(RuntimeError, "unmerged index entry"):
             inventory(self.root)
         self.assertEqual(
@@ -169,7 +170,7 @@ class SourceIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as output:
             run = create_run(self.root, Path(output))
             path = run / "coverage.json"
-            original = path.read_text()
+            original = path.read_text(encoding="utf-8")
             for mutation in ("remove", "forge"):
                 value = json.loads(original)
                 row = value["files"][0]
@@ -225,7 +226,7 @@ class SourceIdentityTests(unittest.TestCase):
                 valid = run_cli("validate", "--run-dir", str(run))
                 self.assertEqual(valid.returncode, 0, valid.stderr)
                 path = run / "coverage.json"
-                coverage = json.loads(path.read_text())
+                coverage = json.loads(path.read_text(encoding="utf-8"))
                 self.assertNotIn("sourceIdentity", coverage["files"][0])
                 coverage["files"][0]["sourceIdentity"] = {
                     "executable": False,
@@ -244,6 +245,40 @@ class SourceIdentityTests(unittest.TestCase):
         self.assertEqual(
             fingerprint_inventory(rows), sha256_bytes(canonical_compact(rows).encode())
         )
+
+    def test_optimized_fingerprint_preserves_canonical_bytes(self) -> None:
+        from review_craft.jsonio import canonical_compact, sha256_bytes
+
+        rows = []
+        for index, identity in enumerate(
+            (
+                None,
+                {"executable": False, "gitlink": None, "checkout": None},
+                {"executable": True, "gitlink": None, "checkout": None},
+                {"executable": 1, "gitlink": None, "checkout": None},
+                {"executable": False, "gitlink": "a" * 40, "checkout": "b" * 40},
+            )
+        ):
+            row = {
+                "path": f'{index}/中文\\quote"\n.py',
+                "kind": "file",
+                "sha256": "a" * 64,
+                "classification": "source",
+            }
+            if identity is not None:
+                row["sourceIdentity"] = identity
+            rows.append(row)
+            rows.append(
+                {
+                    **row,
+                    "path": row["path"] + ".old",
+                    "diffStatus": "RENAMED",
+                    "previousPath": "old.py",
+                    "untracked": False,
+                }
+            )
+        expected = sha256_bytes(canonical_compact(sorted(rows, key=lambda r: r["path"])).encode())
+        self.assertEqual(fingerprint_inventory(list(reversed(rows))), expected)
 
     @unittest.skipIf(os.name == "nt", "POSIX diff mode selection")
     def test_diff_detects_modes_hidden_by_filemode_configuration(self) -> None:
@@ -304,7 +339,8 @@ class SourceIdentityTests(unittest.TestCase):
 
         child = self.submodule()
         run_git(self.root, "config", "submodule.dep space.ignore", "all", check=True)
-        (child / ".git").write_text("gitdir: nonexistent-fixture-directory\n")
+        (child / ".git").unlink()  # Git for Windows marks this fixture file hidden.
+        (child / ".git").write_text("gitdir: nonexistent-fixture-directory\n", encoding="utf-8")
         config = {**default_config(), "mode": "diff", "diffBase": "HEAD"}
         for schema in ("review-craft.run.v3", "review-craft.run.v4"):
             rows, diff, *_ = _current_source_projection(self.root, config, schema_version=schema)
@@ -315,7 +351,8 @@ class SourceIdentityTests(unittest.TestCase):
 
     def test_excluded_broken_submodule_does_not_block_inventory(self) -> None:
         child = self.submodule()
-        (child / ".git").write_text("gitdir: nonexistent-fixture-directory\n")
+        (child / ".git").unlink()  # Git for Windows marks this fixture file hidden.
+        (child / ".git").write_text("gitdir: nonexistent-fixture-directory\n", encoding="utf-8")
         rows, _ = inventory(self.root, excludes=["dep space"])
         self.assertEqual([row["path"] for row in rows], [".gitmodules"])
         with self.assertRaisesRegex(RuntimeError, "submodule.*identity is unknown"):
@@ -408,7 +445,9 @@ class SourceIdentityTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 4, result.stderr)
                         delivery_dir = json.loads(result.stdout)["deliveryDir"]
                         receipt = json.loads(
-                            (Path(delivery_dir) / "delivery-attestation.json").read_text()
+                            (Path(delivery_dir) / "delivery-attestation.json").read_text(
+                                encoding="utf-8"
+                            )
                         )
                         self.assertTrue(receipt["localSource"]["clean"])
                         self.assertFalse(receipt["localSource"]["sourceMatchesVerification"])

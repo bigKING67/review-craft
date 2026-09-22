@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from tests.support import RUNTIME_LIB, create_run
 sys.path.insert(0, str(RUNTIME_LIB))
 
 from review_craft.cli import main
-from review_craft.repository import inventory, source_payload
+from review_craft.repository import SourceReader, inventory, source_payload
 from review_craft.repository_analysis import build_dependency_map
 
 
@@ -56,7 +57,7 @@ class DependencyEvidenceTests(unittest.TestCase):
                 except OSError as error:
                     self.skipTest(f"symlink creation unavailable: {error}")
                 with (
-                    patch.object(Path, "read_bytes", side_effect=AssertionError("must not read")),
+                    patch("builtins.open", side_effect=AssertionError("must not read")),
                     self.assertRaisesRegex(ValueError, "symlink"),
                 ):
                     build_dependency_map(root, rows)
@@ -64,17 +65,50 @@ class DependencyEvidenceTests(unittest.TestCase):
     def test_source_reader_rejects_invalid_relative_paths_before_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for relative in ("../outside.py", str(root / "absolute.py"), ".", ""):
+            invalid = ["../outside.py", str(root / "absolute.py"), ".", ""]
+            if os.name == "nt":
+                invalid.extend(
+                    [
+                        "\\outside.py",
+                        "C:outside.py",
+                        "C:\\outside.py",
+                        ".. /outside.py",
+                        "pkg/.. /outside.py",
+                        "pkg/C:outside.py",
+                    ]
+                )
+            for relative in invalid:
                 with (
                     self.subTest(relative=relative),
-                    patch.object(
-                        Path,
-                        "read_bytes",
+                    patch(
+                        "builtins.open",
                         side_effect=AssertionError("must not read"),
                     ),
                     self.assertRaisesRegex(ValueError, "path is invalid"),
                 ):
                     source_payload(root, {"path": relative, "kind": "file"}, diff_base=None)
+
+    def test_reused_reader_rechecks_content_and_directory_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            package = root / "pkg"
+            package.mkdir(parents=True)
+            app = package / "app.py"
+            app.write_bytes(b"VALUE = 1\n")
+            rows, _ = inventory(root)
+            reader = SourceReader(root)
+            self.assertEqual(reader.read(rows[0], diff_base=None), b"VALUE = 1\n")
+            app.write_bytes(b"VALUE = 2\n")
+            with self.assertRaisesRegex(ValueError, "no longer matches"):
+                reader.read(rows[0], diff_base=None)
+            outside = Path(directory) / "outside"
+            package.rename(outside)
+            try:
+                package.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                reader.read(rows[0], diff_base=None)
 
     def test_analysis_failures_remain_explicit_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -93,12 +127,37 @@ class DependencyEvidenceTests(unittest.TestCase):
             app.write_text("VALUE = 1\n")
             rows, _ = inventory(root)
             with patch(
-                "review_craft.repository_analysis.source_payload", side_effect=PermissionError
+                "review_craft.repository_analysis.SourceReader.read", side_effect=PermissionError
             ):
                 result = build_dependency_map(root, rows)
             self.assertEqual(
                 result["filesSkipped"], [{"path": "app.py", "reason": "PermissionError"}]
             )
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory junction boundary")
+    def test_source_reader_rejects_directory_junction_before_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            package = root / "pkg"
+            package.mkdir(parents=True)
+            (package / "app.py").write_bytes(b"VALUE = 1\n")
+            rows, _ = inventory(root)
+            reader = SourceReader(root)
+            outside = Path(directory) / "outside"
+            package.rename(outside)
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(package), str(outside)],
+                check=True,
+                capture_output=True,
+            )
+            try:
+                with (
+                    patch("builtins.open", side_effect=AssertionError("must not read")),
+                    self.assertRaisesRegex(ValueError, "reparse point"),
+                ):
+                    reader.read(rows[0], diff_base=None)
+            finally:
+                package.rmdir()
 
     def test_snapshot_drift_blocks_preflight_and_is_a_validation_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

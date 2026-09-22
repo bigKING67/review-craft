@@ -9,6 +9,7 @@ import stat as stat_mode
 import subprocess
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from json.encoder import encode_basestring
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -460,45 +461,64 @@ def _file_record_at_revision(
     }
 
 
-def _current_source_path(root: Path, relative: str) -> Path:
-    """Reject path replacement before reading; this is not an atomic snapshot."""
+def _current_source_path(root: str, parts: list[str], relative: str) -> str:
+    """Check every component on every read; this is not an atomic snapshot."""
     path = root
     try:
-        for part in Path(relative).parts:
-            path = path / part
-            if stat_mode.S_ISLNK(path.lstat().st_mode):
-                raise ValueError(f"source path traverses a symlink: {relative}")
-        if not path.resolve(strict=True).is_relative_to(root):
-            raise ValueError(f"source path escapes the target root: {relative}")
-        if not stat_mode.S_ISREG(path.lstat().st_mode):
+        for part in parts:
+            path += os.sep + part
+            metadata = os.lstat(path)
+            if stat_mode.S_ISLNK(metadata.st_mode) or (
+                getattr(metadata, "st_file_attributes", 0) & stat_mode.FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                raise ValueError(f"source path traverses a symlink or reparse point: {relative}")
+        # A canonical root, relative components without '..', and no links/reparse
+        # points establish containment without a second full realpath traversal.
+        if not stat_mode.S_ISREG(metadata.st_mode):
             raise ValueError(f"source path is not a regular current file: {relative}")
     except (FileNotFoundError, NotADirectoryError) as error:
         raise ValueError(f"source path no longer matches the inventory: {relative}") from error
     return path
 
 
+def _source_parts(relative: str) -> list[str]:
+    native = relative.replace("\\", "/") if os.name == "nt" else relative
+    parts = [part for part in native.split("/") if part and part != "."]
+    if not parts or native.startswith("/") or ".." in parts or os.path.splitdrive(native)[0]:
+        raise ValueError("source record path is invalid")
+    if os.name == "nt" and any(part.endswith((" ", ".")) or ":" in part for part in parts):
+        raise ValueError("source record path is invalid")
+    return parts
+
+
+class SourceReader:
+    """One bounded analysis shares root normalization, never file state or content."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve(strict=True)
+        self.root_string = str(self.root)
+
+    def read(self, record: Mapping[str, Any], *, diff_base: str | None) -> bytes:
+        relative = record.get("path")
+        if not isinstance(relative, str) or not relative:
+            raise ValueError("source record path is invalid")
+        parts = _source_parts(relative)
+        if record.get("kind") == "deleted":
+            if not diff_base:
+                raise ValueError("deleted source requires an immutable diff base")
+            payload = _payload_at_revision(self.root, diff_base, relative)
+        else:
+            path = _current_source_path(self.root_string, parts, relative)
+            with open(path, "rb") as source:
+                payload = source.read()
+        if sha256_bytes(payload) != record.get("sha256"):
+            raise ValueError(f"source content no longer matches the inventory: {relative}")
+        return payload
+
+
 def source_payload(root: Path, record: Mapping[str, Any], *, diff_base: str | None) -> bytes:
     """Read the exact source side represented by one canonical inventory record."""
-    root = root.resolve(strict=True)
-    relative = record.get("path")
-    if (
-        not isinstance(relative, str)
-        or not relative
-        or not Path(relative).parts
-        or Path(relative).is_absolute()
-        or ".." in Path(relative).parts
-        or Path(relative).drive
-    ):
-        raise ValueError("source record path is invalid")
-    if record.get("kind") == "deleted":
-        if not diff_base:
-            raise ValueError("deleted source requires an immutable diff base")
-        payload = _payload_at_revision(root, diff_base, relative)
-    else:
-        payload = _current_source_path(root, relative).read_bytes()
-    if sha256_bytes(payload) != record.get("sha256"):
-        raise ValueError(f"source content no longer matches the inventory: {relative}")
-    return payload
+    return SourceReader(root).read(record, diff_base=diff_base)
 
 
 def inventory(
@@ -665,20 +685,38 @@ def inventory_for_configuration(
     )
 
 
+_PLAIN_IDENTITIES = (
+    {"executable": False, "gitlink": None, "checkout": None},
+    {"executable": True, "gitlink": None, "checkout": None},
+)
+_PLAIN_IDENTITY_JSON = tuple(canonical_compact(value) for value in _PLAIN_IDENTITIES)
+
+
+def _inventory_fingerprint_row(row: Mapping[str, Any]) -> str:
+    extra = ("diffStatus", "previousPath", "untracked")
+    identity = row.get("sourceIdentity")
+    if (
+        not any(field in row for field in extra)
+        and identity in _PLAIN_IDENTITIES
+        and type(identity["executable"]) is bool
+    ):
+        # Preserve the exact canonical JSON bytes while avoiding repeated nested
+        # dictionary serialization for the two ordinary-file identity shapes.
+        suffix = _PLAIN_IDENTITY_JSON[_PLAIN_IDENTITIES.index(identity)]
+        return (
+            f'{{"classification":{encode_basestring(row["classification"])},'
+            f'"kind":{encode_basestring(row["kind"])},'
+            f'"path":{encode_basestring(row["path"])},'
+            f'"sha256":{encode_basestring(row["sha256"])},"sourceIdentity":{suffix}}}'
+        )
+    value = {field: row[field] for field in ("path", "kind", "sha256", "classification")}
+    value.update((field, row[field]) for field in (*extra, "sourceIdentity") if field in row)
+    return canonical_compact(value)
+
+
 def fingerprint_inventory(records: list[dict[str, Any]]) -> str:
-    stable = []
-    for row in sorted(records, key=lambda item: item["path"]):
-        value = {
-            "path": row["path"],
-            "kind": row["kind"],
-            "sha256": row["sha256"],
-            "classification": row["classification"],
-        }
-        for field in ("diffStatus", "previousPath", "untracked", "sourceIdentity"):
-            if field in row:
-                value[field] = row[field]
-        stable.append(value)
-    return sha256_bytes(canonical_compact(stable).encode("utf-8"))
+    rows = (_inventory_fingerprint_row(row) for row in sorted(records, key=lambda r: r["path"]))
+    return sha256_bytes(("[" + ",".join(rows) + "]").encode("utf-8"))
 
 
 def worktree_fingerprint(

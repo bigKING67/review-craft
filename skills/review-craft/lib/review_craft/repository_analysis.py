@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import ast
 import json
+import posixpath
 import re
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .constants import PROFILES, SCHEMA_VERSION
-from .repository import source_payload
+from .repository import SourceReader, source_payload
 
 MAX_ANALYZED_FILE_BYTES = 2 * 1024 * 1024
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
@@ -352,23 +353,24 @@ def build_dependency_map(root: Path, records: list[dict[str, Any]]) -> dict[str,
         if row.get("kind") == "file"
         and row.get("classification") == "source"
         and not row.get("binary", False)
-        and PurePosixPath(row["path"]).suffix.lower() in SOURCE_SUFFIXES
+        and posixpath.splitext(row["path"])[1].lower() in SOURCE_SUFFIXES
     }
     files = set(analyzable)
     edges: set[tuple[str, str, str, int]] = set()
     skipped: list[dict[str, str]] = []
     analyzed = 0
+    reader = SourceReader(root)
     for relative in sorted(analyzable):
         row = analyzable[relative]
         if int(row.get("sizeBytes", 0)) > MAX_ANALYZED_FILE_BYTES:
             skipped.append({"path": relative, "reason": "file exceeds the 2 MiB analysis limit"})
             continue
         try:
-            text = source_payload(root, row, diff_base=None).decode("utf-8")
+            text = reader.read(row, diff_base=None).decode("utf-8")
         except (OSError, UnicodeDecodeError) as error:
             skipped.append({"path": relative, "reason": type(error).__name__})
             continue
-        suffix = PurePosixPath(relative).suffix.lower()
+        suffix = posixpath.splitext(relative)[1].lower()
         try:
             if suffix == ".py":
                 _add_python_edges(relative, text, files, edges)
