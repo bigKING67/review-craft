@@ -398,6 +398,13 @@ and canonical coverage/budget validation; its filtering policy remains excluded.
 Understand Anything informs absence-evidence guidance and composition tests; automated
 symbol comparison, change-impact, and freshness mechanisms remain watch candidates. See the
 [reference boundary](THIRD_PARTY_NOTICES.md#understand-anything) for details.
+[Cloudflare security-audit-skill](https://github.com/cloudflare/security-audit-skill) is a
+selectively absorbed reference upstream: candidate falsification, precise blockers, renewed
+assessment after finding changes, and the distinction between structural and factual
+validation inform our bounded workflow. Assured v2 content binding is independently
+implemented here; the full security-audit and mandatory multi-agent workflows are excluded.
+See [provenance and boundaries](THIRD_PARTY_NOTICES.md#cloudflare-security-audit-skill).
+Alibaba's Git path handling also informs preservation of whitespace and protocol boundaries.
 When an upstream branch advances, `contracts/upstreams.json` records the latest reviewed
 revision and blobs; `THIRD_PARTY_NOTICES.md` separately preserves the original adaptation
 review where it differs.
@@ -410,6 +417,7 @@ python3 scripts/check_upstreams.py --remote
 
 The remote check fetches the configured branch into an isolated temporary bare repository
 without checking out source. `repositoryStatus: UPDATED` with `contentStatus: CURRENT`
-means unrelated repository content moved while every tracked source blob stayed pinned.
+means the branch moved while the listed source blobs stayed pinned. Relevant new surfaces
+may exist outside that list; inspect the intervening changes before declaring them unrelated.
 Relevant `CURRENT` exits `0`, relevant `UPDATED` exits `1`, and an unreachable or invalid
 source exits `2`.

@@ -43,7 +43,7 @@ rewrite posture, Cursor Task subagent orchestration, or rhetoric as evidence.
 
 - Project: `cursor/plugins`
 - Source: <https://github.com/cursor/plugins/tree/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review>
-- Latest reviewed revision: `6ed0f7a9504f577d7529064103cecce9be7dfc5e` (2026-09-21; tracked Skill blob unchanged)
+- Latest reviewed revision: `53e579f1481697931fc44f5445171397cfa2b24b` (2026-09-22; tracked Skill blob unchanged)
 - Original adaptation review: `397c8660da6d3d873a91e18c2ca2f22cac1f0ac1` (2026-08-28)
 - Adapted source path:
   `cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md`
@@ -56,6 +56,7 @@ MIT License
 
 Copyright (c) 2026 simplify-codebase contributors
 Copyright 2026 Cursor
+Copyright (c) 2025-2026 Cloudflare, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -166,3 +167,33 @@ performance claims are not local validation evidence.
 Any further adoption must record the specific adapted surfaces and matching validation
 before expanding `absorbedSurfaces`. If source or substantial text is
 copied, retain the applicable MIT copyright and permission notice before distribution.
+
+## Cloudflare security-audit-skill
+
+- Project: `cloudflare/security-audit-skill`
+- Source: <https://github.com/cloudflare/security-audit-skill>
+- Reviewed revision: `c1c8a8c1471069fb0e188eeaff69b8e8db6564a8` (2026-09-22)
+- License: MIT; Copyright (c) 2025-2026 Cloudflare, Inc.
+- Reviewed paths: `LICENSE`, `skills/security-audit/SKILL.md`, and
+  `skills/security-audit/VALIDATION-AND-REPORTING.md`; exact blobs are recorded in
+  `contracts/upstreams.json`. The shared MIT license text above applies.
+
+Review Craft selectively adapts candidate falsification using existing controls, decisive
+unresolved blockers, renewed independent assessment after material finding changes, and
+the distinction between structural validation and factual proof. The v2 canonical findings
+digest is Review Craft's independent implementation of the reassessment requirement, not
+a copied upstream protocol. No upstream source or prose is vendored.
+
+Excluded: the full vulnerability audit and attack-class library, mandatory multi-agent
+orchestration, a second finding ledger/scoring/report authority, automatic source mutation,
+target execution, and sandbox implementation. Upstream host and performance claims have
+not been verified locally. This is a bounded source review, not a full upstream audit.
+
+### Additional Alibaba path-handling reference
+
+At `bccbc15f785269400735d5255540c231e6c02b6d`, the selected `internal/scan/provider.go`,
+`internal/scan/provider_paths_test.go`, `internal/diff/git.go`, and
+`internal/diff/git_cquoted_test.go` inform preserving path whitespace, using protocol
+boundaries, separating stderr from path data, and testing against real Git. The root-path
+fix is independently implemented; no Go runtime or source is copied. Earlier adaptation
+provenance remains unchanged.

@@ -24,6 +24,13 @@ class UpstreamCheckTests(unittest.TestCase):
         }
 
     def test_repository_contract_passes_offline_without_network(self) -> None:
+        with patch(
+            "scripts.check_upstreams._remote_state", side_effect=AssertionError("network forbidden")
+        ) as remote:
+            result, code = evaluate(deepcopy(self.contract), remote=False)
+            self.assertEqual(code, 0)
+            self.assertTrue(all(row["status"] == "NOT_CHECKED" for row in result["sources"]))
+            remote.assert_not_called()
         completed = subprocess.run(
             [sys.executable, "scripts/check_upstreams.py"],
             cwd=ROOT,
@@ -36,9 +43,7 @@ class UpstreamCheckTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["mode"], "offline")
         self.assertTrue(payload["sources"])
-        self.assertTrue(
-            all(source["status"] == "NOT_CHECKED" for source in payload["sources"])
-        )
+        self.assertTrue(all(source["status"] == "NOT_CHECKED" for source in payload["sources"]))
 
     def test_contract_rejects_non_full_revision(self) -> None:
         payload = deepcopy(self.contract)
@@ -64,8 +69,9 @@ class UpstreamCheckTests(unittest.TestCase):
             with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
                 contract_path = Path(directory) / "upstreams.json"
                 contract_path.write_text(json.dumps(payload), encoding="utf-8")
-                with self.subTest(repository=repository, extra=extra), self.assertRaises(
-                    UpstreamContractError
+                with (
+                    self.subTest(repository=repository, extra=extra),
+                    self.assertRaises(UpstreamContractError),
                 ):
                     load_contract(contract_path)
 
@@ -82,9 +88,7 @@ class UpstreamCheckTests(unittest.TestCase):
             with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
                 contract_path = Path(directory) / "upstreams.json"
                 contract_path.write_text(json.dumps(payload), encoding="utf-8")
-                with self.subTest(mutation=mutation), self.assertRaises(
-                    UpstreamContractError
-                ):
+                with self.subTest(mutation=mutation), self.assertRaises(UpstreamContractError):
                     load_contract(contract_path)
 
     def test_tracked_status_requires_watch_surfaces_without_absorption_claim(self) -> None:
@@ -118,9 +122,7 @@ class UpstreamCheckTests(unittest.TestCase):
             with TemporaryDirectory(prefix="review-craft-upstream-") as directory:
                 contract_path = Path(directory) / "upstreams.json"
                 contract_path.write_text(json.dumps(mutated_payload), encoding="utf-8")
-                with self.subTest(mutation=mutation), self.assertRaises(
-                    UpstreamContractError
-                ):
+                with self.subTest(mutation=mutation), self.assertRaises(UpstreamContractError):
                     load_contract(contract_path)
 
     def test_fully_absorbed_status_rejects_watch_metadata(self) -> None:
@@ -163,11 +165,12 @@ class UpstreamCheckTests(unittest.TestCase):
             ("f" * 40, current_blobs, "UPDATED", "CURRENT", 0),
             ("f" * 40, changed_blobs, "UPDATED", "UPDATED", 1),
         ):
-            with self.subTest(
-                repository_status=repository_status, content_status=content_status
-            ), patch(
-                "scripts.check_upstreams._remote_state",
-                return_value=(remote_revision, remote_blobs),
+            with (
+                self.subTest(repository_status=repository_status, content_status=content_status),
+                patch(
+                    "scripts.check_upstreams._remote_state",
+                    return_value=(remote_revision, remote_blobs),
+                ),
             ):
                 payload, actual_code = evaluate(deepcopy(contract), remote=True)
                 result = payload["sources"][0]
@@ -189,9 +192,7 @@ class UpstreamCheckTests(unittest.TestCase):
             payload, code = evaluate(contract, remote=True)
 
         result = payload["sources"][0]
-        path_result = next(
-            item for item in result["sourcePaths"] if item["path"] == missing_path
-        )
+        path_result = next(item for item in result["sourcePaths"] if item["path"] == missing_path)
         self.assertEqual(code, 1)
         self.assertEqual(result["status"], "UPDATED")
         self.assertEqual(path_result["status"], "MISSING")
